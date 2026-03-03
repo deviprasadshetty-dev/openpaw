@@ -1,6 +1,6 @@
 # OpenPaw
 
-![OpenPaw Mascot](image.png)
+<img src="image.png" alt="OpenPaw Mascot" width="300">
 
 OpenPaw is a Rust-based, high-performance AI Agent Runtime inspired by OpenClaw. It provides a robust foundation for building autonomous agents that can interact with the world through various channels and tools.
 
