@@ -1,5 +1,7 @@
 # OpenPaw
 
+![OpenPaw Mascot](image.png)
+
 OpenPaw is a Rust-based, high-performance AI Agent Runtime inspired by OpenClaw. It provides a robust foundation for building autonomous agents that can interact with the world through various channels and tools.
 
 ## 🚀 Features & Powers
@@ -50,6 +52,95 @@ OpenPaw comes with a suite of powerful tools out of the box:
     ```bash
     cargo build --release
     ```
+
+## 📁 Workspace Setup
+
+OpenPaw uses a **workspace directory** to store your agent's identity, memory, and configuration files. The workspace is separate from the source code.
+
+### How It Works
+
+- **Current Directory = Workspace**: By default, OpenPaw uses the directory you run the command from as the workspace
+- **Template files in `src/workspace_templates/`** are compile-time defaults used to initialize new workspaces
+- **Runtime files** (AGENTS.md, SOUL.md, etc.) are read from your workspace directory at runtime
+
+### Creating a Workspace (Interactive)
+
+**Step 1: Install OpenPaw**
+
+```bash
+cd /path/to/openpaw
+cargo install --path .
+```
+
+**Step 2: Create Your Workspace**
+
+```bash
+# Create and enter your workspace folder
+mkdir ~/my-agent-workspace
+cd ~/my-agent-workspace
+
+# Run interactive onboarding
+openpaw onboard
+```
+
+You'll be prompted for:
+1. **AI Provider** (OpenAI, Anthropic, Gemini, OpenRouter)
+2. **API Key** for your chosen provider
+3. **Agent name** (e.g., "Nova", "Clippy")
+4. **Your name**
+5. **Timezone**
+6. **Telegram** (optional - bot token and your username)
+
+Then it will:
+- Create `config.json` with your settings
+- Scaffold template files (AGENTS.md, SOUL.md, etc.)
+
+### Running the Agent
+
+After onboarding, simply run from your workspace:
+
+```bash
+cd ~/my-agent-workspace
+openpaw agent
+```
+
+Or for a one-shot command:
+
+```bash
+openpaw agent --message "What's the weather today?"
+```
+
+### Without Installing (Development)
+
+If you haven't installed the binary yet:
+
+```bash
+# Onboard (from source directory)
+cd /path/to/openpaw
+cargo run --release -- onboard --dir ~/my-agent-workspace
+
+# Run agent (specify full path to binary)
+cd ~/my-agent-workspace
+/path/to/openpaw/target/release/openpaw agent
+```
+
+### Workspace Files
+
+After onboarding, your workspace will contain:
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Operational rules and behavior guidelines |
+| `SOUL.md` | Agent personality, values, and tone |
+| `IDENTITY.md` | Name, creature type, emoji, avatar |
+| `USER.md` | Information about you (the human) |
+| `TOOLS.md` | Tool-specific notes and preferences |
+| `HEARTBEAT.md` | Periodic tasks and checks |
+| `BOOTSTRAP.md` | First-run guide (safe to delete after setup) |
+| `memory/` | Daily memory files (auto-created) |
+| `MEMORY.md` | Long-term curated memory (optional) |
+
+**Note**: `workspace_dir` cannot be set in `config.json`. The agent always uses the current working directory as the workspace.
 
 ## 🏃 Usage
 

@@ -1,8 +1,73 @@
+pub mod gemini;
 pub mod openai;
 pub mod openrouter;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+/// Content part for multimodal messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentPart {
+    /// Plain text content
+    Text(String),
+    /// Base64-encoded image data
+    #[serde(rename = "image_base64")]
+    ImageBase64 { data: String, media_type: String },
+    /// Image URL (may not be supported by all providers)
+    #[serde(rename = "image_url")]
+    ImageUrl { url: String },
+}
+
+impl ChatMessage {
+    /// Create a user message with text content
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        }
+    }
+
+    /// Create an assistant message
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        }
+    }
+
+    /// Create a system message
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".to_string(),
+            content: content.into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        }
+    }
+
+    /// Create a message with content parts (multimodal)
+    pub fn with_content_parts(parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: String::new(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: Some(parts),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,16 +89,18 @@ impl Role {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub content_parts: Option<Vec<ContentPart>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

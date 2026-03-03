@@ -30,19 +30,34 @@ impl Tool for ScreenshotTool {
         let output_path = format!("{}/{}", self.workspace_dir, filename);
 
         #[cfg(target_os = "macos")]
-        let args = vec!["screencapture", "-x", &output_path];
+        {
+            let cmd_args = vec!["screencapture", "-x", &output_path];
+            let result = process_util::run(&cmd_args, process_util::RunOptions::default())?;
+            
+            if result.success {
+                 Ok(ToolResult::ok(format!("[IMAGE:{}]", output_path)))
+            } else {
+                 let err_msg = if !result.stderr.is_empty() { result.stderr } else { "unknown error".to_string() };
+                 Ok(ToolResult::fail(format!("Screenshot command failed: {}", err_msg)))
+            }
+        }
+        
         #[cfg(target_os = "linux")]
-        let args = vec!["import", "-window", "root", &output_path];
+        {
+            let cmd_args = vec!["import", "-window", "root", &output_path];
+            let result = process_util::run(&cmd_args, process_util::RunOptions::default())?;
+            
+            if result.success {
+                 Ok(ToolResult::ok(format!("[IMAGE:{}]", output_path)))
+            } else {
+                 let err_msg = if !result.stderr.is_empty() { result.stderr } else { "unknown error".to_string() };
+                 Ok(ToolResult::fail(format!("Screenshot command failed: {}", err_msg)))
+            }
+        }
+        
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        return Ok(ToolResult::fail("Screenshot not supported on this platform"));
-
-        let result = process_util::run(&args, process_util::RunOptions::default())?;
-
-        if result.success {
-             Ok(ToolResult::ok(format!("[IMAGE:{}]", output_path)))
-        } else {
-             let err_msg = if !result.stderr.is_empty() { result.stderr } else { "unknown error".to_string() };
-             Ok(ToolResult::fail(format!("Screenshot command failed: {}", err_msg)))
+        {
+            Ok(ToolResult::fail("Screenshot not supported on this platform"))
         }
     }
 }

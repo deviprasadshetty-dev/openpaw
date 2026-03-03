@@ -148,10 +148,7 @@ async fn main() -> Result<()> {
 
     match &args.command {
         Some(Commands::Onboard { dir }) => {
-            info!("Scaffolding workspace at {}", dir);
-            let ctx = onboard::ProjectContext::default();
-            onboard::scaffold_workspace(dir, &ctx)?;
-            info!("Workspace scaffolded successfully!");
+            onboard::interactive_onboard(dir)?;
             return Ok(());
         }
         Some(Commands::Gateway) | None => {

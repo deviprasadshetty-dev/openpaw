@@ -6,7 +6,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolResult};
 use crate::config_types::McpServerConfig;
 use crate::version;
 
@@ -226,14 +226,14 @@ impl Tool for McpToolWrapper {
         &self.desc
     }
 
-    fn parameters_json(&self) -> &str {
-        &self.params_json_str
+    fn parameters_json(&self) -> String {
+        self.params_json_str.clone()
     }
 
-    fn execute(&self, args: &Value) -> Result<String> {
-        match self.server.call_tool(&self.original_name, args) {
-            Ok(output) => Ok(output),
-            Err(e) => Ok(format!("MCP tool '{}' failed: {}", self.original_name, e)),
+    fn execute(&self, args: Value) -> Result<ToolResult> {
+        match self.server.call_tool(&self.original_name, &args) {
+            Ok(output) => Ok(ToolResult::ok(output)),
+            Err(e) => Ok(ToolResult::fail(format!("MCP tool '{}' failed: {}", self.original_name, e))),
         }
     }
 }

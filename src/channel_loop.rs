@@ -1,5 +1,5 @@
-use crate::bus::{self, global_bus, InboundMessage};
-use crate::channels::root::{Channel, ParsedMessage};
+use crate::bus::{global_bus, InboundMessage};
+use crate::channels::root::Channel;
 use crate::config::Config;
 use anyhow::Result;
 use std::fs;
@@ -223,36 +223,59 @@ fn telegram_polling_loop(
             Ordering::Relaxed,
         );
 
-        // We need a way to poll updates passing an offset.
-        // The `Channel` trait in openpaw likely has `poll` or similar if it supports polling.
-        // If `poll` is not on the trait, we might need to cast to concrete `TelegramChannel`.
-        // Since Rust doesn't support downcasting easily without Any, and Channel is likely `dyn Channel`,
-        // we might assume `poll` is on the interface or we use `listen` which blocks?
-        // `nullclaw` has `pollUpdates(offset)`.
-        // Let's assume we added `poll` to `Channel` trait or we are using a concrete type here.
-        // But `spawn_telegram_polling` takes `Arc<dyn Channel>`.
-        // For now, I will assume the `Channel` trait has a `poll` method that takes an optional offset.
-        // Or I will rely on `channel.listen()` but that usually blocks indefinitely or manages its own loop.
-        // The `nullclaw` architecture extracts the loop to `channel_loop.zig` so the channel *doesn't* manage its own loop.
-        // This implies `TelegramChannel` in `openpaw` should expose a way to fetch updates.
+        // Poll for updates from Telegram
+        match channel.poll_updates() {
+            Ok(messages) => {
+                let mut max_update_id = 0i64;
 
-        // Since I cannot easily change the `Channel` trait definition right now without seeing `openpaw/src/channels/root.rs`,
-        // I will assume `channel.poll(offset)` exists or I'll add a comment.
-        // Wait, I can read `openpaw/src/channels/root.rs` to be sure.
-        // For now I will mock the call as `channel.poll_updates(offset)`.
+                for msg in messages {
+                    // Track the highest update_id for offset persistence
+                    if let Some(msg_id) = msg.message_id {
+                        if msg_id > max_update_id {
+                            max_update_id = msg_id;
+                        }
+                    }
 
-        // let updates = channel.poll_updates(offset); 
-        // For now, let's pretend we have a method. If not, I'll need to fix `Channel` trait.
+                    // Convert ParsedMessage to InboundMessage and publish to bus
+                    let inbound = InboundMessage {
+                        channel: "telegram".to_string(),
+                        sender_id: msg.sender_id,
+                        chat_id: msg.chat_id,
+                        content: msg.content,
+                        session_key: msg.session_key,
+                        media: Vec::new(),
+                        metadata_json: None,
+                    };
 
-        // Simulating the loop logic:
-        // 1. Poll updates
-        // 2. For each update:
-        //    - Parse message
-        //    - Bus.publish(InboundMessage)
-        //    - Update candidate offset
-        // 3. Persist offset
+                    if let Some(bus) = global_bus() {
+                        if let Err(e) = bus.publish_inbound(inbound) {
+                            error!("Failed to publish inbound message to bus: {}", e);
+                        }
+                    } else {
+                        error!("Global bus not initialized, cannot publish message");
+                    }
+                }
 
-        thread::sleep(Duration::from_secs(1)); // Placeholder sleep
+                // Persist offset if we processed any messages
+                if max_update_id > 0 {
+                    persist_telegram_update_offset_if_advanced(
+                        config,
+                        channel.account_id(),
+                        bot_token,
+                        &mut offset,
+                        max_update_id,
+                    );
+                }
+            }
+            Err(e) => {
+                error!("Error polling Telegram updates: {}", e);
+                // Wait a bit before retrying on error
+                thread::sleep(Duration::from_secs(5));
+            }
+        }
+
+        // Small delay to avoid hammering the API
+        thread::sleep(Duration::from_millis(100));
     }
 
     info!(

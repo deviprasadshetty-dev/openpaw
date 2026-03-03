@@ -1,5 +1,6 @@
 use crate::channels::root::{Channel, ParsedMessage};
 use crate::config_types::TelegramConfig;
+use crate::interactions::choices::parse_assistant_choices;
 use anyhow::{anyhow, Result};
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -440,18 +441,74 @@ impl TelegramChannel {
         chunks
     }
 
+    /// Convert Markdown bold (**text**) to HTML bold (<b>text</b>)
+    fn markdown_bold_to_html(&self, text: &str) -> String {
+        // Handle **bold** -> <b>bold</b>
+        let mut result = text.to_string();
+        let mut start = 0;
+        
+        while let Some(pos) = result[start..].find("**") {
+            let abs_pos = start + pos;
+            // Check if there's a closing **
+            if let Some(close_pos) = result[abs_pos + 2..].find("**") {
+                let abs_close = abs_pos + 2 + close_pos;
+                // Replace ** with <b> and </b>
+                result.replace_range(abs_pos..abs_pos + 2, "<b>");
+                // Adjust close position since we changed the string
+                let new_close = abs_close - 2 + 3; // -2 for **, +3 for <b>
+                result.replace_range(new_close..new_close + 2, "</b>");
+                start = new_close + 4; // Move past </b>
+            } else {
+                break;
+            }
+        }
+        
+        result
+    }
+
     /// Send a single message via the Telegram API
     fn send_single_message(&self, chat_id: &str, text: &str, reply_to: Option<i64>) -> Result<()> {
         let url = self.api_url("sendMessage");
 
+        // Parse nc_choices and convert markdown bold to HTML
+        let parsed_choices = parse_assistant_choices(text);
+        let html_text = self.markdown_bold_to_html(&parsed_choices.visible_text);
+
+        // Build inline keyboard if choices are present
+        let reply_markup = if let Some(choices) = parsed_choices.choices {
+            let keyboard_buttons: Vec<Value> = choices.options.iter().map(|opt| {
+                serde_json::json!({
+                    "text": opt.label,
+                    "callback_data": opt.id
+                })
+            }).collect();
+            
+            // Arrange buttons in a row (up to 3 per row for better display)
+            let mut inline_keyboard: Vec<Vec<Value>> = Vec::new();
+            let chunk_size = 3;
+            for chunk in keyboard_buttons.chunks(chunk_size) {
+                inline_keyboard.push(chunk.to_vec());
+            }
+            
+            Some(serde_json::json!({
+                "inline_keyboard": inline_keyboard
+            }))
+        } else {
+            None
+        };
+
         let mut body = serde_json::json!({
             "chat_id": chat_id,
-            "text": text,
+            "text": html_text,
             "parse_mode": "HTML"
         });
 
         if let Some(reply_id) = reply_to {
             body["reply_to_message_id"] = Value::Number(reply_id.into());
+        }
+
+        if let Some(markup) = reply_markup {
+            body["reply_markup"] = markup;
         }
 
         let response = self
@@ -467,9 +524,11 @@ impl TelegramChannel {
         if !status.is_success() {
             // Try without parse_mode if HTML failed
             if resp_text.contains("can't parse") || resp_text.contains("parse") {
+                // Use the visible text without HTML tags and without nc_choices
+                let plain_text = parsed_choices.visible_text;
                 let mut plain_body = serde_json::json!({
                     "chat_id": chat_id,
-                    "text": text
+                    "text": plain_text
                 });
                 if let Some(reply_id) = reply_to {
                     plain_body["reply_to_message_id"] = Value::Number(reply_id.into());

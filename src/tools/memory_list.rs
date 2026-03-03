@@ -37,18 +37,29 @@ impl Tool for MemoryListTool {
 
         // Assume `list` method exists
         match self.memory.list(category_opt, session_id_opt) {
-            Ok(entries) => {
-                let mut out = format!(
-                    "Memory entries: showing {}/{}",
-                    entries.len(),
-                    entries.len()
-                );
-                for (i, entry) in entries.iter().enumerate() {
-                    out.push_str(&format!("\n  {}. [{}]", i + 1, entry.key));
+            Ok(mut entries) => {
+                // Sort by timestamp descending (newest first)
+                entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                
+                // Apply limit
+                if entries.len() > limit {
+                    entries.truncate(limit);
                 }
-                Ok(ToolResult::ok(out))
-            }
-            Err(e) => Ok(ToolResult::fail(format!(
+
+                if entries.is_empty() {
+                    Ok(ToolResult::ok("No memory entries found.".to_string()))
+                } else {
+                    let mut out = format!(
+                        "Memory entries: showing {}/{}",
+                        entries.len(),
+                        entries.len()
+                    );
+                    for (i, entry) in entries.iter().enumerate() {
+                        out.push_str(&format!("\n  {}. [{}]", i + 1, entry.key));
+                    }
+                    Ok(ToolResult::ok(out))
+                }
+            } Err(e) => Ok(ToolResult::fail(format!(
                 "Failed to list memory entries: {}",
                 e
             ))),

@@ -162,7 +162,7 @@ pub fn make_outbound_with_media(
 
 pub const QUEUE_CAPACITY: usize = 100;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Bus {
     inbound_tx: Sender<InboundMessage>,
     inbound_rx: Receiver<InboundMessage>,

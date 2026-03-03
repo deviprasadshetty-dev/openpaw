@@ -23,6 +23,7 @@ pub struct PromptContext<'a> {
     pub tools: &'a [Arc<dyn Tool>],
     pub capabilities_section: Option<&'a str>,
     pub conversation_context: Option<&'a ConversationContext>,
+    pub use_native_tools: bool,
 }
 
 fn path_starts_with(path: &Path, prefix: &Path) -> bool {
@@ -114,7 +115,7 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     build_identity_section(&mut out, ctx.workspace_dir);
 
     // Tools section
-    build_tools_section(&mut out, ctx.tools);
+    build_tools_section(&mut out, ctx.tools, ctx.use_native_tools);
 
     // Attachments section
     append_channel_attachments_section(&mut out);
@@ -217,15 +218,34 @@ fn build_identity_section(out: &mut String, workspace_dir: &str) {
     }
 }
 
-fn build_tools_section(out: &mut String, tools: &[Arc<dyn Tool>]) {
+fn build_tools_section(out: &mut String, tools: &[Arc<dyn Tool>], use_native_tools: bool) {
     out.push_str("## Tools\n\n");
     for tool in tools {
-        out.push_str(&format!("- **{}**: {}\n  Parameters: `{}`\n", 
-            tool.name(), 
-            tool.description(), 
+        out.push_str(&format!("- **{}**: {}\n  Parameters: `{}`\n",
+            tool.name(),
+            tool.description(),
             tool.parameters_json()
         ));
     }
+
+    // Only add tool calling instructions for non-native tool providers
+    if !use_native_tools && !tools.is_empty() {
+        out.push_str("\n## Tool Calling Instructions\n\n");
+        out.push_str("To call a tool, output a tool call block in the following XML format:\n\n");
+        out.push_str("<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param1\": \"value1\", \"param2\": \"value2\"}}</tool_call>\n\n");
+        out.push_str("Important:\n");
+        out.push_str("- The tool call must be valid JSON inside the XML tags\n");
+        out.push_str("- The 'name' field must match one of the available tools listed above\n");
+        out.push_str("- The 'arguments' object must match the tool's parameter schema\n");
+        out.push_str("- You can include multiple tool calls in your response\n");
+        out.push_str("- After tool calls are executed, you will receive the results and can respond to the user\n\n");
+        out.push_str("When NOT to use tools:\n");
+        out.push_str("- For simple greetings, casual conversation, or general questions that don't require external data\n");
+        out.push_str("- When the user is just saying hello, asking how you are, or making small talk\n");
+        out.push_str("- When you already have all the information needed to answer from the conversation context\n");
+        out.push_str("- Only use tools when you need to perform actions like reading files, executing commands, or accessing external data\n\n");
+    }
+
     out.push_str("\n");
 }
 

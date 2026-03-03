@@ -20,7 +20,7 @@ use crate::providers::{ChatMessage, ChatResponse, ChatRequest, ToolSpec, Provide
 use crate::tools::Tool;
 
 use compaction::{force_compress_history, trim_history, auto_compact_history, CompactionConfig};
-use dispatcher::{ToolExecutionResult, format_tool_results, parse_tool_calls};
+use dispatcher::{ToolExecutionResult, format_tool_results, parse_tool_calls, ParsedToolCall};
 use memory_loader::{Memory, NoopMemory, enrich_message};
 use context_tokens as context_tokens_resolver;
 use max_tokens as max_tokens_resolver;
@@ -96,6 +96,7 @@ impl Agent {
             tools: &self.tools,
             capabilities_section: caps,
             conversation_context,
+            use_native_tools: self.provider.supports_native_tools(),
         };
 
         Ok(prompt::build_system_prompt(ctx))
@@ -133,6 +134,7 @@ impl Agent {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    content_parts: None,
                 });
             }
             self.has_system_prompt = true;
@@ -146,6 +148,7 @@ impl Agent {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            content_parts: None,
         });
 
         // Enforce history limits
@@ -208,51 +211,62 @@ impl Agent {
                 name: None,
                 tool_calls: if response.tool_calls.is_empty() { None } else { Some(response.tool_calls.clone()) },
                 tool_call_id: None,
+                content_parts: None,
             };
             self.history.push(assistant_msg);
 
             // Handle tool calls
-            if response.tool_calls.is_empty() {
-                return Ok(response.content.unwrap_or_default());
-            }
+            // For providers with native tool support, use response.tool_calls
+            // For others, parse tool calls from the response content
+            let tool_calls_to_execute: Vec<ParsedToolCall> = if !response.tool_calls.is_empty() {
+                // Native tool format - convert ToolCall to ParsedToolCall
+                response.tool_calls.iter().map(|tc| ParsedToolCall {
+                    name: tc.function.name.clone(),
+                    arguments_json: tc.function.arguments.clone(),
+                    tool_call_id: Some(tc.id.clone()),
+                }).collect()
+            } else {
+                // Parse tool calls from content for non-native providers
+                let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
+                if parse_result.calls.is_empty() {
+                    // No tool calls found, return the content
+                    return Ok(response.content.unwrap_or_default());
+                }
+                parse_result.calls
+            };
 
-            let tool_parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
-            // Note: In real OpenAI usage, we iterate response.tool_calls directly.
-            // But if we use parse_tool_calls logic (e.g. for non-native providers), we use that.
-            // For now, let's respect response.tool_calls which we already have.
-            
             let mut execution_results = Vec::new();
-            for tool_call in &response.tool_calls {
-                let tool = self.tools.iter().find(|t| t.name() == tool_call.function.name);
+            for tool_call in &tool_calls_to_execute {
+                let tool = self.tools.iter().find(|t| t.name() == tool_call.name);
                 let result = if let Some(tool) = tool {
-                    match serde_json::from_str::<serde_json::Value>(&tool_call.function.arguments) {
+                    match serde_json::from_str::<serde_json::Value>(&tool_call.arguments_json) {
                         Ok(args) => match tool.execute(args) {
                             Ok(output) => ToolExecutionResult {
-                                name: tool_call.function.name.clone(),
+                                name: tool_call.name.clone(),
                                 output: output.content,
                                 success: true,
-                                tool_call_id: Some(tool_call.id.clone()),
+                                tool_call_id: tool_call.tool_call_id.clone(),
                             },
                             Err(e) => ToolExecutionResult {
-                                name: tool_call.function.name.clone(),
+                                name: tool_call.name.clone(),
                                 output: format!("Error executing tool: {}", e),
                                 success: false,
-                                tool_call_id: Some(tool_call.id.clone()),
+                                tool_call_id: tool_call.tool_call_id.clone(),
                             },
                         },
                         Err(e) => ToolExecutionResult {
-                            name: tool_call.function.name.clone(),
+                            name: tool_call.name.clone(),
                             output: format!("Error parsing arguments: {}", e),
                             success: false,
-                            tool_call_id: Some(tool_call.id.clone()),
+                            tool_call_id: tool_call.tool_call_id.clone(),
                         },
                     }
                 } else {
                     ToolExecutionResult {
-                        name: tool_call.function.name.clone(),
-                        output: format!("Tool not found: {}", tool_call.function.name),
+                        name: tool_call.name.clone(),
+                        output: format!("Tool not found: {}", tool_call.name),
                         success: false,
-                        tool_call_id: Some(tool_call.id.clone()),
+                        tool_call_id: tool_call.tool_call_id.clone(),
                     }
                 };
                 execution_results.push(result);
@@ -268,6 +282,7 @@ impl Agent {
                     name: Some(result.name),
                     tool_calls: None,
                     tool_call_id: result.tool_call_id,
+                    content_parts: None,
                 });
             }
 

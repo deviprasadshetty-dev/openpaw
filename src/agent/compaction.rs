@@ -149,6 +149,7 @@ pub fn auto_compact_history(
         name: None,
         tool_calls: None,
         tool_call_id: None,
+        content_parts: None,
     });
     
     new_history.extend_from_slice(&history[compact_end..]);
@@ -171,8 +172,8 @@ fn summarize_slice(
     let summarizer_user = format!("Summarize the following conversation history for context preservation. Keep it short (max 12 bullet points).\n\n{}", transcript);
 
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: summarizer_system.to_string(), name: None, tool_calls: None, tool_call_id: None },
-        ChatMessage { role: "user".to_string(), content: summarizer_user, name: None, tool_calls: None, tool_call_id: None },
+        ChatMessage { role: "system".to_string(), content: summarizer_system.to_string(), name: None, tool_calls: None, tool_call_id: None, content_parts: None },
+        ChatMessage { role: "user".to_string(), content: summarizer_user, name: None, tool_calls: None, tool_call_id: None, content_parts: None },
     ];
 
     let request = crate::providers::ChatRequest {

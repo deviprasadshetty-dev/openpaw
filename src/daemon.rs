@@ -8,6 +8,8 @@ use crate::cron::CronScheduler;
 use crate::gateway;
 use crate::heartbeat::HeartbeatEngine;
 use crate::providers::openai::OpenAiCompatibleProvider;
+use crate::providers::gemini::GeminiProvider;
+use crate::providers::Provider;
 use crate::session::SessionManager;
 use crate::agent::memory_loader::Memory;
 use anyhow::Result;
@@ -245,28 +247,47 @@ pub fn start_outbound_dispatcher(
     run_outbound_dispatcher(bus, registry)
 }
 
+/// Factory function to create the appropriate provider based on config
+fn create_provider(config: &Config) -> Arc<dyn Provider> {
+    let provider_name = &config.default_provider;
+    
+    // Get provider config if available
+    let provider_config = config.models.as_ref()
+        .and_then(|m| m.providers.get(provider_name));
+    
+    match provider_name.as_str() {
+        "gemini" => {
+            // Gemini provider - uses its own base URL, only needs API key
+            let api_key = provider_config.map(|p| p.api_key.clone());
+            Arc::new(GeminiProvider::new(api_key.as_deref()))
+        }
+        _ => {
+            // OpenAI-compatible providers (openai, openrouter, etc.)
+            let base_url = provider_config
+                .and_then(|p| p.base_url.clone())
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            let api_key = provider_config
+                .map(|p| p.api_key.clone())
+                .unwrap_or_default();
+            Arc::new(OpenAiCompatibleProvider::new(provider_name, &base_url, &api_key))
+        }
+    }
+}
+
 pub async fn run_daemon(config: Config) -> Result<()> {
     info!("Initializing OpenPaw daemon...");
 
-    let bus = init_bus();
+    // Initialize the global bus first (before any threads that use it)
+    // All threads will clone this to share the same underlying channels
+    let global_bus = bus::init_global_bus().clone();
+    let bus = Arc::new(global_bus);
     let daemon_state = Arc::new(std::sync::Mutex::new(DaemonState::default()));
 
-    // Initialize SessionManager
-    let provider = Arc::new(OpenAiCompatibleProvider::new(
-        "default",
-        &config.models.as_ref().map(|m| m.providers.get(&config.default_provider).map(|p| p.base_url.clone().unwrap_or_default()).unwrap_or_default()).unwrap_or_default(),
-        &config.models.as_ref().map(|m| m.providers.get(&config.default_provider).map(|p| p.api_key.clone()).unwrap_or_default()).unwrap_or_default(),
-    ));
+    // Initialize Provider based on config
+    let provider: Arc<dyn Provider> = create_provider(&config);
 
     // Initialize Memory
-    let db_path = std::path::Path::new(&config.workspace_dir).join("openpaw.db");
-    let memory: Option<Arc<dyn crate::agent::memory_loader::Memory>> = match crate::memory::sqlite::SqliteMemory::new(db_path.to_str().unwrap()) {
-        Ok(m) => Some(Arc::new(m) as Arc<dyn crate::agent::memory_loader::Memory>),
-        Err(e) => {
-            error!("Failed to init SQLite memory: {}", e);
-            None
-        }
-    };
+    let memory: Option<Arc<dyn crate::agent::memory_loader::Memory>> = Some(Arc::new(crate::agent::memory_loader::NoopMemory));
 
     // Initialize Tools
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
@@ -292,11 +313,88 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         max_file_size: 10 * 1024 * 1024,
     }));
 
+    // Shell Tool
+    tools.push(Arc::new(crate::tools::shell::ShellTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+        timeout_ns: 30_000_000_000, // 30s
+        max_output_bytes: 1024 * 1024,
+    }));
+
+    // Git Tool
+    tools.push(Arc::new(crate::tools::git::GitTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+    }));
+
+    // HTTP Request Tool
+    tools.push(Arc::new(crate::tools::http_request::HttpRequestTool {
+        max_response_size: config.http_request.max_response_size as usize,
+        timeout_secs: config.http_request.timeout_secs,
+        allowed_domains: config.http_request.allowed_domains.clone(),
+    }));
+
+    // Composio Tool
+    if config.composio.enabled {
+        if let Some(api_key) = &config.composio.api_key {
+            tools.push(Arc::new(crate::tools::composio::ComposioTool {
+                api_key: api_key.clone(),
+                entity_id: config.composio.entity_id.clone(),
+            }));
+        }
+    }
+
+    // Browser Tool
+    tools.push(Arc::new(crate::tools::browser::BrowserTool));
+
     // Web Search Tool
     let mut search_tool = crate::tools::web_search::WebSearchTool::default();
     let req_config = &config.http_request;
     search_tool.provider = req_config.search_provider.clone();
     tools.push(Arc::new(search_tool));
+
+    // Web Fetch Tool
+    tools.push(Arc::new(crate::tools::web_fetch::WebFetchTool {
+        default_max_chars: 50_000,
+    }));
+
+    // Browser Open Tool
+    tools.push(Arc::new(crate::tools::browser_open::BrowserOpenTool {
+        allowed_domains: config.http_request.allowed_domains.clone(),
+    }));
+
+    // Cron/Schedule Tools
+    tools.push(Arc::new(crate::tools::schedule::ScheduleTool {}));
+    tools.push(Arc::new(crate::tools::cron_add::CronAddTool {}));
+    tools.push(Arc::new(crate::tools::cron_list::CronListTool {}));
+    tools.push(Arc::new(crate::tools::cron_remove::CronRemoveTool {}));
+    tools.push(Arc::new(crate::tools::cron_run::CronRunTool {}));
+    tools.push(Arc::new(crate::tools::cron_runs::CronRunsTool {}));
+    tools.push(Arc::new(crate::tools::cron_update::CronUpdateTool {}));
+
+    // Utility Tools
+    tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
+    tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::pushover::PushoverTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::delegate::DelegateTool {}));
+    tools.push(Arc::new(crate::tools::spawn::SpawnTool {
+        default_channel: None,
+        default_chat_id: None,
+    }));
+
+    // Hardware Tools
+    tools.push(Arc::new(crate::tools::hardware_info::HardwareBoardInfoTool {
+        boards: Vec::new(),
+    }));
+    tools.push(Arc::new(crate::tools::hardware_memory::HardwareMemoryTool {
+        boards: Vec::new(),
+    }));
+    tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
+    tools.push(Arc::new(crate::tools::spi::SpiTool {}));
 
     let session_manager = Arc::new(SessionManager::new(
         provider,
