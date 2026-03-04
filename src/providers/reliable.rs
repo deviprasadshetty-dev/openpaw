@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tracing::warn;
 
+use super::circuit_breaker::CircuitBreaker;
 use crate::providers::error_classify::classify;
 use crate::providers::{ChatRequest, ChatResponse, Provider};
 
@@ -18,6 +19,7 @@ pub struct ReliableProvider {
     /// Initial backoff in ms (doubles each attempt, capped at max_backoff_ms)
     initial_backoff_ms: u64,
     max_backoff_ms: u64,
+    circuit_breaker: CircuitBreaker,
 }
 
 impl ReliableProvider {
@@ -27,6 +29,9 @@ impl ReliableProvider {
             max_retries: 3,
             initial_backoff_ms: 1000,
             max_backoff_ms: 30_000,
+            circuit_breaker: crate::providers::circuit_breaker::CircuitBreaker::new(
+                Default::default(),
+            ),
         }
     }
 
@@ -38,12 +43,19 @@ impl ReliableProvider {
 
 impl Provider for ReliableProvider {
     fn chat(&self, request: &ChatRequest) -> Result<ChatResponse> {
+        if let Err(e) = self.circuit_breaker.check_and_attempt() {
+            return Err(anyhow::anyhow!("{}", e));
+        }
+
         let mut backoff_ms = self.initial_backoff_ms;
         let mut last_err = anyhow::anyhow!("No attempts made");
 
         for attempt in 0..=self.max_retries {
             match self.inner.chat(request) {
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    self.circuit_breaker.record_success();
+                    return Ok(resp);
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     // Extract HTTP status from error message if available
@@ -80,6 +92,41 @@ impl Provider for ReliableProvider {
 
     fn get_name(&self) -> &str {
         self.inner.get_name()
+    }
+
+    fn chat_stream(
+        &self,
+        request: &ChatRequest,
+        callback: crate::providers::StreamCallback,
+    ) -> Result<ChatResponse> {
+        if let Err(e) = self.circuit_breaker.check_and_attempt() {
+            return Err(anyhow::anyhow!("{}", e));
+        }
+
+        // StreamCallback is consumed on use (Box<dyn FnMut>), so we can't retry.
+        // Attempt streaming once — on failure, fall back to non-streaming retry path.
+        match self.inner.chat_stream(request, callback) {
+            Ok(resp) => {
+                self.circuit_breaker.record_success();
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                let msg = e.to_string();
+                let status = extract_status_from_message(&msg);
+                let kind = classify(status, &msg);
+
+                if kind.is_retryable() {
+                    warn!(
+                        provider = self.inner.get_name(),
+                        "Stream failed ({:?}), falling back to non-streaming retry: {}", kind, msg
+                    );
+                    self.chat(request)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

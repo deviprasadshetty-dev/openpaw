@@ -300,13 +300,15 @@ fn default_baud_rate() -> u32 {
 pub struct MemoryConfig {
     #[serde(default = "default_memory_backend")]
     pub backend: String,
-    // Other fields omitted for brevity as capabilities.rs only uses backend
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             backend: default_memory_backend(),
+            embedding_model: None,
         }
     }
 }

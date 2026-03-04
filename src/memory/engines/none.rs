@@ -16,6 +16,7 @@ impl MemoryStore for NoneMemory {
         _content: &str,
         _category: MemoryCategory,
         _session_id: Option<&str>,
+        _importance: Option<f64>,
     ) -> Result<()> {
         Ok(())
     }

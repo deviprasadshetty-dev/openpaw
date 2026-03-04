@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod circuit_breaker;
 pub mod error_classify;
 pub mod factory;
 pub mod gemini;
@@ -156,9 +157,47 @@ pub struct ChatRequest<'a> {
     pub reasoning_effort: Option<&'a str>,
 }
 
+// ── Streaming types ─────────────────────────────────────────────
+
+/// A chunk emitted during streaming LLM responses.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Incremental text content from the model.
+    Delta(String),
+    /// Incremental tool call data (for native tool-calling providers).
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments_delta: String,
+    },
+    /// Stream finished — carries final token usage.
+    Done(TokenUsage),
+    /// An error occurred mid-stream.
+    Error(String),
+}
+
+/// Callback type for streaming responses. Called once per chunk.
+pub type StreamCallback = Box<dyn FnMut(StreamChunk) + Send>;
+
 pub trait Provider: Send + Sync {
-    /// Send a chat request to the LLM
+    /// Send a chat request to the LLM (blocking, returns full response)
     fn chat(&self, request: &ChatRequest) -> Result<ChatResponse>;
+
+    /// Send a chat request and stream deltas via callback.
+    /// Default implementation falls back to blocking `chat()`.
+    fn chat_stream(
+        &self,
+        request: &ChatRequest,
+        mut callback: StreamCallback,
+    ) -> Result<ChatResponse> {
+        let response = self.chat(request)?;
+        if let Some(ref text) = response.content {
+            callback(StreamChunk::Delta(text.clone()));
+        }
+        callback(StreamChunk::Done(response.usage.clone()));
+        Ok(response)
+    }
 
     /// Whether this provider inherently supports returning native tool calls
     fn supports_native_tools(&self) -> bool;

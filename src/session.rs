@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
-use crate::agent::memory_loader::Memory;
 use crate::agent::Agent;
-use crate::tools::Tool;
+use crate::agent::memory_loader::Memory;
 use crate::providers::Provider;
+use crate::tools::Tool;
 
 /// Session wraps an Agent instance for an ongoing conversation.
 /// It maintains the last active time and an internal async mutex to serialize turns
@@ -111,10 +111,38 @@ impl SessionManager {
             .as_secs();
         session_arc.last_active.store(now, Ordering::SeqCst);
 
-        // Lock the turn execution for this session so we don't have overlapping turns
         let mut agent_guard = session_arc.agent.lock().await;
-
         let response = agent_guard.turn(message).await?;
+
+        session_arc.turn_count.fetch_add(1, Ordering::SeqCst);
+        session_arc.last_active.store(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            Ordering::SeqCst,
+        );
+
+        Ok(response)
+    }
+
+    /// Safely process a message with a streaming callback for a specific session.
+    pub async fn process_message_stream(
+        &self,
+        session_key: &str,
+        message: String,
+        callback: crate::providers::StreamCallback,
+    ) -> Result<String> {
+        let session_arc = self.get_or_create(session_key);
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        session_arc.last_active.store(now, Ordering::SeqCst);
+
+        let mut agent_guard = session_arc.agent.lock().await;
+        let response = agent_guard.turn_stream(message, callback).await?;
 
         session_arc.turn_count.fetch_add(1, Ordering::SeqCst);
         session_arc.last_active.store(

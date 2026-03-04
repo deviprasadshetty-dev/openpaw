@@ -2,20 +2,29 @@ use anyhow::Result;
 
 pub trait Channel: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
-    
+
     /// Return the channel name (e.g., "telegram", "whatsapp")
     fn name(&self) -> &str;
-    
+
     /// Return the account ID for multi-account channels
     fn account_id(&self) -> &str;
-    
+
     /// Send a text message to a chat
     fn send_message(&self, chat_id: &str, text: &str) -> Result<()>;
-    
+
+    /// Send a text chunk to a chat (for streaming). Default is no-op.
+    fn send_stream_chunk(&self, _chat_id: &str, _text: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Send a typing / "processing" indicator to a chat (best-effort).
+    /// Default implementation is a no-op.
+    fn send_typing(&self, _chat_id: &str) {}
+
     /// Poll for updates (for polling-based channels like Telegram)
     /// Returns a list of parsed messages ready for the bus
     fn poll_updates(&self) -> Result<Vec<ParsedMessage>>;
-    
+
     /// Check if the channel is properly configured and healthy
     fn health_check(&self) -> bool;
 }
@@ -34,12 +43,7 @@ pub struct ParsedMessage {
 }
 
 impl ParsedMessage {
-    pub fn new(
-        sender_id: &str,
-        chat_id: &str,
-        content: &str,
-        session_key: &str,
-    ) -> Self {
+    pub fn new(sender_id: &str, chat_id: &str, content: &str, session_key: &str) -> Self {
         Self {
             sender_id: sender_id.to_string(),
             chat_id: chat_id.to_string(),

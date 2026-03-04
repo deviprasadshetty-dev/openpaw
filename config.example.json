@@ -1,0 +1,51 @@
+{
+    "default_provider": "gemini",
+    "default_model": "gemini-2.5-flash",
+    "models": {
+        "providers": {
+            "openai": {
+                "api_key": "YOUR_OPENAI_API_KEY",
+                "base_url": "https://api.openai.com/v1"
+            },
+            "anthropic": {
+                "api_key": "YOUR_ANTHROPIC_API_KEY"
+            },
+            "openrouter": {
+                "api_key": "YOUR_OPENROUTER_API_KEY",
+                "base_url": "https://openrouter.ai/api/v1"
+            },
+            "gemini": {
+                "api_key": "YOUR_GEMINI_API_KEY"
+            }
+        }
+    },
+    "channels": {
+        "telegram": [
+            {
+                "account_id": "main",
+                "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+                "allow_from": [
+                    "@your_username"
+                ],
+                "group_policy": "allowlist"
+            }
+        ]
+    },
+    "http_request": {
+        "enabled": true,
+        "search_provider": "duckduckgo",
+        "allowed_domains": []
+    },
+    "composio": {
+        "enabled": false,
+        "api_key": "YOUR_COMPOSIO_API_KEY",
+        "entity_id": "default"
+    },
+    "browser": {
+        "enabled": true
+    },
+    "memory": {
+        "backend": "sqlite",
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B"
+    }
+}

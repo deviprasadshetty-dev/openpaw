@@ -1,11 +1,11 @@
 use crate::channels::root::{Channel, ParsedMessage};
 use anyhow::Result;
+use crossbeam_channel::{Receiver, unbounded};
 use std::any::Any;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use crossbeam_channel::{unbounded, Receiver};
-use tracing::{error};
+use tracing::error;
 
 pub struct CliChannel {
     rx: Arc<Mutex<Receiver<String>>>,
@@ -15,18 +15,18 @@ pub struct CliChannel {
 impl CliChannel {
     pub fn new(account_id: String) -> Self {
         let (tx, rx) = unbounded();
-        
+
         // Spawn a thread to read stdin
         thread::spawn(move || {
             let stdin = io::stdin();
             let mut buffer = String::new();
-            
+
             loop {
                 buffer.clear();
                 // print prompt
                 print!("> ");
                 let _ = io::stdout().flush();
-                
+
                 match stdin.read_line(&mut buffer) {
                     Ok(0) => break, // EOF
                     Ok(_) => {
@@ -70,10 +70,16 @@ impl Channel for CliChannel {
         Ok(())
     }
 
+    fn send_stream_chunk(&self, _chat_id: &str, text: &str) -> Result<()> {
+        print!("{}", text);
+        let _ = io::stdout().flush();
+        Ok(())
+    }
+
     fn poll_updates(&self) -> Result<Vec<ParsedMessage>> {
         let mut messages = Vec::new();
         let rx = self.rx.lock().unwrap();
-        
+
         // Drain all available input
         while let Ok(content) = rx.try_recv() {
             messages.push(ParsedMessage::new(
@@ -83,7 +89,7 @@ impl Channel for CliChannel {
                 &self.account_id, // session_key
             ));
         }
-        
+
         Ok(messages)
     }
 

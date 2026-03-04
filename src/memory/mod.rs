@@ -1,3 +1,4 @@
+pub mod embeddings;
 pub mod engines;
 pub mod postgres;
 pub mod sqlite;
@@ -54,17 +55,48 @@ pub struct MemoryEntry {
     pub timestamp: String,
     pub session_id: Option<String>,
     pub score: Option<f64>,
+    pub importance: f64,
+    pub embedding: Option<Vec<f32>>,
 }
 
 pub trait MemoryStore: Send + Sync {
     fn name(&self) -> &str;
-    fn store(&self, key: &str, content: &str, category: MemoryCategory, session_id: Option<&str>) -> Result<()>;
-    fn recall(&self, query: &str, limit: usize, session_id: Option<&str>) -> Result<Vec<MemoryEntry>>;
+    fn store(
+        &self,
+        key: &str,
+        content: &str,
+        category: MemoryCategory,
+        session_id: Option<&str>,
+        importance: Option<f64>,
+    ) -> Result<()>;
+    fn recall(
+        &self,
+        query: &str,
+        limit: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>>;
     fn get(&self, key: &str) -> Result<Option<MemoryEntry>>;
-    fn list(&self, category: Option<MemoryCategory>, session_id: Option<&str>) -> Result<Vec<MemoryEntry>>;
+    fn list(
+        &self,
+        category: Option<MemoryCategory>,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>>;
     fn forget(&self, key: &str) -> Result<bool>;
     fn count(&self) -> Result<usize>;
     fn health_check(&self) -> bool;
+
+    // Optional methods for advanced memory functionality
+    fn semantic_recall(&self, _embedding: &[f32], _limit: usize) -> Result<Vec<MemoryEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn semantic_recall_by_text(&self, _query: &str, _limit: usize) -> Result<Vec<MemoryEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn decay_importance(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

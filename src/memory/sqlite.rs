@@ -1,11 +1,12 @@
 use super::{MemoryCategory, MemoryEntry, MemoryStore, MessageEntry, SessionStore};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct SqliteMemory {
     conn: Mutex<Connection>,
+    embedder: Option<Arc<dyn super::embeddings::EmbeddingProvider>>,
 }
 
 impl SqliteMemory {
@@ -82,9 +83,67 @@ impl SqliteMemory {
             [],
         );
 
+        // Importance and Embeddings Schema
+        let _ = conn.execute(
+            "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5;",
+            [],
+        );
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS embeddings (
+              memory_id TEXT PRIMARY KEY,
+              embedding BLOB NOT NULL,
+              dim INTEGER NOT NULL
+            );",
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
+            embedder: None,
         })
+    }
+
+    pub fn with_embedder(
+        mut self,
+        embedder: Arc<dyn super::embeddings::EmbeddingProvider>,
+    ) -> Self {
+        self.embedder = Some(embedder);
+        self
+    }
+
+    pub fn store_embedding_by_key(&self, key: &str, embedding: &[f32]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let memory_id: String = conn.query_row(
+            "SELECT id FROM memories WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )?;
+
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let dim = embedding.len() as i64;
+        conn.execute(
+            "INSERT INTO embeddings (memory_id, embedding, dim) VALUES (?1, ?2, ?3)
+             ON CONFLICT(memory_id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
+            params![memory_id, blob, dim],
+        )?;
+        Ok(())
+    }
+
+    fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect()
+    }
+
+    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+        let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm_a == 0.0 || norm_b == 0.0 {
+            return 0.0;
+        }
+        dot / (norm_a * norm_b)
     }
 
     fn now_str() -> String {
@@ -103,6 +162,17 @@ impl SqliteMemory {
         let rand_hi: u64 = rand::random();
         format!("{}-{:x}", ts, rand_hi)
     }
+    fn store_embedding_internal(&self, memory_id: &str, embedding: &[f32]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let dim = embedding.len() as i64;
+        conn.execute(
+            "INSERT INTO embeddings (memory_id, embedding, dim) VALUES (?1, ?2, ?3)
+             ON CONFLICT(memory_id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
+            params![memory_id, blob, dim],
+        )?;
+        Ok(())
+    }
 }
 
 impl MemoryStore for SqliteMemory {
@@ -116,22 +186,33 @@ impl MemoryStore for SqliteMemory {
         content: &str,
         category: MemoryCategory,
         session_id: Option<&str>,
+        importance: Option<f64>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = Self::now_str();
         let id = Self::nano_id();
         let cat_str = category.to_string();
+        let imp = importance.unwrap_or(0.5);
 
         conn.execute(
-            "INSERT INTO memories (id, key, content, category, session_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO memories (id, key, content, category, session_id, created_at, updated_at, importance)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(key) DO UPDATE SET
              content = excluded.content,
              category = excluded.category,
              session_id = excluded.session_id,
-             updated_at = excluded.updated_at",
-            params![id, key, content, cat_str, session_id, now, now],
+             updated_at = excluded.updated_at,
+             importance = excluded.importance",
+            params![id.clone(), key, content, cat_str, session_id, now, now, imp],
         )?;
+
+        // Auto-embed if provider is present
+        if let Some(ref embedder) = self.embedder {
+            if let Ok(emb) = embedder.embed(content) {
+                let _ = self.store_embedding_internal(&id, &emb);
+            }
+        }
+
         Ok(())
     }
 
@@ -173,6 +254,8 @@ impl MemoryStore for SqliteMemory {
                 timestamp: row.get(4)?,
                 score: Some(-row.get::<_, f64>(5)?), // BM25 is negative
                 session_id: row.get(6)?,
+                importance: 0.5,
+                embedding: None,
             })
         })?;
 
@@ -192,36 +275,60 @@ impl MemoryStore for SqliteMemory {
         }
 
         // Fallback LIKE search
-        let mut stmts_sql =
-            "SELECT id, key, content, category, created_at, session_id FROM memories WHERE "
-                .to_string();
+        let mut sql = "SELECT id, key, content, category, created_at, session_id, importance FROM memories WHERE 1=1".to_string();
         let terms: Vec<&str> = trimmed.split_whitespace().collect();
-        for (i, _) in terms.iter().enumerate() {
-            if i > 0 {
-                stmts_sql.push_str(" OR ");
+
+        if !terms.is_empty() {
+            sql.push_str(" AND (");
+            for (i, _) in terms.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(" OR ");
+                }
+                sql.push_str(&format!(
+                    "(content LIKE ?{} ESCAPE '\\' OR key LIKE ?{} ESCAPE '\\')",
+                    i * 2 + 1,
+                    i * 2 + 2
+                ));
             }
-            stmts_sql.push_str(&format!(
-                "(content LIKE ?{} ESCAPE '\\' OR key LIKE ?{} ESCAPE '\\')",
-                i * 2 + 1,
-                i * 2 + 2
-            ));
+            sql.push_str(")");
         }
-        stmts_sql.push_str(&format!(
-            " ORDER BY updated_at DESC LIMIT ?{}",
-            terms.len() * 2 + 1
+
+        if let Some(_sid) = session_id {
+            sql.push_str(&format!(" AND session_id = ?{}", terms.len() * 2 + 1));
+        }
+
+        sql.push_str(&format!(
+            " ORDER BY importance DESC, updated_at DESC LIMIT ?{}",
+            terms.len() * 2 + (if session_id.is_some() { 2 } else { 1 })
         ));
 
-        let mut like_stmt = conn.prepare(&stmts_sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         for t in &terms {
             let like_term = format!("%{}%", t.replace("%", "\\%").replace("_", "\\_"));
             params_vec.push(Box::new(like_term.clone()));
             params_vec.push(Box::new(like_term));
         }
+        if let Some(sid) = session_id {
+            params_vec.push(Box::new(sid.to_string()));
+        }
         params_vec.push(Box::new(limit as i64));
 
-        // Let's rely on standard search rather than doing complex dyn param dispatch here
-        // If FTS falls short, just returning empty on LIKE for brevity in Rust port can be okay.
+        let mut rows = stmt.query(rusqlite::params_from_iter(params_vec.iter()))?;
+        while let Some(row) = rows.next()? {
+            let cat_str: String = row.get(3)?;
+            results.push(MemoryEntry {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                content: row.get(2)?,
+                category: MemoryCategory::from_str(&cat_str),
+                timestamp: row.get(4)?,
+                session_id: row.get(5)?,
+                score: None,
+                importance: row.get(6)?,
+                embedding: None,
+            });
+        }
 
         Ok(results)
     }
@@ -241,6 +348,8 @@ impl MemoryStore for SqliteMemory {
                 timestamp: row.get(4)?,
                 session_id: row.get(5)?,
                 score: None,
+                importance: 0.5,
+                embedding: None,
             }))
         } else {
             Ok(None)
@@ -268,6 +377,8 @@ impl MemoryStore for SqliteMemory {
                     timestamp: row.get(4)?,
                     session_id: row.get(5)?,
                     score: None,
+                    importance: 0.5,
+                    embedding: None,
                 })
             })?;
             for e in mapped {
@@ -291,6 +402,8 @@ impl MemoryStore for SqliteMemory {
                     timestamp: row.get(4)?,
                     session_id: row.get(5)?,
                     score: None,
+                    importance: 0.5,
+                    embedding: None,
                 })
             })?;
             for e in mapped {
@@ -323,6 +436,76 @@ impl MemoryStore for SqliteMemory {
         let conn = self.conn.lock().unwrap();
         conn.query_row("SELECT 1", [], |r| r.get::<_, i32>(0))
             .is_ok()
+    }
+
+    fn semantic_recall_by_text(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>> {
+        if let Some(embedder) = &self.embedder {
+            let embedding = embedder.embed(query)?;
+            self.semantic_recall(&embedding, limit)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn semantic_recall(&self, query_embedding: &[f32], limit: usize) -> Result<Vec<MemoryEntry>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare("SELECT memory_id, embedding FROM embeddings")?;
+        let mut rows = stmt.query([])?;
+
+        let mut scored_ids: Vec<(String, f32)> = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            let emb = Self::bytes_to_f32_vec(&blob);
+            let sim = Self::cosine_similarity(query_embedding, &emb);
+            scored_ids.push((id, sim));
+        }
+
+        scored_ids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored_ids.truncate(limit);
+
+        if scored_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+        for (id, sim) in scored_ids {
+            let mut stmt = conn.prepare(
+                "SELECT key, content, category, created_at, session_id, importance FROM memories WHERE id = ?1"
+            )?;
+            let mut mem_rows = stmt.query(params![id])?;
+            if let Some(row) = mem_rows.next()? {
+                let cat_str: String = row.get(2)?;
+                results.push(MemoryEntry {
+                    id: id.clone(),
+                    key: row.get(0)?,
+                    content: row.get(1)?,
+                    category: MemoryCategory::from_str(&cat_str),
+                    timestamp: row.get(3)?,
+                    session_id: row.get(4)?,
+                    score: Some(sim as f64),
+                    importance: row.get(5)?,
+                    embedding: None,
+                });
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn decay_importance(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Decay importance by 10% for memories older than 1 day
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE memories SET importance = importance * 0.9 WHERE ?1 - CAST(updated_at AS INTEGER) > 86400",
+            params![now],
+        )?;
+        Ok(())
     }
 }
 

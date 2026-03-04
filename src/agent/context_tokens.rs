@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 pub const DEFAULT_CONTEXT_TOKENS: u64 = 8192; // Assuming a reasonable default
 
 struct ContextWindowEntry {
@@ -8,43 +6,177 @@ struct ContextWindowEntry {
 }
 
 const MODEL_WINDOWS: &[ContextWindowEntry] = &[
-    ContextWindowEntry { key: "claude-opus-4-6", tokens: 200_000 },
-    ContextWindowEntry { key: "claude-opus-4.6", tokens: 200_000 },
-    ContextWindowEntry { key: "claude-sonnet-4-6", tokens: 200_000 },
-    ContextWindowEntry { key: "claude-sonnet-4.6", tokens: 200_000 },
-    ContextWindowEntry { key: "claude-haiku-4-5", tokens: 200_000 },
-    ContextWindowEntry { key: "gpt-5.2", tokens: 128_000 },
-    ContextWindowEntry { key: "gpt-5.2-codex", tokens: 128_000 },
-    ContextWindowEntry { key: "gpt-4.5-preview", tokens: 128_000 },
-    ContextWindowEntry { key: "gpt-4.1", tokens: 128_000 },
-    ContextWindowEntry { key: "gpt-4.1-mini", tokens: 128_000 },
-    ContextWindowEntry { key: "o3-mini", tokens: 128_000 },
-    ContextWindowEntry { key: "gemini-2.5-pro", tokens: 200_000 },
-    ContextWindowEntry { key: "gemini-2.5-flash", tokens: 200_000 },
-    ContextWindowEntry { key: "gemini-2.0-flash", tokens: 200_000 },
-    ContextWindowEntry { key: "deepseek-v3.2", tokens: 128_000 },
-    ContextWindowEntry { key: "deepseek-chat", tokens: 128_000 },
-    ContextWindowEntry { key: "deepseek-reasoner", tokens: 128_000 },
-    ContextWindowEntry { key: "llama-4-70b-instruct", tokens: 128_000 },
-    ContextWindowEntry { key: "llama-3.3-70b-versatile", tokens: 128_000 },
-    ContextWindowEntry { key: "llama-3.1-8b-instant", tokens: 128_000 },
-    ContextWindowEntry { key: "mixtral-8x7b-32768", tokens: 32_768 },
+    ContextWindowEntry {
+        key: "gemini-3-flash-preview",
+        tokens: 1_048_576,
+    },
+    ContextWindowEntry {
+        key: "gemini-1.5-pro",
+        tokens: 2_097_152,
+    },
+    ContextWindowEntry {
+        key: "gemini-1.5-flash",
+        tokens: 1_048_576,
+    },
+    ContextWindowEntry {
+        key: "gpt-4o",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "gpt-4o-mini",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "claude-3-5-sonnet",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-3.5-sonnet",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-3-5-haiku",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-opus-4-6",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-opus-4.6",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-sonnet-4-6",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-sonnet-4.6",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-haiku-4-5",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "gpt-5.2",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "gpt-5.2-codex",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "gpt-4.5-preview",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "gpt-4.1",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "gpt-4.1-mini",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "o3-mini",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "gemini-2.5-pro",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "gemini-2.5-flash",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "gemini-2.0-flash",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "deepseek-v3.2",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "deepseek-chat",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "deepseek-reasoner",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "llama-4-70b-instruct",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "llama-3.3-70b-versatile",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "llama-3.1-8b-instant",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "mixtral-8x7b-32768",
+        tokens: 32_768,
+    },
 ];
 
 const PROVIDER_WINDOWS: &[ContextWindowEntry] = &[
-    ContextWindowEntry { key: "openrouter", tokens: 200_000 },
-    ContextWindowEntry { key: "minimax", tokens: 200_000 },
-    ContextWindowEntry { key: "openai-codex", tokens: 200_000 },
-    ContextWindowEntry { key: "moonshot", tokens: 256_000 },
-    ContextWindowEntry { key: "kimi", tokens: 262_144 },
-    ContextWindowEntry { key: "kimi-coding", tokens: 262_144 },
-    ContextWindowEntry { key: "xiaomi", tokens: 262_144 },
-    ContextWindowEntry { key: "ollama", tokens: 128_000 },
-    ContextWindowEntry { key: "qwen", tokens: 128_000 },
-    ContextWindowEntry { key: "vllm", tokens: 128_000 },
-    ContextWindowEntry { key: "github-copilot", tokens: 128_000 },
-    ContextWindowEntry { key: "qianfan", tokens: 98_304 },
-    ContextWindowEntry { key: "nvidia", tokens: 131_072 },
+    ContextWindowEntry {
+        key: "openrouter",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "minimax",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "openai-codex",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "moonshot",
+        tokens: 256_000,
+    },
+    ContextWindowEntry {
+        key: "kimi",
+        tokens: 262_144,
+    },
+    ContextWindowEntry {
+        key: "kimi-coding",
+        tokens: 262_144,
+    },
+    ContextWindowEntry {
+        key: "xiaomi",
+        tokens: 262_144,
+    },
+    ContextWindowEntry {
+        key: "ollama",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "qwen",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "vllm",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "github-copilot",
+        tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "qianfan",
+        tokens: 98_304,
+    },
+    ContextWindowEntry {
+        key: "nvidia",
+        tokens: 131_072,
+    },
 ];
 
 fn starts_with_ignore_case(haystack: &str, prefix: &str) -> bool {

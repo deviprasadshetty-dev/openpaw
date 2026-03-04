@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod browser_open;
+pub mod cache;
 pub mod composio;
 pub mod cron_add;
 pub mod cron_list;

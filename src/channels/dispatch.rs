@@ -1,8 +1,8 @@
 use crate::bus::{Bus, OutboundMessage};
 use crate::channels::root::Channel;
 use crate::streaming::OutboundStage;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -115,11 +115,7 @@ impl ChannelRegistry {
     }
 }
 
-pub fn build_system_prompt(
-    base_prompt: &str,
-    channel_name: &str,
-    identity_name: &str,
-) -> String {
+pub fn build_system_prompt(base_prompt: &str, channel_name: &str, identity_name: &str) -> String {
     format!(
         "{}\n\nYou are {}. You are responding on the {} channel.",
         base_prompt, identity_name, channel_name
@@ -169,11 +165,7 @@ pub fn run_outbound_dispatcher(
     })
 }
 
-fn dispatch_message(
-    registry: &ChannelRegistry,
-    msg: &OutboundMessage,
-    stats: &DispatchStats,
-) {
+fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &DispatchStats) {
     // Find the appropriate channel
     let channel = if let Some(ref account_id) = msg.account_id {
         registry.find_by_name_account(&msg.channel, account_id)
@@ -188,15 +180,18 @@ fn dispatch_message(
                 "No channel found for {} (account: {:?})",
                 msg.channel, msg.account_id
             );
-            stats
-                .channel_not_found
-                .fetch_add(1, Ordering::Relaxed);
+            stats.channel_not_found.fetch_add(1, Ordering::Relaxed);
             return;
         }
     };
 
     // Send the message
-    if let Err(e) = channel.send_message(&msg.chat_id, &msg.content) {
+    let send_result = match msg.stage {
+        OutboundStage::Chunk => channel.send_stream_chunk(&msg.chat_id, &msg.content),
+        OutboundStage::Final => channel.send_message(&msg.chat_id, &msg.content),
+    };
+
+    if let Err(e) = send_result {
         error!("Failed to send message to {}: {}", msg.channel, e);
         stats.errors.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -208,7 +203,10 @@ fn dispatch_message(
                 info!("Dispatched chunk to {} ({})", msg.channel, msg.chat_id);
             }
             OutboundStage::Final => {
-                info!("Dispatched final message to {} ({})", msg.channel, msg.chat_id);
+                info!(
+                    "Dispatched final message to {} ({})",
+                    msg.channel, msg.chat_id
+                );
             }
         }
     }

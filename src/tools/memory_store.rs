@@ -26,18 +26,28 @@ impl Tool for MemoryStoreTool {
             Some(k) => k,
             None => return Ok(ToolResult::fail("Missing 'key' parameter")),
         };
-        if key.is_empty() { return Ok(ToolResult::fail("'key' must not be empty")); }
+        if key.is_empty() {
+            return Ok(ToolResult::fail("'key' must not be empty"));
+        }
 
         let content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing 'content' parameter")),
         };
-        if content.is_empty() { return Ok(ToolResult::fail("'content' must not be empty")); }
+        if content.is_empty() {
+            return Ok(ToolResult::fail("'content' must not be empty"));
+        }
 
-        let category_str = args.get("category").and_then(|v| v.as_str()).unwrap_or("core");
+        let category_str = args
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("core");
         let category = MemoryCategory::from_str(category_str);
 
-        match self.memory.store(key, content, category.clone(), None) {
+        match self
+            .memory
+            .store(key, content, category.clone(), None, None)
+        {
             Ok(_) => {
                 let msg = format!("Stored memory: {} ({})", key, category.to_string());
                 Ok(ToolResult::ok(msg))

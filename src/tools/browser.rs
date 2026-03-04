@@ -74,6 +74,23 @@ pub fn find_browser() -> Option<PathBuf> {
     None
 }
 
+/// Canonicalize a path and strip the Windows extended-length prefix `\\?\`.
+/// Falls back to the original path on error.
+fn strip_unc_prefix(path: &Path) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(canon) => {
+            let s = canon.to_string_lossy();
+            // Windows canonicalize produces `\\?\C:\...` — strip the prefix
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                stripped.to_string()
+            } else {
+                s.into_owned()
+            }
+        }
+        Err(_) => path.to_string_lossy().to_string(),
+    }
+}
+
 /// Returns a friendly browser name for display/logging.
 fn browser_display_name(path: &Path) -> &'static str {
     let s = path.to_string_lossy().to_lowercase();
@@ -158,13 +175,14 @@ impl BrowserTool {
 
         let browser_name = browser_display_name(&browser_path);
 
-        // Isolated profile directory — never touches the user's real browser profile
-        let profile_dir = format!("{}/browser-profile", self.workspace_dir);
-        std::fs::create_dir_all(&profile_dir)?;
+        let profile_path = std::path::Path::new(&self.workspace_dir).join("browser-profile");
+        std::fs::create_dir_all(&profile_path)?;
+        let profile_dir = strip_unc_prefix(&profile_path);
 
         // Ensure screenshots directory exists
-        let screenshots_dir = format!("{}/screenshots", self.workspace_dir);
-        std::fs::create_dir_all(&screenshots_dir)?;
+        let screenshots_path = std::path::Path::new(&self.workspace_dir).join("screenshots");
+        std::fs::create_dir_all(&screenshots_path)?;
+        let screenshots_dir = strip_unc_prefix(&screenshots_path);
 
         tracing::info!(
             "Launching {} | profile: {} | screenshots: {}",

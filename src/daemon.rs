@@ -159,7 +159,36 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
             let bus_clone = bus.clone();
 
             rt.block_on(async move {
-                match sm.process_message(&session_key, content).await {
+                // Pass a callback to the agent that streams deltas back to the channel
+                let cb_channel = channel.clone();
+                let cb_chat_id = chat_id.clone();
+                let cb_bus = bus_clone.clone();
+
+                let acc_text = Arc::new(std::sync::Mutex::new(String::new()));
+                let last_emit = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+
+                let stream_cb: crate::providers::StreamCallback = Box::new(move |chunk| {
+                    use crate::providers::StreamChunk;
+                    if let StreamChunk::Delta(text) = chunk {
+                        let mut acc = acc_text.lock().unwrap();
+                        acc.push_str(&text);
+
+                        let now = std::time::Instant::now();
+                        let mut last = last_emit.lock().unwrap();
+
+                        // Limit to 1 chunk per second
+                        if now.duration_since(*last).as_millis() > 1000 {
+                            *last = now;
+                            let outbound = bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &acc);
+                            let _ = cb_bus.publish_outbound(outbound);
+                        }
+                    }
+                });
+
+                match sm
+                    .process_message_stream(&session_key, content, stream_cb)
+                    .await
+                {
                     Ok(response_text) => {
                         let outbound = bus::make_outbound(&channel, &chat_id, &response_text);
                         if let Err(e) = bus_clone.publish_outbound(outbound) {
@@ -236,6 +265,16 @@ pub fn init_channels(
         }
     }
 
+    // Initialize CLI channel if enabled
+    if config.channels.cli {
+        info!("Initializing CLI channel");
+        let channel = Arc::new(crate::channels::cli::CliChannel::new(
+            "cli_main".to_string(),
+        ));
+        registry.register(channel);
+        // Note: CliChannel spawns its own thread for stdin, no polling thread needed here.
+    }
+
     info!(
         "Channel initialization complete: {} channels, {} polling threads",
         registry.count(),
@@ -299,8 +338,48 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                 // Default: sqlite
                 let db_path = format!("{}/memory.db", config.workspace_dir);
                 match crate::memory::sqlite::SqliteMemory::new(&db_path) {
-                    Ok(m) => {
+                    Ok(mut m) => {
                         info!("Memory backend: sqlite ({})", db_path);
+
+                        // Attach embedder if API key is available
+                        let provider_name = &config.default_provider;
+                        if let Some(p_cfg) = config
+                            .models
+                            .as_ref()
+                            .and_then(|m| m.providers.get(provider_name))
+                        {
+                            if !p_cfg.api_key.is_empty() {
+                                if provider_name == "openai" {
+                                    m = m.with_embedder(Arc::new(
+                                        crate::memory::embeddings::OpenAiEmbedder::new(
+                                            &p_cfg.api_key,
+                                        ),
+                                    ));
+                                    info!("Attached OpenAI embedder to memory");
+                                } else if provider_name == "gemini" {
+                                    m = m.with_embedder(Arc::new(
+                                        crate::memory::embeddings::GeminiEmbedder::new(
+                                            &p_cfg.api_key,
+                                        ),
+                                    ));
+                                    info!("Attached Gemini embedder to memory");
+                                } else if provider_name == "huggingface" || provider_name == "hf" {
+                                    let model = config
+                                        .memory
+                                        .embedding_model
+                                        .clone()
+                                        .unwrap_or("Qwen/Qwen3-Embedding-0.6B".to_string());
+                                    m = m.with_embedder(Arc::new(
+                                        crate::memory::embeddings::HuggingFaceEmbedder::new(
+                                            &p_cfg.api_key,
+                                            &model,
+                                        ),
+                                    ));
+                                    info!("Attached Hugging Face embedder ({}) to memory", model);
+                                }
+                            }
+                        }
+
                         Some(Arc::new(crate::agent::memory_loader::MemoryAdapter {
                             inner: Arc::new(m),
                         }))

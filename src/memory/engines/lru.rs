@@ -61,6 +61,7 @@ impl MemoryStore for LruMemory {
         content: &str,
         category: MemoryCategory,
         session_id: Option<&str>,
+        _importance: Option<f64>,
     ) -> Result<()> {
         let mut g = self.inner.lock().unwrap();
 
@@ -169,5 +170,7 @@ fn to_entry(e: &Entry) -> MemoryEntry {
         timestamp: e.timestamp.clone(),
         session_id: e.session_id.clone(),
         score: None,
+        importance: 0.5,
+        embedding: None,
     }
 }

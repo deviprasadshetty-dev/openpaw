@@ -1,10 +1,34 @@
+# Build
 /target
 **/*.rs.bk
 Cargo.lock
+
+# Config & secrets
 config.json
 .env
+*.env.*
+
+# Databases & memory
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Runtime state
+state/
+tmp/
+*.log
+
+# Browser profiles (auto-created by browser tool)
+browser_profile_*/
+chrome_profile_*/
+
+# OS artifacts
 .DS_Store
 Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~

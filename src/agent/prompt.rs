@@ -152,6 +152,12 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         out.push_str(caps);
     }
 
+    // Reasoning and Execution section
+    out.push_str("## Reasoning and Execution\n\n");
+    out.push_str("- Think step-by-step before acting. Formulate a clear plan, break it down into steps, and reflect on the results of each step.\n");
+    out.push_str("- Use `<thought>` tags or general text to explain your reasoning before executing any tools.\n");
+    out.push_str("- If a task is complex, outline an explicit multi-step plan first, then execute the steps sequentially, reviewing the outcomes along the way.\n\n");
+
     // Safety section
     out.push_str("## Safety\n\n");
     out.push_str("- Do not exfiltrate private data.\n");

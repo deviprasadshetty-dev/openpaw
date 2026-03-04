@@ -16,6 +16,14 @@ pub trait Memory: Send + Sync {
         limit: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>>;
+    fn semantic_recall(
+        &self,
+        query: &str,
+        limit: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>> {
+        Ok(vec![])
+    }
 }
 
 pub struct NoopMemory;
@@ -47,6 +55,7 @@ impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAda
             content,
             crate::memory::MemoryCategory::Core,
             session_id,
+            None,
         )
     }
 
@@ -57,6 +66,23 @@ impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAda
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
         let entries = self.inner.recall(query, limit, session_id)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| MemoryEntry {
+                key: e.key,
+                content: e.content,
+                session_id: e.session_id,
+            })
+            .collect())
+    }
+
+    fn semantic_recall(
+        &self,
+        query: &str,
+        limit: usize,
+        _session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>> {
+        let entries = self.inner.semantic_recall_by_text(query, limit)?;
         Ok(entries
             .into_iter()
             .map(|e| MemoryEntry {

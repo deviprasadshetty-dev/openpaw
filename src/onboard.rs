@@ -113,7 +113,21 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     let provider_idx = prompt_number("\n  Choice", 1, providers.len(), 1) - 1;
     let provider = &providers[provider_idx];
 
-    let api_key = prompt_secret(&format!("\n  {} API key", capitalize(&provider.name)))?;
+    let api_key = if provider.name == "gemini" {
+        println!("\n  How would you like to authenticate with Gemini?");
+        println!("    1. API Key      (Standard)");
+        println!("    2. Gemini CLI   (Reuse existing ~/.gemini OAuth login)");
+
+        let auth_choice = prompt_number("  Choice", 1, 2, 1);
+        if auth_choice == 2 {
+            println!("  {} Using Gemini CLI OAuth", tick());
+            String::new() // Provider will auto-detect from ~/.gemini
+        } else {
+            prompt_secret("\n  Gemini API key")?
+        }
+    } else {
+        prompt_secret(&format!("\n  {} API key", capitalize(&provider.name)))?
+    };
 
     println!(
         "  {} Default model: {}",
@@ -157,6 +171,42 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         _ => "sqlite",
     };
     println!("  {} Memory backend: {}", tick(), memory_backend);
+
+    let mut embed_provider = None;
+    let mut embed_key = None;
+    let mut embed_model = None;
+
+    if memory_backend == "sqlite" {
+        print!("\n  Enable semantic search (vector embeddings)? (y/N): ");
+        io::stdout().flush()?;
+        let mut embed_input = String::new();
+        io::stdin().read_line(&mut embed_input)?;
+        if embed_input.trim().to_lowercase() == "y" {
+            println!("\n    Select embedding provider:");
+            println!("      1. huggingface (free, recommended: Qwen)");
+            println!("      2. openai      (requires key, 0.02c / 1m tokens)");
+            println!("      3. gemini      (requires key, free tier available)");
+
+            let ep_choice = prompt_number("    Choice", 1, 3, 1);
+            let (ep_name, ep_default_model) = match ep_choice {
+                1 => ("huggingface", "Qwen/Qwen3-Embedding-0.6B"),
+                2 => ("openai", "text-embedding-3-small"),
+                3 => ("gemini", "models/text-embedding-004"),
+                _ => ("huggingface", "Qwen/Qwen3-Embedding-0.6B"),
+            };
+
+            let key = if ep_name == provider.name {
+                api_key.clone()
+            } else {
+                prompt_secret(&format!("    {} API key", capitalize(ep_name)))?
+            };
+
+            embed_provider = Some(ep_name.to_string());
+            embed_key = Some(key);
+            embed_model = Some(ep_default_model.to_string());
+            println!("    {} Embeddings enabled via {}", tick(), ep_name);
+        }
+    }
     println!();
 
     // ═══════════════════════════════════════════════════════════
@@ -248,6 +298,9 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         telegram_config.as_ref(),
         memory_backend,
         &groq_key,
+        embed_provider.as_deref(),
+        embed_key.as_deref(),
+        embed_model.as_deref(),
     );
     fs::write(dir.join("config.json"), config)?;
 
@@ -312,11 +365,30 @@ fn generate_config(
     telegram: Option<&(String, String)>,
     memory_backend: &str,
     groq_key: &str,
+    embed_provider: Option<&str>,
+    embed_key: Option<&str>,
+    embed_model: Option<&str>,
 ) -> String {
     let base_url_field = match &provider.base_url {
         Some(url) => format!(",\n        \"base_url\": \"{}\"", url),
         None => String::new(),
     };
+
+    let mut providers_json = format!(
+        r#"      "{}": {{
+        "api_key": "{}"{}
+      }}"#,
+        provider.name, api_key, base_url_field
+    );
+
+    if let (Some(ep), Some(ek)) = (embed_provider, embed_key) {
+        if ep != provider.name {
+            providers_json.push_str(&format!(
+                ",\n      \"{}\": {{\n        \"api_key\": \"{}\"\n      }}",
+                ep, ek
+            ));
+        }
+    }
 
     let telegram_section = match telegram {
         Some((token, username)) => format!(
@@ -353,16 +425,14 @@ fn generate_config(
   "default_model": "{model}",
   "models": {{
     "providers": {{
-      "{provider}": {{
-        "api_key": "{key}"{base_url}
-      }}
+{providers}
     }}
   }},
   "channels": {{
     {telegram}
   }},
   "memory": {{
-    "backend": "{memory}"
+    "backend": "{memory}"{memory_model}
   }},
   "http_request": {{
     "enabled": true,
@@ -371,10 +441,13 @@ fn generate_config(
 }}"#,
         provider = provider.name,
         model = provider.default_model,
-        key = api_key,
-        base_url = base_url_field,
+        providers = providers_json,
         telegram = telegram_section,
         memory = memory_backend,
+        memory_model = match embed_model {
+            Some(m) => format!(",\n    \"embedding_model\": \"{}\"", m),
+            None => String::new(),
+        },
         voice = voice_section,
     )
 }

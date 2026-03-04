@@ -1,12 +1,13 @@
 use crate::channels::root::{Channel, ParsedMessage};
 use crate::config_types::TelegramConfig;
 use crate::interactions::choices::parse_assistant_choices;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
 
 const MAX_MESSAGE_LEN: usize = 4096;
@@ -16,6 +17,7 @@ pub struct TelegramChannel {
     config: TelegramConfig,
     client: Client,
     last_update_id: AtomicI64,
+    active_streams: Mutex<HashMap<String, i64>>,
 }
 
 impl TelegramChannel {
@@ -24,6 +26,7 @@ impl TelegramChannel {
             client: Client::new(),
             config,
             last_update_id: AtomicI64::new(0),
+            active_streams: Mutex::new(HashMap::new()),
         }
     }
 
@@ -379,7 +382,12 @@ impl TelegramChannel {
     }
 
     /// Send a message with smart splitting for long messages
-    fn send_message_with_splitting(&self, chat_id: &str, text: &str, reply_to: Option<i64>) -> Result<()> {
+    fn send_message_with_splitting(
+        &self,
+        chat_id: &str,
+        text: &str,
+        reply_to: Option<i64>,
+    ) -> Result<()> {
         // Send typing indicator
         self.send_typing_indicator(chat_id);
 
@@ -446,7 +454,7 @@ impl TelegramChannel {
         // Handle **bold** -> <b>bold</b>
         let mut result = text.to_string();
         let mut start = 0;
-        
+
         while let Some(pos) = result[start..].find("**") {
             let abs_pos = start + pos;
             // Check if there's a closing **
@@ -462,13 +470,23 @@ impl TelegramChannel {
                 break;
             }
         }
-        
+
         result
     }
 
-    /// Send a single message via the Telegram API
-    fn send_single_message(&self, chat_id: &str, text: &str, reply_to: Option<i64>) -> Result<()> {
-        let url = self.api_url("sendMessage");
+    /// Send or edit a single message via the Telegram API
+    fn send_single_message_internal(
+        &self,
+        chat_id: &str,
+        text: &str,
+        reply_to: Option<i64>,
+        edit_message_id: Option<i64>,
+    ) -> Result<i64> {
+        let url = if edit_message_id.is_some() {
+            self.api_url("editMessageText")
+        } else {
+            self.api_url("sendMessage")
+        };
 
         // Parse nc_choices and convert markdown bold to HTML
         let parsed_choices = parse_assistant_choices(text);
@@ -476,20 +494,24 @@ impl TelegramChannel {
 
         // Build inline keyboard if choices are present
         let reply_markup = if let Some(choices) = parsed_choices.choices {
-            let keyboard_buttons: Vec<Value> = choices.options.iter().map(|opt| {
-                serde_json::json!({
-                    "text": opt.label,
-                    "callback_data": opt.id
+            let keyboard_buttons: Vec<Value> = choices
+                .options
+                .iter()
+                .map(|opt| {
+                    serde_json::json!({
+                        "text": opt.label,
+                        "callback_data": opt.id
+                    })
                 })
-            }).collect();
-            
+                .collect();
+
             // Arrange buttons in a row (up to 3 per row for better display)
             let mut inline_keyboard: Vec<Vec<Value>> = Vec::new();
             let chunk_size = 3;
             for chunk in keyboard_buttons.chunks(chunk_size) {
                 inline_keyboard.push(chunk.to_vec());
             }
-            
+
             Some(serde_json::json!({
                 "inline_keyboard": inline_keyboard
             }))
@@ -502,6 +524,10 @@ impl TelegramChannel {
             "text": html_text,
             "parse_mode": "HTML"
         });
+
+        if let Some(msg_id) = edit_message_id {
+            body["message_id"] = Value::Number(msg_id.into());
+        }
 
         if let Some(reply_id) = reply_to {
             body["reply_to_message_id"] = Value::Number(reply_id.into());
@@ -548,16 +574,40 @@ impl TelegramChannel {
                         plain_response.text()?
                     ));
                 }
-                return Ok(());
+                let parsed: Value = serde_json::from_str(&plain_response.text()?)?;
+                let out_id = parsed
+                    .get("result")
+                    .and_then(|r| r.get("message_id"))
+                    .and_then(|m| m.as_i64())
+                    .unwrap_or(0);
+                return Ok(out_id);
+            }
+            if resp_text.contains("message is not modified") {
+                return Ok(edit_message_id.unwrap_or(0));
             }
             return Err(anyhow!("Telegram API error: {} - {}", status, resp_text));
         }
 
         // Check for error in response body
         if resp_text.contains("\"ok\":false") {
+            if resp_text.contains("message is not modified") {
+                return Ok(edit_message_id.unwrap_or(0));
+            }
             return Err(anyhow!("Telegram API returned error: {}", resp_text));
         }
 
+        let parsed: Value = serde_json::from_str(&resp_text)?;
+        let out_id = parsed
+            .get("result")
+            .and_then(|r| r.get("message_id"))
+            .and_then(|m| m.as_i64())
+            .unwrap_or(0);
+
+        Ok(out_id)
+    }
+
+    fn send_single_message(&self, chat_id: &str, text: &str, reply_to: Option<i64>) -> Result<()> {
+        self.send_single_message_internal(chat_id, text, reply_to, None)?;
         Ok(())
     }
 }
@@ -576,7 +626,53 @@ impl Channel for TelegramChannel {
     }
 
     fn send_message(&self, chat_id: &str, text: &str) -> Result<()> {
-        self.send_message_with_splitting(chat_id, text, None)
+        let edit_id = {
+            let mut streams = self.active_streams.lock().unwrap();
+            streams.remove(chat_id)
+        };
+
+        let text_to_send = if text.is_empty() { "..." } else { text };
+
+        if let Some(msg_id) = edit_id {
+            if text_to_send.len() <= MAX_MESSAGE_LEN {
+                let _ =
+                    self.send_single_message_internal(chat_id, text_to_send, None, Some(msg_id));
+                return Ok(());
+            }
+        }
+
+        self.send_message_with_splitting(chat_id, text_to_send, None)
+    }
+
+    fn send_stream_chunk(&self, chat_id: &str, text: &str) -> Result<()> {
+        let text_to_send = if text.is_empty() { "..." } else { text };
+
+        let safe_text = if text_to_send.len() > MAX_MESSAGE_LEN {
+            let mut boundary = MAX_MESSAGE_LEN - 3;
+            while !text_to_send.is_char_boundary(boundary) && boundary > 0 {
+                boundary -= 1;
+            }
+            format!("{}...", &text_to_send[..boundary])
+        } else {
+            text_to_send.to_string()
+        };
+
+        let msg_id_opt = {
+            let streams = self.active_streams.lock().unwrap();
+            streams.get(chat_id).copied()
+        };
+
+        if let Some(msg_id) = msg_id_opt {
+            let _ = self.send_single_message_internal(chat_id, &safe_text, None, Some(msg_id));
+        } else {
+            if let Ok(new_id) = self.send_single_message_internal(chat_id, &safe_text, None, None) {
+                if new_id != 0 {
+                    let mut streams = self.active_streams.lock().unwrap();
+                    streams.insert(chat_id.to_string(), new_id);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn poll_updates(&self) -> Result<Vec<ParsedMessage>> {

@@ -3,134 +3,91 @@
 <div align="center">
   <img src="image.png" alt="OpenPaw Mascot" width="300">
   <br/>
-  <i>The purr-fectly autonomous, Rust-based AI Agent Runtime.</i>
+  <i><b>The Purr-fectly Powerful Cat AI Assistant</b></i>
+  <br/>
+  <i>Inspired by OpenClaw. Engineered in Rust. Built to land on all fours.</i>
 </div>
 
 ---
 
-OpenPaw is a high-performance, unapologetically modern AI Agent Runtime inspired by OpenClaw. It provides a robust, lightweight foundation for building autonomous agents that can interact with the world through a deeply integrated suite of tools. 
+OpenPaw is a high-performance, unapologetically modular AI Agent Runtime. Inspired by the legendary **OpenClaw**, OpenPaw is a spiritual successor written from the ground up in Rust for those who need a domestic AI that's as fast as a feline and twice as sharp.
 
-Whether it's reading your terminal, surfing the web with full visual context, or remembering what you said three weeks ago, OpenPaw is built to be your most reliable digital companion.
+Whether it's prowling through your file system, sniffing out data in technical datasheets, or pouncing on complex web automation tasks, OpenPaw is designed to be your most loyal—and technically superior—digital companion.
 
-## ✨ Why OpenPaw?
-* **Lightning Fast:** Written in Rust 🦀 for maximum performance, minimal memory footprint, and thread-safe concurrency.
-* **Fully Autonomous:** Give it a task, and watch it figure out the terminal commands, file edits, and web searches needed to complete it.
-* **Contextually Aware:** Automatically manages token limits and trims history so your agent never loses its train of thought.
+## 🚀 Why OpenPaw?
+*   **Rust-Native Instincts 🦀:** Zero-cost abstractions and thread-safe concurrency for "purr-formance" that never lags.
+*   **Claws-Out Automation:** Native support for I2C, SPI, and Serial communication to interact with the physical world.
+*   **OpenClaw Heritage:** Fully compatible with the "Skills" philosophy, offering a familiar but "sharper" experience for OpenClaw enthusiasts.
+*   **Hardware-Aware Senses:** A specialized RAG system that understands the "anatomy" of hardware (datasheets, pin-aliases, and board types).
 
-## 🚀 Features & Superpowers
+## ✨ The Agent's Instincts (Features)
 
-### 🧠 Core Capabilities
-* **Persistent Memory:** Built-in SQLite-based memory with Full-Text Search (FTS5). OpenPaw remembers past conversations, facts, and preferences effortlessly.
-* **Context Management:** Smart, automatic context window tracking.
-* **Multi-Provider Support:** Plug-and-play compatibility with OpenAI, Anthropic, Gemini, and OpenRouter APIs.
+### 🧠 Sophisticated Orchestration
+*   **7-Tier Territory Routing:** Advanced logic that routes messages based on Peer, Guild, Team, Account, or Channel constraints. Your agent always knows its place.
+*   **The Whisker-Thin Bus:** A high-throughput internal message bus (via `crossbeam-channel`) that orchestrates silent, deadly-efficient communication between modules.
+*   **Persistent Memory:** SQLite-backed long-term memory with Full-Text Search (FTS5). OpenPaw remembers your preferences like a cat remembers its favorite sunny spot.
 
-### 🛠️ The Toolbelt
-OpenPaw comes claws-out with a suite of powerful, native tools:
-* **Advanced Web Browsing (`browser_use` integration):** *[NEW]* A fully autonomous, DOM-aware browser engine. It auto-detects Chrome, Edge, or Brave, launches isolated profiles, understands simplified DOM trees, and can click, type, scroll, and capture screenshots just like a human. 
-* **Seamless Shell Access:** `shell` tool for executing terminal commands with built-in timeout and output truncation safety.
-* **Local File System:** `file_read`, `file_write`, `file_edit`, `file_append` (sandboxed to your workspace directory).
-* **Git Integration:** Native tools to manage repositories and understand diffs.
-* **Web Search & Fetch:** Native DuckDuckGo / SearXNG search and HTTP fetching.
-* **Composio Integration:** Connect to 1000+ apps (GitHub, Slack, Discord, etc.) via the `composio` tool.
-* **Hardware & IoT:** I2C, SPI, and hardware memory info tools built right in.
+### 🛠️ Sharpening the Claws (The Toolbelt)
+*   **MCP Host Implementation:** OpenPaw hosts and orchestrates Model Context Protocol (MCP) servers natively, expanding its "territory" to thousands of standardized tools.
+*   **Hardware-Aware RAG:** A specialized sensory system for technical documentation. It parses markdown pin-aliases and provides the exact board-specific context needed for hardware hacks.
+*   **Deep Web Prowling:** Powered by `browser-use`, OpenPaw navigates the web with human-like precision, using isolated profiles to keep your digital "scent" hidden.
+*   **SkillForge Ecosystem:** Automatically scout and integrate community "Skills" from GitHub. Compatible with the NullClaw and OpenClaw ecosystems.
 
-### 📡 Communication Channels
-* **Telegram:** Full bi-directional integration for interacting with your agent on the go.
-* **CLI:** Chat with your agent directly from the terminal.
-* **Gateway Server:** HTTP endpoints for external webhooks and integrations.
+### 🔌 Multimodal Senses
+*   **Hardware Gateway:** Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer.
+*   **Multimodal Ears (Groq/Whisper):** Bi-directional voice support. OpenPaw can "hear" Telegram voice notes and transcribe them instantly using ultra-low latency STT.
+*   **Multi-Channel Prowling:** Robust adapters for Telegram, CLI, and a high-performance HTTP Gateway for custom webhooks.
 
 ---
 
-## 🛠️ Build & Setup
+## 🛠️ Setting up the Litter Box (Build & Setup)
 
 ### Prerequisites
 - Rust (latest stable)
-- SQLite (bundled with `rusqlite`, no external install usually needed)
-- A Chromium-family browser (Chrome, Edge, or Brave) for the web automation tools.
+- SQLite (bundled)
+- A modern browser (Chrome/Edge/Brave) for web automation.
 
 ### Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/your-username/openpaw.git
-   cd openpaw
-   ```
+1.  **Clone & Build:**
+    ```bash
+    git clone https://github.com/your-username/openpaw.git
+    cd openpaw
+    cargo build --release
+    ```
 
-2. Configure your API keys (copy the template and edit it):
-   ```bash
-   cp config.json my_config.json
-   ```
-   *Required keys:*
-   - `openai` API Key (or your preferred provider)
-   - `telegram` Bot Token (if using the Telegram channel)
-
-3. Build the project:
-   ```bash
-   cargo build --release
-   ```
+2.  **Onboarding (The "First Meow"):**
+    OpenPaw features an interactive onboarding process to scaffold your workspace:
+    ```bash
+    cargo run -- release onboard
+    ```
+    *This will help you configure your AI providers (OpenAI, Anthropic, Gemini, etc.), set up your agent's soul (`SOUL.md`), and link your communication channels.*
 
 ---
 
-## 📁 Workspace Setup
+## 🏃 Deployment Territories
 
-OpenPaw uses a **workspace directory** to store your agent's identity, memory, and configuration files securely. The workspace is completely isolated from the source code.
-
-### How It Works
-- **Current Directory = Workspace**: By default, OpenPaw uses the directory you run the command from as the workspace.
-- **Template files** (in `src/workspace_templates/`) are compile-time defaults used to initialize new workspaces.
-- **Runtime files** (`AGENTS.md`, `SOUL.md`, etc.) are read from your workspace directory at runtime to define your agent's unique personality.
-
-### Creating a Workspace (Interactive)
-
-**Step 1: Install OpenPaw**
+### 📡 The Resident Daemon
+Run OpenPaw as a persistent background service to handle incoming calls from Telegram or webhooks:
 ```bash
-cd /path/to/openpaw
-cargo install --path .
-```
-
-**Step 2: Create Your Workspace**
-```bash
-mkdir ~/my-agent-workspace
-cd ~/my-agent-workspace
-
-# Run interactive onboarding
-openpaw onboard
-```
-
-You'll be prompted for:
-1. **AI Provider** (OpenAI, Anthropic, Gemini, OpenRouter)
-2. **API Key**
-3. **Agent Name** (e.g., "Nova", "Whiskers")
-4. **Your Name** & **Timezone**
-5. **Telegram Details** (optional)
-
-*OpenPaw will then scaffold your workspace with configuration and memory files.*
-
----
-
-## 🏃 Usage
-
-### Run the Agent Daemon
-Starts the main agent process. It connects to configured channels (like Telegram) and listens for messages.
-```bash
-cd ~/my-agent-workspace
 openpaw agent
 ```
-*(Optionally specify a config file: `openpaw --config my_config.json agent`)*
 
-### One-Shot Interaction
-Pounce on a single task directly from the command line:
+### ⚡ Quick Pounces (One-Shot)
+Execute complex tasks directly from your terminal:
 ```bash
-openpaw agent --message "Search the web for Rust tutorials, read the top result, and summarize it for me."
-```
-
-### Gateway Server
-Start the HTTP gateway server for external integrations:
-```bash
-openpaw gateway
+openpaw agent --message "Sniff out the CPU temperature and let me know if it's getting too hot."
 ```
 
 ---
 
-## 🛡️ Security & Privacy
-OpenPaw implements strict path security. By default, file system tools are heavily restricted to your defined workspace directory. The new browser tools also utilize strictly isolated temporary browser profiles, meaning OpenPaw never touches or accesses your personal browser cookies, history, or extensions.
+## 🛡️ Security & Territory Isolation
+OpenPaw is fiercely protective of its territory. File system access is strictly sandboxed. Web browsing occurs in ephemeral, isolated Chromium containers. All hardware interactions are subject to strict path-based permission checks.
+
+---
+
+<div align="center">
+  <i>Developed with ❤️ for the Rust, AI, and Cat communities.</i>
+  <br/>
+  <b>May your agents always land on all fours.</b>
+</div>

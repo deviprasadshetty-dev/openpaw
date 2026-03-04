@@ -1,10 +1,12 @@
-use crate::providers::{ChatRequest, ChatResponse, Provider, TokenUsage, ContentPart};
+use crate::providers::{
+    ChatRequest, ChatResponse, ContentPart, Provider, StreamCallback, TokenUsage,
+};
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::time::Duration;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -61,6 +63,7 @@ impl GeminiAuth {
 struct GeminiCliCredentials {
     access_token: String,
     refresh_token: Option<String>,
+    #[serde(alias = "expiry_date")]
     expires_at: Option<i64>,
 }
 
@@ -68,10 +71,16 @@ impl GeminiCliCredentials {
     /// Returns true if the token is expired (or within 5 minutes of expiring).
     /// If expires_at is None, the token is treated as never-expiring.
     fn is_expired(&self) -> bool {
-        let expiry = match self.expires_at {
+        let mut expiry = match self.expires_at {
             Some(e) => e,
             None => return false,
         };
+
+        // Handle millisecond timestamps (Google's format) vs seconds
+        if expiry > 2000000000 {
+            expiry /= 1000;
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -183,14 +192,16 @@ impl GeminiProvider {
                                 .truncate(true)
                                 .mode(0o600)
                                 .open(&path)
-                                .and_then(|mut f| std::io::Write::write_all(&mut f, new_json.as_bytes()));
+                                .and_then(|mut f| {
+                                    std::io::Write::write_all(&mut f, new_json.as_bytes())
+                                });
                         }
                         #[cfg(not(unix))]
                         {
                             let _ = std::fs::write(&path, new_json);
                         }
                     }
-                    
+
                     return Some(creds);
                 }
             }
@@ -216,10 +227,7 @@ impl GeminiProvider {
             ("client_secret", CLIENT_SECRET),
         ];
 
-        let res = client.post(OAUTH_TOKEN_URL)
-            .form(&params)
-            .send()
-            .ok()?;
+        let res = client.post(OAUTH_TOKEN_URL).form(&params).send().ok()?;
 
         if res.status().is_success() {
             res.json::<RefreshResponse>().ok()
@@ -237,10 +245,7 @@ impl GeminiProvider {
     }
 
     /// Build a Gemini generateContent request body.
-    fn build_request_body(
-        &self,
-        request: &ChatRequest,
-    ) -> Result<String> {
+    fn build_request_body(&self, request: &ChatRequest) -> Result<String> {
         let mut contents = Vec::new();
         let mut system_prompt: Option<String> = None;
 
@@ -309,8 +314,8 @@ impl GeminiProvider {
 
     /// Parse text content from a Gemini generateContent response.
     fn parse_response(&self, body: &str) -> Result<String> {
-        let parsed: serde_json::Value = serde_json::from_str(body)
-            .context("Failed to parse Gemini response")?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(body).context("Failed to parse Gemini response")?;
 
         // Check for error first
         if let Some(error) = parsed.get("error") {
@@ -380,7 +385,10 @@ impl GeminiProvider {
         }
 
         // Debug: log the response structure
-        tracing::debug!("Gemini response structure: {}", serde_json::to_string_pretty(&parsed).unwrap_or_default());
+        tracing::debug!(
+            "Gemini response structure: {}",
+            serde_json::to_string_pretty(&parsed).unwrap_or_default()
+        );
         anyhow::bail!("No response content from Gemini")
     }
 }
@@ -423,49 +431,54 @@ impl Provider for GeminiProvider {
 
         // Add Authorization header for OAuth tokens
         if !auth.is_api_key() {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", auth.credential()));
+            req_builder =
+                req_builder.header("Authorization", format!("Bearer {}", auth.credential()));
         }
 
         let res = req_builder.body(body).send()?;
-        
+
         // Handle 401 Unauthorized for OAuth tokens - try one refresh
         if res.status() == reqwest::StatusCode::UNAUTHORIZED && !auth.is_api_key() {
-             // If we're using CLI OAuth, try to refresh explicitly
-             if let Some(creds) = Self::try_load_gemini_cli_token() {
-                 if let Some(new_token) = &creds.refresh_token {
-                      // It seems it was refreshed inside try_load_gemini_cli_token if expired, 
-                      // but here we got 401 even if we thought it was valid.
-                      // Let's force a refresh logic if we could, but try_load logic handles expiry check.
-                      // If we are here, it means the token was considered valid by time but rejected by API.
-                      // Or it means we loaded a stale token initially.
-                      // Let's rely on re-loading the token.
-                      auth = GeminiAuth::OAuthToken(creds.access_token);
-                      
-                      // Retry request
-                      let mut retry_builder = self
+            // If we're using CLI OAuth, try to refresh explicitly
+            if let Some(creds) = Self::try_load_gemini_cli_token() {
+                if let Some(new_token) = &creds.refresh_token {
+                    // It seems it was refreshed inside try_load_gemini_cli_token if expired,
+                    // but here we got 401 even if we thought it was valid.
+                    // Let's force a refresh logic if we could, but try_load logic handles expiry check.
+                    // If we are here, it means the token was considered valid by time but rejected by API.
+                    // Or it means we loaded a stale token initially.
+                    // Let's rely on re-loading the token.
+                    auth = GeminiAuth::OAuthToken(creds.access_token);
+
+                    // Retry request
+                    let mut retry_builder = self
                         .client
                         .post(&url)
                         .timeout(Duration::from_secs(request.timeout_secs))
                         .header("Content-Type", "application/json")
                         .header("Authorization", format!("Bearer {}", auth.credential()));
-                        
-                      let body_retry = self.build_request_body(request)?;
-                      let res_retry = retry_builder.body(body_retry).send()?;
-                      
-                      if !res_retry.status().is_success() {
-                           let status = res_retry.status();
-                           let text = res_retry.text().unwrap_or_default();
-                           anyhow::bail!("Gemini API error after refresh {}: {}", status, text);
-                      }
-                      
-                      let resp_text = res_retry.text()?;
-                      let content = self.parse_response(&resp_text)?;
-                      
-                      // Calculate usage
-                      let prompt_tokens: u32 = request.messages.iter().map(|m| m.content.len() as u32 / 4).sum();
-                      let completion_tokens = (content.len() as u32 + 3) / 4;
-                      
-                      return Ok(ChatResponse {
+
+                    let body_retry = self.build_request_body(request)?;
+                    let res_retry = retry_builder.body(body_retry).send()?;
+
+                    if !res_retry.status().is_success() {
+                        let status = res_retry.status();
+                        let text = res_retry.text().unwrap_or_default();
+                        anyhow::bail!("Gemini API error after refresh {}: {}", status, text);
+                    }
+
+                    let resp_text = res_retry.text()?;
+                    let content = self.parse_response(&resp_text)?;
+
+                    // Calculate usage
+                    let prompt_tokens: u32 = request
+                        .messages
+                        .iter()
+                        .map(|m| m.content.len() as u32 / 4)
+                        .sum();
+                    let completion_tokens = (content.len() as u32 + 3) / 4;
+
+                    return Ok(ChatResponse {
                         content: Some(content),
                         tool_calls: Vec::new(),
                         usage: TokenUsage {
@@ -476,8 +489,8 @@ impl Provider for GeminiProvider {
                         model: request.model.to_string(),
                         reasoning_content: None,
                     });
-                 }
-             }
+                }
+            }
         }
 
         if !res.status().is_success() {
@@ -519,6 +532,134 @@ impl Provider for GeminiProvider {
     fn get_name(&self) -> &str {
         "gemini"
     }
+
+    fn chat_stream(
+        &self,
+        request: &ChatRequest,
+        mut callback: StreamCallback,
+    ) -> Result<ChatResponse> {
+        use crate::providers::StreamChunk;
+        use crate::providers::sse::SseReader;
+
+        let auth = self
+            .auth
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No Gemini credentials configured."))?;
+
+        let model_name = if request.model.starts_with("models/") {
+            request.model.to_string()
+        } else {
+            format!("models/{}", request.model)
+        };
+
+        // Use streamGenerateContent with alt=sse for streaming
+        let url = if auth.is_api_key() {
+            format!(
+                "{}/{}:streamGenerateContent?alt=sse&key={}",
+                BASE_URL,
+                model_name,
+                auth.credential()
+            )
+        } else {
+            format!("{}/{}:streamGenerateContent?alt=sse", BASE_URL, model_name)
+        };
+
+        let body = self.build_request_body(request)?;
+
+        let mut req_builder = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(request.timeout_secs))
+            .header("Content-Type", "application/json");
+
+        if !auth.is_api_key() {
+            req_builder =
+                req_builder.header("Authorization", format!("Bearer {}", auth.credential()));
+        }
+
+        let res = req_builder.body(body).send()?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().unwrap_or_default();
+            anyhow::bail!("Gemini streaming API error {}: {}", status, text);
+        }
+
+        // Parse SSE stream
+        let mut sse_reader = SseReader::new(res);
+        let mut full_text = String::new();
+        let mut function_calls: Vec<String> = Vec::new();
+
+        while let Some(data) = sse_reader.next_data() {
+            if data == "[DONE]" {
+                break;
+            }
+
+            // Each SSE data line is a JSON object with candidates
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(candidates) = parsed.get("candidates") {
+                    if let Some(candidate) = candidates.get(0) {
+                        if let Some(content) = candidate.get("content") {
+                            if let Some(parts) = content.get("parts") {
+                                for part in parts.as_array().unwrap_or(&vec![]) {
+                                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                        full_text.push_str(text);
+                                        callback(StreamChunk::Delta(text.to_string()));
+                                    }
+                                    if let Some(fc) = part.get("functionCall") {
+                                        if let Some(name) = fc.get("name").and_then(|n| n.as_str())
+                                        {
+                                            let args = fc
+                                                .get("args")
+                                                .cloned()
+                                                .unwrap_or(serde_json::json!({}));
+                                            let fc_str = format!(
+                                                "<tool_call>{{\"name\": \"{}\", \"arguments\": {}}}</tool_call>",
+                                                name, args
+                                            );
+                                            function_calls.push(fc_str.clone());
+                                            callback(StreamChunk::Delta(fc_str));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Combine text and function calls
+        if !function_calls.is_empty() {
+            full_text.push_str(&function_calls.join(""));
+        }
+
+        let prompt_tokens: u32 = request
+            .messages
+            .iter()
+            .map(|m| m.content.len() as u32 / 4)
+            .sum();
+        let completion_tokens = (full_text.len() as u32 + 3) / 4;
+        let usage = TokenUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        };
+
+        callback(StreamChunk::Done(usage.clone()));
+
+        Ok(ChatResponse {
+            content: if full_text.is_empty() {
+                None
+            } else {
+                Some(full_text)
+            },
+            tool_calls: Vec::new(),
+            usage,
+            model: request.model.to_string(),
+            reasoning_content: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -536,10 +677,7 @@ mod tests {
 
     #[test]
     fn test_gemini_auth_source() {
-        assert_eq!(
-            GeminiAuth::ExplicitKey("k".to_string()).source(),
-            "config"
-        );
+        assert_eq!(GeminiAuth::ExplicitKey("k".to_string()).source(), "config");
         assert_eq!(
             GeminiAuth::EnvGeminiKey("k".to_string()).source(),
             "GEMINI_API_KEY env var"

@@ -141,12 +141,15 @@ fn parse_xml_tool_calls(response: &str) -> ParseResult {
 
                 // Extremely basic JSON array/object extraction
                 if let Some(json_start) = inner.find('{').or_else(|| inner.find('[')) {
-                    let json_end = inner
-                        .rfind('}')
-                        .or_else(|| inner.rfind(']'))
-                        .unwrap_or(inner.len());
-                    if json_end > json_start {
-                        let json_slice = &inner[json_start..=json_end];
+                    let json_end = inner.rfind('}').or_else(|| inner.rfind(']'));
+
+                    let json_slice = match json_end {
+                        Some(end) if end >= json_start => &inner[json_start..=end],
+                        None if inner.len() > json_start => &inner[json_start..],
+                        _ => "",
+                    };
+
+                    if !json_slice.is_empty() {
                         if let Ok(Value::Object(obj)) = serde_json::from_str(json_slice) {
                             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                                 let args = obj

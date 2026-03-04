@@ -38,10 +38,7 @@ impl PostgresMemory {
             CREATE INDEX IF NOT EXISTS idx_{}_{}_key ON {} (key);
             CREATE INDEX IF NOT EXISTS idx_{}_{}_session ON {} (session_id);
             "#,
-            table_fq,
-            schema, table, table_fq,
-            schema, table, table_fq,
-            schema, table, table_fq
+            table_fq, schema, table, table_fq, schema, table, table_fq, schema, table, table_fq
         );
         client.batch_execute(&create_memories_sql)?;
 
@@ -118,6 +115,7 @@ impl MemoryStore for PostgresMemory {
         content: &str,
         category: MemoryCategory,
         session_id: Option<&str>,
+        _importance: Option<f64>,
     ) -> Result<()> {
         let mut client = self.client.lock().unwrap();
         let now = Self::now_str();
@@ -188,6 +186,8 @@ impl MemoryStore for PostgresMemory {
                 timestamp: row.get(4),
                 session_id: row.get(5),
                 score: Some(row.get(6)),
+                importance: 0.5,
+                embedding: None,
             });
         }
 
@@ -212,6 +212,8 @@ impl MemoryStore for PostgresMemory {
                 timestamp: row.get(4),
                 session_id: row.get(5),
                 score: None,
+                importance: 0.5,
+                embedding: None,
             }))
         } else {
             Ok(None)
@@ -228,7 +230,7 @@ impl MemoryStore for PostgresMemory {
             "SELECT id, key, content, category, created_at, session_id FROM {}",
             self.table_fq()
         );
-        
+
         let rows = match (category, session_id) {
             (Some(cat), Some(sid)) => {
                 sql.push_str(" WHERE category = $1 AND session_id = $2 ORDER BY updated_at DESC");
@@ -259,6 +261,8 @@ impl MemoryStore for PostgresMemory {
                 timestamp: row.get(4),
                 session_id: row.get(5),
                 score: None,
+                importance: 0.5,
+                embedding: None,
             });
         }
         Ok(results)
@@ -318,7 +322,10 @@ impl SessionStore for PostgresMemory {
 
     fn clear_messages(&self, session_id: &str) -> Result<()> {
         let mut client = self.client.lock().unwrap();
-        let sql = format!("DELETE FROM {} WHERE session_id = $1", self.messages_table_fq());
+        let sql = format!(
+            "DELETE FROM {} WHERE session_id = $1",
+            self.messages_table_fq()
+        );
         client.execute(&sql, &[&session_id])?;
         Ok(())
     }

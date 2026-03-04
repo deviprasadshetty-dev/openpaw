@@ -63,6 +63,7 @@ impl MemoryStore for MarkdownMemory {
         content: &str,
         _category: MemoryCategory,
         _session_id: Option<&str>,
+        _importance: Option<f64>,
     ) -> Result<()> {
         let _g = self.lock.lock().unwrap();
         let mut entries = self.read_all()?;
@@ -205,6 +206,8 @@ fn parsed_to_entry(e: &ParsedEntry) -> MemoryEntry {
         timestamp: e.timestamp.clone(),
         session_id: None,
         score: None,
+        importance: 0.5,
+        embedding: None,
     }
 }
 

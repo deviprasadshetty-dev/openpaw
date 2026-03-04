@@ -1,11 +1,11 @@
-use crate::bus::{global_bus, InboundMessage};
+use crate::bus::{InboundMessage, global_bus};
 use crate::channels::root::Channel;
 use crate::config::Config;
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
@@ -46,7 +46,11 @@ fn extract_telegram_bot_id(bot_token: &str) -> Option<String> {
 
 fn normalize_telegram_account_id(account_id: &str) -> String {
     let trimmed = account_id.trim();
-    let source = if trimmed.is_empty() { "default" } else { trimmed };
+    let source = if trimmed.is_empty() {
+        "default"
+    } else {
+        trimmed
+    };
     source
         .chars()
         .map(|c| {
@@ -209,7 +213,8 @@ fn telegram_polling_loop(
         .expect("Telegram account config missing in polling loop");
     let bot_token = &account_config.bot_token;
 
-    let mut offset = load_telegram_update_offset(config, channel.account_id(), bot_token).unwrap_or(0);
+    let mut offset =
+        load_telegram_update_offset(config, channel.account_id(), bot_token).unwrap_or(0);
     // If offset is 0, we might want to start from latest, but Telegram handles offset=0 as "unconfirmed".
     // Actually if we pass offset+1 we confirm.
     // Let's assume poll_updates takes an offset.
@@ -237,6 +242,7 @@ fn telegram_polling_loop(
                     }
 
                     // Convert ParsedMessage to InboundMessage and publish to bus
+                    let typing_chat_id = msg.chat_id.clone();
                     let inbound = InboundMessage {
                         channel: "telegram".to_string(),
                         sender_id: msg.sender_id,
@@ -250,6 +256,10 @@ fn telegram_polling_loop(
                     if let Some(bus) = global_bus() {
                         if let Err(e) = bus.publish_inbound(inbound) {
                             error!("Failed to publish inbound message to bus: {}", e);
+                        } else {
+                            // Send typing indicator immediately so the user
+                            // sees feedback while the agent is processing
+                            channel.send_typing(&typing_chat_id);
                         }
                     } else {
                         error!("Global bus not initialized, cannot publish message");

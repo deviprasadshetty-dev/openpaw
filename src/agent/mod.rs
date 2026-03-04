@@ -42,6 +42,7 @@ pub struct Agent {
     pub memory_session_id: Option<String>,
     pub history: Vec<ChatMessage>,
     pub total_tokens: u64,
+    pub tool_cache: crate::tools::cache::ToolCache,
 }
 
 impl Agent {
@@ -72,6 +73,7 @@ impl Agent {
             memory_session_id: None,
             history: Vec::new(),
             total_tokens: 0,
+            tool_cache: crate::tools::cache::ToolCache::new(30), // Default 30s TTL
         }
     }
 
@@ -151,10 +153,23 @@ impl Agent {
             self.workspace_prompt_fingerprint = Some(workspace_fp);
         }
 
+        // Enrich user message with memory context
+        let enriched_msg = match memory_loader::enrich_message(
+            self.memory.as_ref(),
+            &user_message,
+            self.memory_session_id.as_deref(),
+        ) {
+            Ok(msg) => msg,
+            Err(e) => {
+                warn!("Memory enrichment failed: {}", e);
+                user_message.clone()
+            }
+        };
+
         // Append user message
         self.history.push(ChatMessage {
             role: "user".to_string(),
-            content: user_message,
+            content: enriched_msg,
             name: None,
             tool_calls: None,
             tool_call_id: None,
@@ -321,44 +336,357 @@ impl Agent {
                 parse_result.calls
             };
 
-            let mut execution_results = Vec::new();
+            let mut handles = Vec::new();
             for tool_call in &tool_calls_to_execute {
-                let tool = self.tools.iter().find(|t| t.name() == tool_call.name);
-                let result = if let Some(tool) = tool {
-                    match serde_json::from_str::<serde_json::Value>(&tool_call.arguments_json) {
-                        Ok(args) => match tool.execute(args) {
-                            Ok(output) => ToolExecutionResult {
-                                name: tool_call.name.clone(),
-                                output: output.content,
-                                success: true,
-                                tool_call_id: tool_call.tool_call_id.clone(),
+                let tool = self
+                    .tools
+                    .iter()
+                    .find(|t| t.name() == tool_call.name)
+                    .cloned();
+                let call = tool_call.clone();
+                let cache = self.tool_cache.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    if let Some(tool) = tool {
+                        if tool.cacheable() {
+                            if let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
+                            {
+                                let mut res = cached_result;
+                                res.tool_call_id = call.tool_call_id.clone();
+                                return res;
+                            }
+                        }
+
+                        match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
+                            Ok(args) => match tool.execute(args) {
+                                Ok(output) => {
+                                    let res = ToolExecutionResult {
+                                        name: call.name.clone(),
+                                        output: output.content,
+                                        success: true,
+                                        tool_call_id: call.tool_call_id.clone(),
+                                    };
+                                    if tool.cacheable() {
+                                        cache.insert(&call.name, &call.arguments_json, res.clone());
+                                    }
+                                    res
+                                }
+                                Err(e) => ToolExecutionResult {
+                                    name: call.name.clone(),
+                                    output: format!("Error executing tool: {}", e),
+                                    success: false,
+                                    tool_call_id: call.tool_call_id.clone(),
+                                },
                             },
                             Err(e) => ToolExecutionResult {
-                                name: tool_call.name.clone(),
-                                output: format!("Error executing tool: {}", e),
+                                name: call.name.clone(),
+                                output: format!("Error parsing arguments: {}", e),
                                 success: false,
-                                tool_call_id: tool_call.tool_call_id.clone(),
+                                tool_call_id: call.tool_call_id.clone(),
                             },
-                        },
-                        Err(e) => ToolExecutionResult {
-                            name: tool_call.name.clone(),
-                            output: format!("Error parsing arguments: {}", e),
+                        }
+                    } else {
+                        ToolExecutionResult {
+                            name: call.name.clone(),
+                            output: format!("Tool not found: {}", call.name),
                             success: false,
-                            tool_call_id: tool_call.tool_call_id.clone(),
-                        },
+                            tool_call_id: call.tool_call_id.clone(),
+                        }
                     }
-                } else {
-                    ToolExecutionResult {
-                        name: tool_call.name.clone(),
-                        output: format!("Tool not found: {}", tool_call.name),
-                        success: false,
-                        tool_call_id: tool_call.tool_call_id.clone(),
-                    }
-                };
-                execution_results.push(result);
+                });
+                handles.push(handle);
+            }
+
+            let mut execution_results = Vec::new();
+            for handle in handles {
+                match handle.await {
+                    Ok(result) => execution_results.push(result),
+                    Err(e) => tracing::error!("Tool execution task failed: {}", e),
+                }
             }
 
             // Append tool results to history
+            for result in execution_results {
+                self.history.push(ChatMessage {
+                    role: "tool".to_string(),
+                    content: result.output,
+                    name: Some(result.name),
+                    tool_calls: None,
+                    tool_call_id: result.tool_call_id,
+                    content_parts: None,
+                });
+            }
+
+            // ── CRITICAL: re-enter loop so the provider sees tool results ──
+            iterations += 1;
+            continue;
+        }
+
+        Ok("[Agent]: Max tool iterations reached".to_string())
+    }
+
+    /// Streaming variant of `turn()`. Emits text deltas to `callback` as tokens arrive.
+    /// Returns the final complete response text (same as `turn()`).
+    pub async fn turn_stream(
+        &mut self,
+        user_message: String,
+        callback: crate::providers::StreamCallback,
+    ) -> Result<String> {
+        use crate::providers::StreamChunk;
+
+        let shared_callback = std::sync::Arc::new(std::sync::Mutex::new(callback));
+
+        // Handle slash commands (no streaming needed)
+        if let Some(slash_response) = commands::handle_slash_command(self, &user_message) {
+            if let Ok(mut cb) = shared_callback.lock() {
+                cb(StreamChunk::Delta(slash_response.clone()));
+                cb(StreamChunk::Done(crate::providers::TokenUsage::default()));
+            }
+            return Ok(slash_response);
+        }
+
+        // Enrich user message with memory context
+        let enriched_msg = match memory_loader::enrich_message(
+            self.memory.as_ref(),
+            &user_message,
+            self.memory_session_id.as_deref(),
+        ) {
+            Ok(msg) => msg,
+            Err(e) => {
+                warn!("Memory enrichment failed: {}", e);
+                user_message.clone()
+            }
+        };
+
+        // Auto-save user message (un-enriched original)
+        if self.auto_save {
+            let key = format!(
+                "autosave_user_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos()
+            );
+            let _ = self
+                .memory
+                .store(&key, &user_message, self.memory_session_id.as_deref());
+        }
+
+        // System prompt management (same as turn())
+        let workspace_fp = prompt::workspace_prompt_fingerprint(&self.workspace_dir);
+        if self.has_system_prompt && Some(workspace_fp) != self.workspace_prompt_fingerprint {
+            self.has_system_prompt = false;
+        }
+
+        if !self.has_system_prompt {
+            let system_prompt = self.build_system_prompt()?;
+            if !self.history.is_empty() && self.history[0].role == "system" {
+                self.history[0].content = system_prompt;
+            } else {
+                self.history.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: system_prompt,
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        content_parts: None,
+                    },
+                );
+            }
+            self.has_system_prompt = true;
+            self.workspace_prompt_fingerprint = Some(workspace_fp);
+        }
+
+        // Append user message
+        self.history.push(ChatMessage {
+            role: "user".to_string(),
+            content: enriched_msg,
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        });
+
+        // Enforce history limits
+        trim_history(&mut self.history, self.max_history_messages as u32);
+
+        // Auto-compaction
+        if self.token_limit > 0 {
+            let compaction_config = CompactionConfig {
+                keep_recent: 10,
+                max_summary_chars: 2000,
+                max_source_chars: 12000,
+                token_limit: self.token_limit,
+                max_history_messages: self.max_history_messages as u32,
+                workspace_dir: Some(self.workspace_dir.clone()),
+            };
+            let _ = auto_compact_history(
+                &mut self.history,
+                &self.provider,
+                &self.model_name,
+                &compaction_config,
+            );
+        }
+
+        // Tool loop with streaming
+        let mut iterations = 0;
+        loop {
+            if iterations >= self.max_tool_iterations {
+                warn!("Max tool iterations reached");
+                break;
+            }
+
+            let tool_specs: Vec<ToolSpec> = self
+                .tools
+                .iter()
+                .map(|t| {
+                    let params: serde_json::Value =
+                        serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
+                    ToolSpec {
+                        name: t.name().to_string(),
+                        description: t.description().to_string(),
+                        parameters: params,
+                    }
+                })
+                .collect();
+
+            let request = ChatRequest {
+                messages: &self.history,
+                model: &self.model_name,
+                temperature: self.temperature,
+                max_tokens: Some(self.max_tokens),
+                tools: if tool_specs.is_empty() {
+                    None
+                } else {
+                    Some(&tool_specs)
+                },
+                timeout_secs: 60,
+                reasoning_effort: None,
+            };
+
+            // Use streaming: collect full text via shared accumulator
+            let accumulated = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+            let acc_clone = accumulated.clone();
+            let cb_clone = shared_callback.clone();
+
+            // Create a forwarding callback that both accumulates and forwards deltas
+            let stream_cb: crate::providers::StreamCallback =
+                Box::new(move |chunk: StreamChunk| {
+                    if let StreamChunk::Delta(ref text) = chunk {
+                        if let Ok(mut acc) = acc_clone.lock() {
+                            acc.push_str(text);
+                        }
+                    }
+                    if let Ok(mut cb) = cb_clone.lock() {
+                        cb(chunk);
+                    }
+                });
+
+            let response = self.provider.chat_stream(&request, stream_cb)?;
+
+            // Append assistant response
+            let assistant_msg = ChatMessage {
+                role: "assistant".to_string(),
+                content: response.content.clone().unwrap_or_default(),
+                name: None,
+                tool_calls: if response.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(response.tool_calls.clone())
+                },
+                tool_call_id: None,
+                content_parts: None,
+            };
+            self.history.push(assistant_msg);
+
+            // Handle tool calls (same as turn())
+            let tool_calls_to_execute: Vec<ParsedToolCall> = if !response.tool_calls.is_empty() {
+                response
+                    .tool_calls
+                    .iter()
+                    .map(|tc| ParsedToolCall {
+                        name: tc.function.name.clone(),
+                        arguments_json: tc.function.arguments.clone(),
+                        tool_call_id: Some(tc.id.clone()),
+                    })
+                    .collect()
+            } else {
+                let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
+                if parse_result.calls.is_empty() {
+                    // No tool calls — return final text
+                    return Ok(response.content.unwrap_or_default());
+                }
+                parse_result.calls
+            };
+
+            let mut handles = Vec::new();
+            for tool_call in &tool_calls_to_execute {
+                let tool = self
+                    .tools
+                    .iter()
+                    .find(|t| t.name() == tool_call.name)
+                    .cloned();
+                let call = tool_call.clone();
+                let cache = self.tool_cache.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    if let Some(tool) = tool {
+                        if tool.cacheable() {
+                            if let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
+                            {
+                                let mut res = cached_result;
+                                res.tool_call_id = call.tool_call_id.clone();
+                                return res;
+                            }
+                        }
+
+                        match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
+                            Ok(args) => match tool.execute(args) {
+                                Ok(output) => {
+                                    let res = ToolExecutionResult {
+                                        name: call.name.clone(),
+                                        output: output.content,
+                                        success: true,
+                                        tool_call_id: call.tool_call_id.clone(),
+                                    };
+                                    if tool.cacheable() {
+                                        cache.insert(&call.name, &call.arguments_json, res.clone());
+                                    }
+                                    res
+                                }
+                                Err(e) => ToolExecutionResult {
+                                    name: call.name.clone(),
+                                    output: format!("Error executing tool: {}", e),
+                                    success: false,
+                                    tool_call_id: call.tool_call_id.clone(),
+                                },
+                            },
+                            Err(e) => ToolExecutionResult {
+                                name: call.name.clone(),
+                                output: format!("Error parsing arguments: {}", e),
+                                success: false,
+                                tool_call_id: call.tool_call_id.clone(),
+                            },
+                        }
+                    } else {
+                        ToolExecutionResult {
+                            name: call.name.clone(),
+                            output: format!("Tool not found: {}", call.name),
+                            success: false,
+                            tool_call_id: call.tool_call_id.clone(),
+                        }
+                    }
+                });
+                handles.push(handle);
+            }
+
+            let mut execution_results = Vec::new();
+            for handle in handles {
+                match handle.await {
+                    Ok(result) => execution_results.push(result),
+                    Err(e) => tracing::error!("Tool execution task failed: {}", e),
+                }
+            }
+
             for result in execution_results {
                 self.history.push(ChatMessage {
                     role: "tool".to_string(),
