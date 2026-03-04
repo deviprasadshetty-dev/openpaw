@@ -49,9 +49,19 @@ impl SkillForge {
             .user_agent("openpaw/0.1")
             .build()?;
 
+        // Search all compatible skill ecosystems — openpaw is new so also pull
+        // from nullclaw, openclaw, and picoclaw which already have community skills
+        let topics = ["openpaw", "nullclaw", "openclaw", "picoclaw"];
+        let topic_filter = topics
+            .iter()
+            .map(|t| format!("topic:{}", t))
+            .collect::<Vec<_>>()
+            .join("+OR+");
+
         let url = format!(
-            "https://api.github.com/search/repositories?q={}+topic:openpaw&sort=stars&order=desc&per_page=30",
-            urlencoding::encode(query)
+            "https://api.github.com/search/repositories?q={}+({})&sort=stars&order=desc&per_page=30",
+            urlencoding::encode(query),
+            topic_filter,
         );
 
         let response = client
@@ -64,9 +74,11 @@ impl SkillForge {
         }
 
         let search_results: SearchResponse = response.json()?;
-        
-        let candidates = search_results.items.into_iter().map(|repo| {
-            SkillCandidate {
+
+        let candidates = search_results
+            .items
+            .into_iter()
+            .map(|repo| SkillCandidate {
                 name: repo.name,
                 html_url: repo.html_url,
                 description: repo.description,
@@ -74,8 +86,8 @@ impl SkillForge {
                 language: repo.language,
                 owner: repo.owner,
                 has_license: repo.license.is_some(),
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(candidates)
     }

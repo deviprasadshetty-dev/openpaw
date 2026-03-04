@@ -4,6 +4,23 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+// ── ASCII Art Banner ─────────────────────────────────────────────
+
+pub const BANNER: &str = r#"
+   ___                 ____
+  / _ \ _ __   ___ _ __|  _ \ __ ___      __
+ | | | | '_ \ / _ \ '_ \ |_) / _` \ \ /\ / /
+ | |_| | |_) |  __/ | | |  __/ (_| |\ V  V /
+  \___/| .__/ \___|_| |_|_|   \__,_| \_/\_/
+       |_|
+
+"#;
+
+const DIVIDER: &str = "────────────────────────────────────────";
+const THIN_DIV: &str = "  · · · · · · · · · · · · · · · · · ·";
+
+// ── Public structs ────────────────────────────────────────────────
+
 pub struct ProjectContext {
     pub user_name: String,
     pub timezone: String,
@@ -16,7 +33,7 @@ impl Default for ProjectContext {
         Self {
             user_name: "User".to_string(),
             timezone: "UTC".to_string(),
-            agent_name: "nullclaw".to_string(),
+            agent_name: "OpenPaw".to_string(),
             communication_style: "Be warm, natural, and clear. Avoid robotic phrasing.".to_string(),
         }
     }
@@ -29,24 +46,42 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
 }
 
+// ── Main onboarding flow ──────────────────────────────────────────
+
 pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     let dir = workspace_dir.as_ref();
-    println!("🐾 Welcome to OpenPaw!\n");
 
-    // Check if already initialized
+    // ── Header ──────────────────────────────────────────────────
+    print!("{}", BANNER);
+    println!("  Welcome to OpenPaw — your lightweight local AI agent.");
+    println!("  Powered by Rust  •  Zero cloud APIs required for core features");
+    println!("  {}", DIVIDER);
+    println!();
+
+    // ── Already initialized? ────────────────────────────────────
     if dir.join("config.json").exists() {
-        print!("Config already exists. Overwrite? (y/N): ");
+        print!("  ⚠  Config already exists in this directory.\n  Overwrite everything? (y/N): ");
         io::stdout().flush()?;
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Cancelled.");
+            println!("  Cancelled. Your existing config is untouched.");
             return Ok(());
         }
+        println!();
     }
 
-    // Provider selection
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1 — AI Provider
+    // ═══════════════════════════════════════════════════════════
+    section_header(1, "AI Provider");
+
     let providers = vec![
+        ProviderConfig {
+            name: "gemini".to_string(),
+            default_model: "gemini-2.0-flash".to_string(),
+            base_url: None,
+        },
         ProviderConfig {
             name: "openai".to_string(),
             default_model: "gpt-4o".to_string(),
@@ -58,101 +93,164 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
             base_url: None,
         },
         ProviderConfig {
-            name: "gemini".to_string(),
-            default_model: "gemini-2.0-flash".to_string(),
-            base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai/".to_string()),
-        },
-        ProviderConfig {
             name: "openrouter".to_string(),
             default_model: "anthropic/claude-3.5-sonnet".to_string(),
             base_url: Some("https://openrouter.ai/api/v1".to_string()),
         },
     ];
 
-    println!("Select an AI provider:");
-    for (i, provider) in providers.iter().enumerate() {
-        println!("  {}. {}", i + 1, provider.name);
+    for (i, p) in providers.iter().enumerate() {
+        let note = match p.name.as_str() {
+            "gemini" => "free tier available",
+            "openai" => "gpt-4o, o1, o3...",
+            "anthropic" => "claude-3.5-sonnet, claude-3.7...",
+            "openrouter" => "access 200+ models via one key",
+            _ => "",
+        };
+        println!("    {}. {:12}  {}", i + 1, p.name, dim(note));
     }
-    print!("\nChoice (1-4): ");
-    io::stdout().flush()?;
 
-    let mut choice = String::new();
-    io::stdin().read_line(&mut choice)?;
-    let choice: usize = choice.trim().parse().unwrap_or(1);
-    let provider = providers.get(choice - 1).unwrap_or(&providers[0]);
+    let provider_idx = prompt_number("\n  Choice", 1, providers.len(), 1) - 1;
+    let provider = &providers[provider_idx];
 
-    // API Key
-    print!("Enter your {} API key: ", provider.name);
-    io::stdout().flush()?;
-    let mut api_key = String::new();
-    io::stdin().read_line(&mut api_key)?;
-    let api_key = api_key.trim().to_string();
+    let api_key = prompt_secret(&format!("\n  {} API key", capitalize(&provider.name)))?;
 
-    // Agent name
-    print!("Agent name [OpenPaw]: ");
-    io::stdout().flush()?;
-    let mut agent_name = String::new();
-    io::stdin().read_line(&mut agent_name)?;
-    let agent_name = if agent_name.trim().is_empty() {
-        "OpenPaw".to_string()
-    } else {
-        agent_name.trim().to_string()
+    println!(
+        "  {} Default model: {}",
+        tick(),
+        dim(&provider.default_model)
+    );
+    println!();
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 2 — Identity
+    // ═══════════════════════════════════════════════════════════
+    section_header(2, "Identity");
+
+    let agent_name = prompt_with_default("  Agent name", "OpenPaw")?;
+    let user_name = prompt_with_default("  Your name ", "User")?;
+    let timezone = prompt_with_default("  Timezone  ", "UTC")?;
+    println!();
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 3 — Memory backend
+    // ═══════════════════════════════════════════════════════════
+    section_header(3, "Memory");
+    println!("  How should your agent remember things between sessions?");
+    println!();
+    println!(
+        "    1. sqlite    {} fast, searchable, recommended",
+        dim("→")
+    );
+    println!(
+        "    2. markdown  {} human-readable MEMORY.md file",
+        dim("→")
+    );
+    println!("    3. none      {} no persistence (ephemeral)", dim("→"));
+    println!();
+
+    let mem_choice = prompt_number("  Choice", 1, 3, 1);
+    let memory_backend = match mem_choice {
+        1 => "sqlite",
+        2 => "markdown",
+        3 => "none",
+        _ => "sqlite",
     };
+    println!("  {} Memory backend: {}", tick(), memory_backend);
+    println!();
 
-    // User name
-    print!("Your name [User]: ");
+    // ═══════════════════════════════════════════════════════════
+    // STEP 4 — Voice (Groq Whisper)
+    // ═══════════════════════════════════════════════════════════
+    section_header(4, "Voice Transcription (optional)");
+    println!("  OpenPaw can transcribe voice messages via Groq Whisper.");
+    println!(
+        "  Get a free API key at: {}",
+        dim("https://console.groq.com")
+    );
+    println!();
+
+    print!("  Enable voice transcription? (y/N): ");
     io::stdout().flush()?;
-    let mut user_name = String::new();
-    io::stdin().read_line(&mut user_name)?;
-    let user_name = if user_name.trim().is_empty() {
-        "User".to_string()
+    let mut voice_input = String::new();
+    io::stdin().read_line(&mut voice_input)?;
+    let voice_input = voice_input.trim().to_lowercase();
+
+    let groq_key = if voice_input == "y" {
+        let key = prompt_secret("  Groq API key")?;
+        if key.is_empty() {
+            println!("  {} Skipping voice (no key provided)", dim("·"));
+            String::new()
+        } else {
+            println!(
+                "  {} Voice transcription enabled (whisper-large-v3)",
+                tick()
+            );
+            key
+        }
     } else {
-        user_name.trim().to_string()
+        println!(
+            "  {} Skipping — you can add this later in config.json",
+            dim("·")
+        );
+        String::new()
     };
+    println!();
 
-    // Timezone
-    print!("Timezone [UTC]: ");
-    io::stdout().flush()?;
-    let mut timezone = String::new();
-    io::stdin().read_line(&mut timezone)?;
-    let timezone = if timezone.trim().is_empty() {
-        "UTC".to_string()
-    } else {
-        timezone.trim().to_string()
-    };
+    // ═══════════════════════════════════════════════════════════
+    // STEP 5 — Telegram (optional)
+    // ═══════════════════════════════════════════════════════════
+    section_header(5, "Telegram Bot (optional)");
+    println!("  Connect a Telegram bot to chat with your agent on mobile.");
+    println!("  Create one at: {}", dim("https://t.me/BotFather"));
+    println!();
 
-    // Telegram setup (optional)
-    print!("\nSet up Telegram? (y/N): ");
+    print!("  Set up Telegram? (y/N): ");
     io::stdout().flush()?;
-    let mut setup_telegram = String::new();
-    io::stdin().read_line(&mut setup_telegram)?;
-    
-    let telegram_config = if setup_telegram.trim().eq_ignore_ascii_case("y") {
-        print!("Telegram Bot Token (from @BotFather): ");
-        io::stdout().flush()?;
-        let mut bot_token = String::new();
-        io::stdin().read_line(&mut bot_token)?;
-        
-        print!("Your Telegram username (e.g., @yourname): ");
-        io::stdout().flush()?;
-        let mut username = String::new();
-        io::stdin().read_line(&mut username)?;
-        
-        Some((bot_token.trim().to_string(), username.trim().to_string()))
+    let mut tg_input = String::new();
+    io::stdin().read_line(&mut tg_input)?;
+
+    let telegram_config = if tg_input.trim().eq_ignore_ascii_case("y") {
+        let token = prompt_secret("  Bot token (from @BotFather)")?;
+        let username = prompt_with_default("  Your Telegram username (@yourname)", "@you")?;
+        println!("  {} Telegram bot configured", tick());
+        if groq_key.is_empty() {
+            println!(
+                "  {} Tip: add a Groq key later to use voice messages in Telegram!",
+                dim("💡")
+            );
+        } else {
+            println!(
+                "  {} Voice messages in Telegram will be auto-transcribed!",
+                tick()
+            );
+        }
+        Some((token, username))
     } else {
+        println!(
+            "  {} Skipping — run `openpaw onboard` again to add it later",
+            dim("·")
+        );
         None
     };
+    println!();
 
-    // Create directory if needed
+    // ═══════════════════════════════════════════════════════════
+    // Write files
+    // ═══════════════════════════════════════════════════════════
     if !dir.exists() {
         fs::create_dir_all(dir).context("Failed to create workspace directory")?;
     }
 
-    // Generate config.json
-    let config = generate_config(provider, &api_key, telegram_config.as_ref());
+    let config = generate_config(
+        provider,
+        &api_key,
+        telegram_config.as_ref(),
+        memory_backend,
+        &groq_key,
+    );
     fs::write(dir.join("config.json"), config)?;
 
-    // Scaffold workspace files
     let ctx = ProjectContext {
         user_name: user_name.clone(),
         timezone: timezone.clone(),
@@ -161,36 +259,92 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     };
     scaffold_workspace(dir, &ctx)?;
 
-    println!("\n✅ Workspace initialized at {}", dir.canonicalize()?.display());
-    println!("\nNext steps:");
-    println!("  1. Review SOUL.md and IDENTITY.md");
-    println!("  2. Run: openpaw agent");
+    // ═══════════════════════════════════════════════════════════
+    // Done!
+    // ═══════════════════════════════════════════════════════════
+    println!("  {}", DIVIDER);
+    println!();
+    println!(
+        "  ✅  Workspace ready at {}",
+        dir.canonicalize()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| dir.display().to_string())
+    );
+    println!();
+    println!("  {} What's set up:", tick());
+    println!(
+        "     • AI provider  →  {} / {}",
+        provider.name, provider.default_model
+    );
+    println!("     • Memory       →  {}", memory_backend);
+    if !groq_key.is_empty() {
+        println!("     • Voice        →  Groq Whisper (whisper-large-v3)");
+    }
+    if telegram_config.is_some() {
+        println!("     • Telegram     →  bot configured");
+    }
+    println!();
+    println!("  {} Next steps:", dim("→"));
+    println!("     1. Edit SOUL.md to customize your agent's personality");
+    println!(
+        "     2. Run:  openpaw agent          {}  interactive chat",
+        dim("→")
+    );
+    println!(
+        "     3. Run:  openpaw agent -m \"hi\"  {}  one-shot message",
+        dim("→")
+    );
+    if telegram_config.is_some() {
+        println!("     4. Your Telegram bot is ready — message it now!");
+    }
+    println!();
+    println!("  {} Use `openpaw --help` to see all commands.", dim("💡"));
+    println!();
 
     Ok(())
 }
 
-fn generate_config(provider: &ProviderConfig, api_key: &str, telegram: Option<&(String, String)>) -> String {
-    let base_url_line = if let Some(url) = &provider.base_url {
-        format!("        \"base_url\": \"{}\",", url)
-    } else {
-        String::new()
+// ── Config generation ─────────────────────────────────────────────
+
+fn generate_config(
+    provider: &ProviderConfig,
+    api_key: &str,
+    telegram: Option<&(String, String)>,
+    memory_backend: &str,
+    groq_key: &str,
+) -> String {
+    let base_url_field = match &provider.base_url {
+        Some(url) => format!(",\n        \"base_url\": \"{}\"", url),
+        None => String::new(),
     };
 
-    let telegram_section = if let Some((token, username)) = telegram {
-        format!(
+    let telegram_section = match telegram {
+        Some((token, username)) => format!(
             r#""telegram": [
-      {{
-        "account_id": "main",
-        "bot_token": "{token}",
-        "allow_from": ["{username}"],
-        "group_policy": "allowlist"
-      }}
-    ]"#,
-            token = token,
-            username = username
+    {{
+      "account_id": "main",
+      "bot_token": "{}",
+      "allow_from": ["{}"],
+      "group_policy": "allowlist"
+    }}
+  ]"#,
+            token, username
+        ),
+        None => r#""telegram": []"#.to_string(),
+    };
+
+    let voice_section = if !groq_key.is_empty() {
+        format!(
+            r#",
+  "voice": {{
+    "provider": "groq",
+    "api_key": "{}",
+    "model": "whisper-large-v3"
+  }}"#,
+            groq_key
         )
     } else {
-        r#""telegram": []"#.to_string()
+        String::new()
     };
 
     format!(
@@ -200,39 +354,39 @@ fn generate_config(provider: &ProviderConfig, api_key: &str, telegram: Option<&(
   "models": {{
     "providers": {{
       "{provider}": {{
-        "api_key": "{key}"{base_url_comma}
-{base_url}
+        "api_key": "{key}"{base_url}
       }}
     }}
   }},
   "channels": {{
     {telegram}
   }},
+  "memory": {{
+    "backend": "{memory}"
+  }},
   "http_request": {{
     "enabled": true,
     "search_provider": "duckduckgo"
-  }},
-  "memory": {{
-    "backend": "sqlite"
-  }}
+  }}{voice}
 }}"#,
         provider = provider.name,
         model = provider.default_model,
         key = api_key,
-        base_url = base_url_line,
-        base_url_comma = if base_url_line.is_empty() { "" } else { "," },
-        telegram = telegram_section
+        base_url = base_url_field,
+        telegram = telegram_section,
+        memory = memory_backend,
+        voice = voice_section,
     )
 }
 
+// ── Workspace scaffolding ─────────────────────────────────────────
+
 pub fn scaffold_workspace<P: AsRef<Path>>(workspace_dir: P, ctx: &ProjectContext) -> Result<()> {
     let dir = workspace_dir.as_ref();
-
     if !dir.exists() {
         fs::create_dir_all(dir).context("Failed to create workspace directory")?;
     }
 
-    // Process templates that need string replacement
     let soul_content = SOUL_TEMPLATE
         .replace("{{agent_name}}", &ctx.agent_name)
         .replace("{{communication_style}}", &ctx.communication_style);
@@ -243,15 +397,12 @@ pub fn scaffold_workspace<P: AsRef<Path>>(workspace_dir: P, ctx: &ProjectContext
         .replace("{{user_name}}", &ctx.user_name)
         .replace("{{timezone}}", &ctx.timezone);
 
-    // Write files if they don't exist
     write_if_missing(&dir.join("SOUL.md"), &soul_content)?;
     write_if_missing(&dir.join("AGENTS.md"), AGENTS_TEMPLATE)?;
     write_if_missing(&dir.join("TOOLS.md"), TOOLS_TEMPLATE)?;
     write_if_missing(&dir.join("IDENTITY.md"), &identity_content)?;
     write_if_missing(&dir.join("USER.md"), &user_content)?;
     write_if_missing(&dir.join("HEARTBEAT.md"), HEARTBEAT_TEMPLATE)?;
-
-    // Write BOOTSTRAP.md
     write_if_missing(&dir.join("BOOTSTRAP.md"), BOOTSTRAP_TEMPLATE)?;
 
     Ok(())
@@ -262,4 +413,58 @@ fn write_if_missing(path: &Path, content: &str) -> Result<()> {
         fs::write(path, content).context(format!("Failed to write {}", path.display()))?;
     }
     Ok(())
+}
+
+// ── UX helpers ────────────────────────────────────────────────────
+
+fn section_header(n: u8, title: &str) {
+    println!("  {} Step {}  {}  {}", dim("┌"), n, title, dim(THIN_DIV));
+    println!();
+}
+
+fn tick() -> &'static str {
+    "✓"
+}
+
+fn dim(s: &str) -> String {
+    // ANSI dim on terminals that support it; falls back gracefully
+    format!("\x1b[2m{}\x1b[0m", s)
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+fn prompt_with_default(label: &str, default: &str) -> Result<String> {
+    print!("{} [{}]: ", label, dim(default));
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+    Ok(if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    })
+}
+
+fn prompt_secret(label: &str) -> Result<String> {
+    print!("{}: ", label);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_number(label: &str, min: usize, max: usize, default: usize) -> usize {
+    print!("{} [{}-{}, default {}]: ", label, min, max, default);
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    let _ = io::stdin().read_line(&mut input);
+    let n: usize = input.trim().parse().unwrap_or(default);
+    n.clamp(min, max)
 }

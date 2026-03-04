@@ -1,6 +1,11 @@
+pub mod anthropic;
+pub mod error_classify;
+pub mod factory;
 pub mod gemini;
 pub mod openai;
 pub mod openrouter;
+pub mod reliable;
+pub mod sse;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

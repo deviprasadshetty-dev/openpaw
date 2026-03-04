@@ -1,23 +1,22 @@
-use crate::bus::{self, Bus, InboundMessage};
+use crate::agent::memory_loader::Memory;
+use crate::bus::{self, Bus};
 use crate::channel_adapters::find_polling_descriptor;
 use crate::channel_loop::{self, ChannelRuntime, PollingState};
-use crate::channels::dispatch::{run_outbound_dispatcher, ChannelRegistry};
+use crate::channels::dispatch::{ChannelRegistry, run_outbound_dispatcher};
 use crate::channels::telegram::TelegramChannel;
 use crate::config::Config;
 use crate::cron::CronScheduler;
 use crate::gateway;
 use crate::heartbeat::HeartbeatEngine;
-use crate::providers::openai::OpenAiCompatibleProvider;
-use crate::providers::gemini::GeminiProvider;
 use crate::providers::Provider;
+use crate::providers::factory::{self, ProviderConfig};
 use crate::session::SessionManager;
-use crate::agent::memory_loader::Memory;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -129,17 +128,16 @@ pub fn heartbeat_thread(
     }
 }
 
-pub fn scheduler_thread(_config: Config, _scheduler: Arc<CronScheduler>) {
+pub fn scheduler_thread(_config: Config, scheduler: Arc<CronScheduler>) {
     while !is_shutdown_requested() {
-        // Scheduler tick logic (stub for now, needs full implementation)
-        // scheduler.tick();
+        scheduler.tick();
         thread::sleep(Duration::from_secs(60));
     }
 }
 
 pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionManager>) {
     info!("Inbound dispatcher thread started");
-    
+
     // Create a local Tokio runtime for executing async session logic
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -169,7 +167,10 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
                         }
                     }
                     Err(e) => {
-                        error!("Failed to process message for session {}: {}", session_key, e);
+                        error!(
+                            "Failed to process message for session {}: {}",
+                            session_key, e
+                        );
                         // Optionally send error back to user
                     }
                 }
@@ -194,7 +195,10 @@ pub fn init_channels(
     // Initialize Telegram channels
     for tg_config in &config.channels.telegram {
         if tg_config.bot_token.is_empty() {
-            warn!("Skipping Telegram account {}: no bot token", tg_config.account_id);
+            warn!(
+                "Skipping Telegram account {}: no bot token",
+                tg_config.account_id
+            );
             continue;
         }
 
@@ -207,18 +211,19 @@ pub fn init_channels(
         registry.register(channel.clone());
 
         if let Some(descriptor) = find_polling_descriptor("telegram") {
-            info!("Starting Telegram polling for account: {}", tg_config.account_id);
+            info!(
+                "Starting Telegram polling for account: {}",
+                tg_config.account_id
+            );
 
-            match (descriptor.spawn)(
-                (),
-                config,
-                &mut runtime,
-                channel.clone(),
-            ) {
+            match (descriptor.spawn)((), config, &mut runtime, channel.clone()) {
                 Ok(result) => {
                     if let (Some(state), Some(thread)) = (result.state, result.thread) {
                         polling_threads.push((state, thread));
-                        info!("Telegram polling started for account: {}", tg_config.account_id);
+                        info!(
+                            "Telegram polling started for account: {}",
+                            tg_config.account_id
+                        );
                     }
                 }
                 Err(e) => {
@@ -247,31 +252,19 @@ pub fn start_outbound_dispatcher(
     run_outbound_dispatcher(bus, registry)
 }
 
-/// Factory function to create the appropriate provider based on config
+/// Create the appropriate provider based on config, wrapped in ReliableProvider.
 fn create_provider(config: &Config) -> Arc<dyn Provider> {
     let provider_name = &config.default_provider;
-    
-    // Get provider config if available
-    let provider_config = config.models.as_ref()
-        .and_then(|m| m.providers.get(provider_name));
-    
-    match provider_name.as_str() {
-        "gemini" => {
-            // Gemini provider - uses its own base URL, only needs API key
-            let api_key = provider_config.map(|p| p.api_key.clone());
-            Arc::new(GeminiProvider::new(api_key.as_deref()))
-        }
-        _ => {
-            // OpenAI-compatible providers (openai, openrouter, etc.)
-            let base_url = provider_config
-                .and_then(|p| p.base_url.clone())
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-            let api_key = provider_config
-                .map(|p| p.api_key.clone())
-                .unwrap_or_default();
-            Arc::new(OpenAiCompatibleProvider::new(provider_name, &base_url, &api_key))
-        }
-    }
+    let provider_config = config
+        .models
+        .as_ref()
+        .and_then(|m| m.providers.get(provider_name))
+        .map(|p| ProviderConfig {
+            api_key: p.api_key.clone(),
+            base_url: p.base_url.clone(),
+            max_retries: None,
+        });
+    factory::create(provider_name, provider_config.as_ref())
 }
 
 pub async fn run_daemon(config: Config) -> Result<()> {
@@ -286,12 +279,44 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     // Initialize Provider based on config
     let provider: Arc<dyn Provider> = create_provider(&config);
 
-    // Initialize Memory
-    let memory: Option<Arc<dyn crate::agent::memory_loader::Memory>> = Some(Arc::new(crate::agent::memory_loader::NoopMemory));
+    // Initialize Memory — read backend from config
+    let memory: Option<Arc<dyn crate::agent::memory_loader::Memory>> = {
+        match config.memory.backend.as_str() {
+            "markdown" => {
+                let m = crate::memory::engines::markdown::MarkdownMemory::from_workspace(
+                    &config.workspace_dir,
+                );
+                info!("Memory backend: markdown (MEMORY.md)");
+                Some(Arc::new(crate::agent::memory_loader::MemoryAdapter {
+                    inner: Arc::new(m),
+                }))
+            }
+            "none" => {
+                info!("Memory backend: none (ephemeral)");
+                None
+            }
+            _ => {
+                // Default: sqlite
+                let db_path = format!("{}/memory.db", config.workspace_dir);
+                match crate::memory::sqlite::SqliteMemory::new(&db_path) {
+                    Ok(m) => {
+                        info!("Memory backend: sqlite ({})", db_path);
+                        Some(Arc::new(crate::agent::memory_loader::MemoryAdapter {
+                            inner: Arc::new(m),
+                        }))
+                    }
+                    Err(e) => {
+                        warn!("Failed to init SQLite memory: {} — using noop", e);
+                        Some(Arc::new(crate::agent::memory_loader::NoopMemory))
+                    }
+                }
+            }
+        }
+    };
 
     // Initialize Tools
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-    
+
     // File Tools
     tools.push(Arc::new(crate::tools::file_read::FileReadTool {
         workspace_dir: config.workspace_dir.clone(),
@@ -344,8 +369,10 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         }
     }
 
-    // Browser Tool
-    tools.push(Arc::new(crate::tools::browser::BrowserTool));
+    // Browser Tool — auto-detects Chrome/Edge/Brave, uses dedicated openpaw profile
+    tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
+        config.workspace_dir.clone(),
+    )));
 
     // Web Search Tool
     let mut search_tool = crate::tools::web_search::WebSearchTool::default();
@@ -356,6 +383,14 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     // Web Fetch Tool
     tools.push(Arc::new(crate::tools::web_fetch::WebFetchTool {
         default_max_chars: 50_000,
+    }));
+
+    // Skill Tools — search GitHub for skills and install them into workspace/skills/
+    tools.push(Arc::new(crate::tools::skill_search::SkillSearchTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::skill_install::SkillInstallTool {
+        workspace_dir: config.workspace_dir.clone(),
     }));
 
     // Browser Open Tool
@@ -387,12 +422,12 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     }));
 
     // Hardware Tools
-    tools.push(Arc::new(crate::tools::hardware_info::HardwareBoardInfoTool {
-        boards: Vec::new(),
-    }));
-    tools.push(Arc::new(crate::tools::hardware_memory::HardwareMemoryTool {
-        boards: Vec::new(),
-    }));
+    tools.push(Arc::new(
+        crate::tools::hardware_info::HardwareBoardInfoTool { boards: Vec::new() },
+    ));
+    tools.push(Arc::new(
+        crate::tools::hardware_memory::HardwareMemoryTool { boards: Vec::new() },
+    ));
     tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
     tools.push(Arc::new(crate::tools::spi::SpiTool {}));
 
@@ -417,12 +452,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let dispatcher_handle = start_outbound_dispatcher(bus.clone(), registry.clone());
 
     // Start Heartbeat
-    let heartbeat_engine = HeartbeatEngine::init(
-        true,
-        30,
-        &config.workspace_dir,
-        None,
-    );
+    let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, None);
     let ds_clone = daemon_state.clone();
     let config_clone = config.clone();
     thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine));
@@ -442,9 +472,19 @@ pub async fn run_daemon(config: Config) -> Result<()> {
 
     info!("Daemon running. Press Ctrl+C to stop.");
 
+    // Ctrl+C / SIGINT handler — calls request_shutdown() so the loop below exits cleanly
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let sf_clone = shutdown_flag.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            sf_clone.store(true, Ordering::Release);
+            request_shutdown();
+        }
+    });
+
     // Wait for shutdown signal
     loop {
-        if is_shutdown_requested() {
+        if is_shutdown_requested() || shutdown_flag.load(Ordering::Acquire) {
             info!("Shutdown requested, stopping daemon...");
             break;
         }

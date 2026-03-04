@@ -99,7 +99,35 @@ pub fn load_skill(skill_dir: &Path) -> Result<Skill> {
     };
 
     skill.path = skill_dir.to_string_lossy().into_owned();
+
+    // Normalize sibling-agent names so imported skills don't confuse OpenPaw
+    // about its own identity (e.g. a Nullclaw skill saying "you are Nullclaw").
+    skill.instructions = normalize_agent_name(&skill.instructions);
+
     Ok(skill)
+}
+
+/// Replace any occurrence of sibling agent names with "openpaw".
+/// Case-insensitive, preserves surrounding text.
+fn normalize_agent_name(text: &str) -> String {
+    // Pairs: (pattern to match, replacement that matches the original case style)
+    const NAMES: &[(&str, &str)] = &[
+        ("nullclaw", "openpaw"),
+        ("openclaw", "openpaw"),
+        ("picoclaw", "openpaw"),
+        ("NullClaw", "OpenPaw"),
+        ("OpenClaw", "OpenPaw"),
+        ("PicoClaw", "OpenPaw"),
+        ("NULLCLAW", "OPENPAW"),
+        ("OPENCLAW", "OPENPAW"),
+        ("PICOCLAW", "OPENPAW"),
+    ];
+
+    let mut out = text.to_string();
+    for (from, to) in NAMES {
+        out = out.replace(from, to);
+    }
+    out
 }
 
 pub fn check_requirements(skill: &mut Skill) {

@@ -1,5 +1,5 @@
-pub mod browser_open;
 pub mod browser;
+pub mod browser_open;
 pub mod composio;
 pub mod cron_add;
 pub mod cron_list;
@@ -33,6 +33,8 @@ pub mod schedule;
 pub mod schema;
 pub mod screenshot;
 pub mod shell;
+pub mod skill_install;
+pub mod skill_search;
 pub mod spawn;
 pub mod spi;
 pub mod web_fetch;

@@ -1,9 +1,10 @@
+use crate::agent::Tool;
+use crate::skills::{check_requirements, list_skills};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use crate::agent::Tool;
 
 pub const BOOTSTRAP_MAX_CHARS: usize = 20_000;
 pub const MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -60,7 +61,7 @@ fn open_workspace_file_guarded(workspace_dir: &str, filename: &str) -> Option<(f
 
     let file = fs::File::open(&canonical_path).ok()?;
     let metadata = file.metadata().ok()?;
-    
+
     if metadata.len() > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES {
         return None;
     }
@@ -160,23 +161,62 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     out.push_str("- When in doubt, ask before acting externally.\n\n");
     out.push_str("- Never expose internal memory implementation keys (for example: `autosave_*`, `last_hygiene_at`) in user-facing replies.\n\n");
 
-    // Skills section (Placeholder - would need skills module)
-    // append_skills_section(&mut out, ctx.workspace_dir); 
-    
+    // Skills section
+    append_skills_section(&mut out, ctx.workspace_dir);
+
     // Workspace section
-    out.push_str(&format!("## Workspace\n\nWorking directory: `{}`\n\n", ctx.workspace_dir));
+    out.push_str(&format!(
+        "## Workspace\n\nWorking directory: `{}`\n\n",
+        ctx.workspace_dir
+    ));
 
     // Runtime section
-    out.push_str(&format!("## Runtime\n\nOS: {} | Model: {}\n\n", std::env::consts::OS, ctx.model_name));
+    out.push_str(&format!(
+        "## Runtime\n\nOS: {} | Model: {}\n\n",
+        std::env::consts::OS,
+        ctx.model_name
+    ));
 
     out
+}
+
+/// Scan `<workspace>/skills/`, check deps, inject enabled skills into the prompt.
+fn append_skills_section(out: &mut String, workspace_dir: &str) {
+    let ws = Path::new(workspace_dir);
+    let mut skills = list_skills(ws).unwrap_or_default();
+    for s in skills.iter_mut() {
+        check_requirements(s);
+    }
+    let active: Vec<_> = skills
+        .iter()
+        .filter(|s| s.enabled && s.available && !s.instructions.is_empty())
+        .collect();
+
+    if active.is_empty() {
+        return;
+    }
+
+    out.push_str("## Active Skills\n\n");
+    out.push_str(
+        "The following skills extend your capabilities. Follow their instructions carefully.\n\n",
+    );
+    for skill in &active {
+        out.push_str(&format!("### Skill: {}\n", skill.name));
+        if !skill.description.is_empty() {
+            out.push_str(&format!("{} (v{})\n\n", skill.description, skill.version));
+        }
+        out.push_str(&skill.instructions);
+        out.push_str("\n\n");
+    }
 }
 
 fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) {
     if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename) {
         if let Ok(content) = fs::read_to_string(path) {
-            if content.trim().is_empty() { return; }
-            
+            if content.trim().is_empty() {
+                return;
+            }
+
             out.push_str(&format!("\n=== BEGIN {} ===\n", filename));
             if content.len() > BOOTSTRAP_MAX_CHARS {
                 out.push_str(&content[..BOOTSTRAP_MAX_CHARS]);
@@ -209,7 +249,7 @@ fn build_identity_section(out: &mut String, workspace_dir: &str) {
     for filename in identity_files {
         inject_workspace_file(out, workspace_dir, filename);
     }
-    
+
     // Memory file preference
     if open_workspace_file_guarded(workspace_dir, "MEMORY.md").is_some() {
         inject_workspace_file(out, workspace_dir, "MEMORY.md");
@@ -221,7 +261,8 @@ fn build_identity_section(out: &mut String, workspace_dir: &str) {
 fn build_tools_section(out: &mut String, tools: &[Arc<dyn Tool>], use_native_tools: bool) {
     out.push_str("## Tools\n\n");
     for tool in tools {
-        out.push_str(&format!("- **{}**: {}\n  Parameters: `{}`\n",
+        out.push_str(&format!(
+            "- **{}**: {}\n  Parameters: `{}`\n",
             tool.name(),
             tool.description(),
             tool.parameters_json()
@@ -241,7 +282,9 @@ fn build_tools_section(out: &mut String, tools: &[Arc<dyn Tool>], use_native_too
         out.push_str("- After tool calls are executed, you will receive the results and can respond to the user\n\n");
         out.push_str("When NOT to use tools:\n");
         out.push_str("- For simple greetings, casual conversation, or general questions that don't require external data\n");
-        out.push_str("- When the user is just saying hello, asking how you are, or making small talk\n");
+        out.push_str(
+            "- When the user is just saying hello, asking how you are, or making small talk\n",
+        );
         out.push_str("- When you already have all the information needed to answer from the conversation context\n");
         out.push_str("- Only use tools when you need to perform actions like reading files, executing commands, or accessing external data\n\n");
     }
@@ -255,16 +298,24 @@ fn append_channel_attachments_section(out: &mut String) {
     out.push_str("- File/document: `[FILE:/absolute/path/to/file.ext]` or `[DOCUMENT:/absolute/path/to/file.ext]`\n");
     out.push_str("- Image/video/audio/voice: `[IMAGE:/abs/path]`, `[VIDEO:/abs/path]`, `[AUDIO:/abs/path]`, `[VOICE:/abs/path]`\n");
     out.push_str("- If user gives `~/...`, expand it to the absolute home path before sending.\n");
-    out.push_str("- Do not claim attachment sending is unavailable when these markers are supported.\n\n");
+    out.push_str(
+        "- Do not claim attachment sending is unavailable when these markers are supported.\n\n",
+    );
 
     out.push_str("## Channel Choices\n\n");
     out.push_str("- On supported channels (for example Telegram when enabled), append `<nc_choices>...</nc_choices>` at the end of the final reply to render short button choices when you are asking the user to choose among short options.\n");
     out.push_str("- Always keep the normal visible question text before the choices block.\n");
-    out.push_str("- Use choices only for short mutually exclusive branches (for example yes/no or A/B).\n");
-    out.push_str("- Do not use choices for long lists, open-ended prompts, or complex multi-step forms.\n");
+    out.push_str(
+        "- Use choices only for short mutually exclusive branches (for example yes/no or A/B).\n",
+    );
+    out.push_str(
+        "- Do not use choices for long lists, open-ended prompts, or complex multi-step forms.\n",
+    );
     out.push_str("- If you ask the user to pick one of 2-4 short explicit options (for example yes/no/cancel, A/B, or quoted command replies), you MUST append a choices block unless the user explicitly asked for plain text only.\n");
     out.push_str("- If you present a numbered or bulleted list of 2-4 mutually exclusive reply options, include matching choices for those same options.\n");
-    out.push_str("- The JSON must be valid and use `{\"v\":1,\"options\":[...]}` with 2-6 options.\n");
+    out.push_str(
+        "- The JSON must be valid and use `{\"v\":1,\"options\":[...]}` with 2-6 options.\n",
+    );
     out.push_str("- Each option must include `id` and `label`; `submit_text` is optional (if omitted, label is used as submit text).\n");
     out.push_str("- `id` must be lowercase and contain only `a-z`, `0-9`, `_`, `-` (example: `yes`, `no`, `later_10m`).\n");
     out.push_str("- Example: `<nc_choices>{\"v\":1,\"options\":[{\"id\":\"yes\",\"label\":\"Yes\",\"submit_text\":\"Yes\"},{\"id\":\"no\",\"label\":\"No\"}]}</nc_choices>`\n\n");

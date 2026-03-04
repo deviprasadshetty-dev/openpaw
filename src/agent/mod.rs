@@ -1,11 +1,11 @@
-pub mod compaction;
-pub mod dispatcher;
-pub mod routing;
-pub mod context_tokens;
-pub mod max_tokens;
-pub mod prompt;
 pub mod commands;
+pub mod compaction;
+pub mod context_tokens;
+pub mod dispatcher;
+pub mod max_tokens;
 pub mod memory_loader;
+pub mod prompt;
+pub mod routing;
 
 pub use routing::{
     AgentBinding, BindingMatch, ChatType, MatchedBy, PeerRef, ResolvedRoute, RouteInput,
@@ -14,16 +14,16 @@ pub use routing::{
 
 use anyhow::Result;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::providers::{ChatMessage, ChatResponse, ChatRequest, ToolSpec, Provider};
+use crate::providers::{ChatMessage, ChatRequest, Provider, ToolSpec};
 use crate::tools::Tool;
 
-use compaction::{force_compress_history, trim_history, auto_compact_history, CompactionConfig};
-use dispatcher::{ToolExecutionResult, format_tool_results, parse_tool_calls, ParsedToolCall};
-use memory_loader::{Memory, NoopMemory, enrich_message};
+use compaction::{CompactionConfig, auto_compact_history, trim_history};
 use context_tokens as context_tokens_resolver;
+use dispatcher::{ParsedToolCall, ToolExecutionResult, parse_tool_calls};
 use max_tokens as max_tokens_resolver;
+use memory_loader::{Memory, NoopMemory};
 
 pub struct Agent {
     pub provider: Arc<dyn Provider>,
@@ -46,8 +46,8 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(
-        provider: Arc<dyn Provider>, 
-        tools: Vec<Arc<dyn Tool>>, 
+        provider: Arc<dyn Provider>,
+        tools: Vec<Arc<dyn Tool>>,
         model_name: String,
         workspace_dir: String,
     ) -> Self {
@@ -74,7 +74,7 @@ impl Agent {
             total_tokens: 0,
         }
     }
-    
+
     pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
         self.memory = memory;
         self
@@ -111,8 +111,15 @@ impl Agent {
         // Auto-save user message
         if self.auto_save {
             // Placeholder: timestamp-based key
-            let key = format!("autosave_user_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos());
-            let _ = self.memory.store(&key, &user_message, self.memory_session_id.as_deref());
+            let key = format!(
+                "autosave_user_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos()
+            );
+            let _ = self
+                .memory
+                .store(&key, &user_message, self.memory_session_id.as_deref());
         }
 
         // System Prompt Management
@@ -123,19 +130,22 @@ impl Agent {
 
         if !self.has_system_prompt {
             let system_prompt = self.build_system_prompt()?;
-            
+
             // Insert or replace system prompt at index 0
             if !self.history.is_empty() && self.history[0].role == "system" {
                 self.history[0].content = system_prompt;
             } else {
-                self.history.insert(0, ChatMessage {
-                    role: "system".to_string(),
-                    content: system_prompt,
-                    name: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    content_parts: None,
-                });
+                self.history.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: system_prompt,
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        content_parts: None,
+                    },
+                );
             }
             self.has_system_prompt = true;
             self.workspace_prompt_fingerprint = Some(workspace_fp);
@@ -153,7 +163,7 @@ impl Agent {
 
         // Enforce history limits
         trim_history(&mut self.history, self.max_history_messages as u32);
-        
+
         // Attempt auto-compaction if enabled and over token limit
         if self.token_limit > 0 {
             let compaction_config = CompactionConfig {
@@ -164,14 +174,42 @@ impl Agent {
                 max_history_messages: self.max_history_messages as u32,
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
-            
+
             // We ignore the result (bool) as it just indicates if compaction happened
             let _ = auto_compact_history(
                 &mut self.history,
                 &self.provider,
                 &self.model_name,
-                &compaction_config
+                &compaction_config,
             );
+        }
+
+        // ── Follow-through detection (mirrors Nullclaw) ────────────────────────
+        /// Returns true when the model promises action ("I'll try"/"Let me check")
+        /// but hasn't actually issued a tool call.
+        fn should_force_follow_through(text: &str) -> bool {
+            let lower = text.to_lowercase();
+            const PATTERNS: &[&str] = &[
+                "i'll try",
+                "i will try",
+                "let me try",
+                "i'll check",
+                "i will check",
+                "let me check",
+                "i'll retry",
+                "i will retry",
+                "let me retry",
+                "i'll attempt",
+                "i will attempt",
+                "i'll do that now",
+                "i will do that now",
+                "doing that now",
+                "let me do that",
+                "i'll look",
+                "i will look",
+                "let me look",
+            ];
+            PATTERNS.iter().any(|p| lower.contains(p))
         }
 
         // Loop for tools
@@ -183,33 +221,46 @@ impl Agent {
             }
 
             // Prepare ToolSpecs
-            let tool_specs: Vec<ToolSpec> = self.tools.iter().map(|t| {
-                let params: serde_json::Value = serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
-                ToolSpec {
-                    name: t.name().to_string(),
-                    description: t.description().to_string(),
-                    parameters: params,
-                }
-            }).collect();
+            let tool_specs: Vec<ToolSpec> = self
+                .tools
+                .iter()
+                .map(|t| {
+                    let params: serde_json::Value =
+                        serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
+                    ToolSpec {
+                        name: t.name().to_string(),
+                        description: t.description().to_string(),
+                        parameters: params,
+                    }
+                })
+                .collect();
 
             let request = ChatRequest {
                 messages: &self.history,
                 model: &self.model_name,
                 temperature: self.temperature,
                 max_tokens: Some(self.max_tokens),
-                tools: if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+                tools: if tool_specs.is_empty() {
+                    None
+                } else {
+                    Some(&tool_specs)
+                },
                 timeout_secs: 60,
                 reasoning_effort: None,
             };
 
             let response = self.provider.chat(&request)?;
-            
+
             // Append assistant response
             let assistant_msg = ChatMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone().unwrap_or_default(),
                 name: None,
-                tool_calls: if response.tool_calls.is_empty() { None } else { Some(response.tool_calls.clone()) },
+                tool_calls: if response.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(response.tool_calls.clone())
+                },
                 tool_call_id: None,
                 content_parts: None,
             };
@@ -219,18 +270,53 @@ impl Agent {
             // For providers with native tool support, use response.tool_calls
             // For others, parse tool calls from the response content
             let tool_calls_to_execute: Vec<ParsedToolCall> = if !response.tool_calls.is_empty() {
-                // Native tool format - convert ToolCall to ParsedToolCall
-                response.tool_calls.iter().map(|tc| ParsedToolCall {
-                    name: tc.function.name.clone(),
-                    arguments_json: tc.function.arguments.clone(),
-                    tool_call_id: Some(tc.id.clone()),
-                }).collect()
+                // Native tool format
+                response
+                    .tool_calls
+                    .iter()
+                    .map(|tc| ParsedToolCall {
+                        name: tc.function.name.clone(),
+                        arguments_json: tc.function.arguments.clone(),
+                        tool_call_id: Some(tc.id.clone()),
+                    })
+                    .collect()
             } else {
-                // Parse tool calls from content for non-native providers
+                // Parse XML tool calls from content
                 let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
                 if parse_result.calls.is_empty() {
-                    // No tool calls found, return the content
-                    return Ok(response.content.unwrap_or_default());
+                    let display_text = response.content.clone().unwrap_or_default();
+
+                    // ── Action follow-through guardrail ──────────────────
+                    // If the model promised to act but issued no tool call,
+                    // inject a SYSTEM message and force another iteration.
+                    if iterations < self.max_tool_iterations.saturating_sub(1)
+                        && should_force_follow_through(&display_text)
+                    {
+                        self.history.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: display_text,
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            content_parts: None,
+                        });
+                        self.history.push(ChatMessage {
+                            role: "user".to_string(),
+                            content: "SYSTEM: You promised to take action now (e.g. \"I'll try/check now\"). \
+                                Issue the appropriate tool call(s) in this turn. \
+                                If no tool can do it, state the limitation clearly — do not defer again."
+                                .to_string(),
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            content_parts: None,
+                        });
+                        iterations += 1;
+                        continue;
+                    }
+
+                    // No tool calls, no promise — genuine final response
+                    return Ok(display_text);
                 }
                 parse_result.calls
             };
@@ -272,9 +358,7 @@ impl Agent {
                 execution_results.push(result);
             }
 
-            let _formatted_results = format_tool_results(&execution_results);
-
-            // Append tool results
+            // Append tool results to history
             for result in execution_results {
                 self.history.push(ChatMessage {
                     role: "tool".to_string(),
@@ -286,9 +370,11 @@ impl Agent {
                 });
             }
 
+            // ── CRITICAL: re-enter loop so the provider sees tool results ──
             iterations += 1;
+            continue;
         }
 
-        Ok("Max iterations reached".to_string())
+        Ok("[Agent]: Max tool iterations reached".to_string())
     }
 }

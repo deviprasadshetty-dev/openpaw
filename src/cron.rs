@@ -1,6 +1,6 @@
 use crate::bus::Bus;
 use crate::config::Config;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,6 +76,65 @@ impl CronScheduler {
         Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             bus: bus.clone(),
+        }
+    }
+
+    /// Check all jobs and fire any that are due. Call this every ~60s.
+    pub fn tick(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut jobs = self.jobs.lock().unwrap();
+        let mut to_fire: Vec<String> = Vec::new();
+        let mut to_delete: Vec<String> = Vec::new();
+
+        for (id, job) in jobs.iter_mut() {
+            if !job.enabled || job.paused {
+                continue;
+            }
+            if job.next_run_secs > 0 && now >= job.next_run_secs {
+                to_fire.push(id.clone());
+                job.last_run_secs = Some(now);
+                job.last_status = Some("running".to_string());
+
+                // Advance next_run by parsing expression as an interval
+                if let Ok(interval) = parse_duration(&job.expression) {
+                    job.next_run_secs = now + interval;
+                } else {
+                    // One-shot or unparseable — pause it
+                    job.paused = true;
+                }
+
+                if job.delete_after_run || job.one_shot {
+                    to_delete.push(id.clone());
+                }
+            }
+        }
+        drop(jobs);
+
+        for id in &to_delete {
+            self.jobs.lock().unwrap().remove(id);
+        }
+
+        for id in to_fire {
+            // Send the job's command/prompt to the bus as a system message
+            let jobs = self.jobs.lock().unwrap();
+            let cmd = if let Some(j) = jobs.get(&id) {
+                j.command.clone()
+            } else {
+                // already deleted (one-shot)
+                continue;
+            };
+            drop(jobs);
+            let _ = self.bus.publish_inbound(crate::bus::make_inbound(
+                "cron",
+                "cron",
+                "",
+                &cmd,
+                &format!("cron_{}", id),
+            ));
         }
     }
 

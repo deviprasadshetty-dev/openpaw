@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct MemoryEntry {
@@ -9,7 +10,12 @@ pub struct MemoryEntry {
 
 pub trait Memory: Send + Sync {
     fn store(&self, key: &str, content: &str, session_id: Option<&str>) -> Result<()>;
-    fn recall(&self, query: &str, limit: usize, session_id: Option<&str>) -> Result<Vec<MemoryEntry>>;
+    fn recall(
+        &self,
+        query: &str,
+        limit: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>>;
 }
 
 pub struct NoopMemory;
@@ -18,8 +24,47 @@ impl Memory for NoopMemory {
     fn store(&self, _key: &str, _content: &str, _session_id: Option<&str>) -> Result<()> {
         Ok(())
     }
-    fn recall(&self, _query: &str, _limit: usize, _session_id: Option<&str>) -> Result<Vec<MemoryEntry>> {
+    fn recall(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>> {
         Ok(vec![])
+    }
+}
+
+/// Bridges any `crate::memory::MemoryStore` to the agent `Memory` trait.
+/// This lets SqliteMemory, MarkdownMemory, LruMemory, etc. be passed to the agent.
+pub struct MemoryAdapter<S: crate::memory::MemoryStore> {
+    pub inner: Arc<S>,
+}
+
+impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAdapter<S> {
+    fn store(&self, key: &str, content: &str, session_id: Option<&str>) -> Result<()> {
+        self.inner.store(
+            key,
+            content,
+            crate::memory::MemoryCategory::Core,
+            session_id,
+        )
+    }
+
+    fn recall(
+        &self,
+        query: &str,
+        limit: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>> {
+        let entries = self.inner.recall(query, limit, session_id)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| MemoryEntry {
+                key: e.key,
+                content: e.content,
+                session_id: e.session_id,
+            })
+            .collect())
     }
 }
 
@@ -40,6 +85,6 @@ pub fn enrich_message(
     }
     context.push_str("\n");
     context.push_str(user_message);
-    
+
     Ok(context)
 }

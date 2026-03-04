@@ -67,7 +67,24 @@ use tracing_subscriber::EnvFilter;
 use crate::config_types::TelegramConfig;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    name = "openpaw",
+    author,
+    version,
+    about = "OpenPaw — lightweight local AI agent",
+    long_about = concat!(
+        "\n",
+        "  OpenPaw is a lightweight, privacy-focused AI agent that runs entirely\n",
+        "  on your machine. Connect LLMs from Gemini, OpenAI, Anthropic, or OpenRouter.\n",
+        "  Supports voice transcription (Groq Whisper), Telegram, MCP tools, skills,\n",
+        "  and persistent memory (SQLite / Markdown / LRU).\n",
+        "\n",
+        "  Quick start:\n",
+        "    openpaw onboard          # interactive setup wizard\n",
+        "    openpaw agent            # start interactive agent\n",
+        "    openpaw agent -m \"hi\"   # one-shot message\n",
+    )
+)]
 struct Args {
     #[arg(short, long)]
     config: Option<String>,
@@ -151,7 +168,14 @@ async fn main() -> Result<()> {
             onboard::interactive_onboard(dir)?;
             return Ok(());
         }
-        Some(Commands::Gateway) | None => {
+        None => {
+            // No command — print banner + quick help, then start daemon
+            print!("{}", onboard::BANNER);
+            println!("  No command specified. Starting agent daemon...");
+            println!("  Tip: run `openpaw --help` to see all commands.\n");
+            gateway::serve(config).await?;
+        }
+        Some(Commands::Gateway) => {
             gateway::serve(config).await?;
         }
         Some(Commands::Agent { message }) => {
