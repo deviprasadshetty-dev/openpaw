@@ -1,5 +1,6 @@
 use crate::bus::{InboundMessage, global_bus};
 use crate::channels::root::Channel;
+use crate::channels::telegram::TelegramChannel;
 use crate::config::Config;
 use anyhow::Result;
 use std::fs;
@@ -215,9 +216,11 @@ fn telegram_polling_loop(
 
     let mut offset =
         load_telegram_update_offset(config, channel.account_id(), bot_token).unwrap_or(0);
-    // If offset is 0, we might want to start from latest, but Telegram handles offset=0 as "unconfirmed".
-    // Actually if we pass offset+1 we confirm.
-    // Let's assume poll_updates takes an offset.
+    if offset > 0 {
+        if let Some(tg) = channel.as_any().downcast_ref::<TelegramChannel>() {
+            tg.set_initial_update_offset(offset);
+        }
+    }
 
     while !stop_requested.load(Ordering::Relaxed) {
         last_activity.store(
@@ -231,16 +234,7 @@ fn telegram_polling_loop(
         // Poll for updates from Telegram
         match channel.poll_updates() {
             Ok(messages) => {
-                let mut max_update_id = 0i64;
-
                 for msg in messages {
-                    // Track the highest update_id for offset persistence
-                    if let Some(msg_id) = msg.message_id {
-                        if msg_id > max_update_id {
-                            max_update_id = msg_id;
-                        }
-                    }
-
                     // Convert ParsedMessage to InboundMessage and publish to bus
                     let typing_chat_id = msg.chat_id.clone();
                     let inbound = InboundMessage {
@@ -266,15 +260,18 @@ fn telegram_polling_loop(
                     }
                 }
 
-                // Persist offset if we processed any messages
-                if max_update_id > 0 {
-                    persist_telegram_update_offset_if_advanced(
-                        config,
-                        channel.account_id(),
-                        bot_token,
-                        &mut offset,
-                        max_update_id,
-                    );
+                // Persist current Telegram polling offset even when messages are filtered out.
+                if let Some(tg) = channel.as_any().downcast_ref::<TelegramChannel>() {
+                    let candidate_offset = tg.current_update_offset();
+                    if candidate_offset > 0 {
+                        persist_telegram_update_offset_if_advanced(
+                            config,
+                            channel.account_id(),
+                            bot_token,
+                            &mut offset,
+                            candidate_offset,
+                        );
+                    }
                 }
             }
             Err(e) => {

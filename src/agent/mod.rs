@@ -13,6 +13,7 @@ pub use routing::{
 };
 
 use anyhow::Result;
+use regex::Regex;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -43,6 +44,41 @@ pub struct Agent {
     pub history: Vec<ChatMessage>,
     pub total_tokens: u64,
     pub tool_cache: crate::tools::cache::ToolCache,
+}
+
+/// Removes raw tool-call markup from LLM output that leaked into the final text.
+/// Strips:
+///   - `<tool_call>...</tool_call>` XML blocks
+///   - `[tool_call]...[/tool_call]` and `[TOOL_CALL]...[/TOOL_CALL]` bracket blocks
+///   - `` ```tool_call...``` `` fenced code blocks
+///   - `` ```tool_code...``` `` fenced blocks that look like Python/JSON dumps
+/// Returns a trimmed result; falls back to "\u{2705} Done." if everything was stripped.
+pub fn strip_tool_call_markup(text: &str) -> String {
+    // 1. XML-style <tool_call>...</tool_call>
+    let xml_re = Regex::new(r"(?si)<tool_call>.*?</tool_call>").unwrap();
+    let out = xml_re.replace_all(text, "");
+
+    // 2. Bracket-style [tool_call]...[/tool_call] (case-insensitive)
+    let bracket_re = Regex::new(r"(?si)\[tool_call\].*?\[/tool_call\]").unwrap();
+    let out = bracket_re.replace_all(&out, "");
+
+    // 3. Fenced ```tool_call ... ``` code blocks
+    let fenced_tc_re = Regex::new(r"(?si)```\s*tool_call.*?```").unwrap();
+    let out = fenced_tc_re.replace_all(&out, "");
+
+    // 4. Fenced ```tool_code ... ``` blocks that look like Python/JSON dumps
+    //    (heuristic: block starts with 'import json' or 'json.loads(')
+    let fenced_py_re = Regex::new(r"(?si)```\s*tool_code\s*\nimport json.*?```").unwrap();
+    let out = fenced_py_re.replace_all(&out, "");
+    let fenced_py2_re = Regex::new(r"(?si)```\s*tool_code\s*\njson\.loads\(.*?```").unwrap();
+    let out = fenced_py2_re.replace_all(&out, "");
+
+    let trimmed = out.trim().to_string();
+    if trimmed.is_empty() {
+        "\u{2705} Done.".to_string()
+    } else {
+        trimmed
+    }
 }
 
 impl Agent {
@@ -331,7 +367,7 @@ impl Agent {
                     }
 
                     // No tool calls, no promise — genuine final response
-                    return Ok(display_text);
+                    return Ok(strip_tool_call_markup(&display_text));
                 }
                 parse_result.calls
             };
@@ -421,7 +457,9 @@ impl Agent {
             continue;
         }
 
-        Ok("[Agent]: Max tool iterations reached".to_string())
+        Ok(strip_tool_call_markup(
+            "[Agent]: Max tool iterations reached",
+        ))
     }
 
     /// Streaming variant of `turn()`. Emits text deltas to `callback` as tokens arrive.
@@ -614,7 +652,9 @@ impl Agent {
                 let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
                 if parse_result.calls.is_empty() {
                     // No tool calls — return final text
-                    return Ok(response.content.unwrap_or_default());
+                    return Ok(strip_tool_call_markup(
+                        &response.content.unwrap_or_default(),
+                    ));
                 }
                 parse_result.calls
             };
@@ -703,6 +743,50 @@ impl Agent {
             continue;
         }
 
-        Ok("[Agent]: Max tool iterations reached".to_string())
+        Ok(strip_tool_call_markup(
+            "[Agent]: Max tool iterations reached",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_tool_call_markup_xml() {
+        let input = "Here is the result. <tool_call>{\"name\": \"foo\"}</tool_call> Thanks.";
+        let out = strip_tool_call_markup(input);
+        assert_eq!(out, "Here is the result.  Thanks.".trim());
+    }
+
+    #[test]
+    fn test_strip_tool_call_markup_bracket() {
+        let input = "Done [tool_call]{json}[/tool_call] end";
+        let out = strip_tool_call_markup(input);
+        assert_eq!(out, "Done  end".trim());
+    }
+
+    #[test]
+    fn test_strip_tool_call_markup_fenced() {
+        let input = "Some text\n```tool_call\n{\"fn\": \"bar\"}\n```\nMore text";
+        let out = strip_tool_call_markup(input);
+        assert!(out.contains("Some text"));
+        assert!(out.contains("More text"));
+        assert!(!out.contains("tool_call"));
+    }
+
+    #[test]
+    fn test_strip_tool_call_markup_empty_fallback() {
+        let input = "<tool_call>everything</tool_call>";
+        let out = strip_tool_call_markup(input);
+        assert_eq!(out, "\u{2705} Done.");
+    }
+
+    #[test]
+    fn test_strip_tool_call_markup_clean_text() {
+        let input = "This is a normal response without any tool calls.";
+        let out = strip_tool_call_markup(input);
+        assert_eq!(out, input);
     }
 }

@@ -13,6 +13,7 @@ use crate::providers::factory::{self, ProviderConfig};
 use crate::session::SessionManager;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -220,12 +221,20 @@ pub fn init_channels(
     let mut registry = ChannelRegistry::new();
     let mut polling_threads = Vec::new();
     let mut runtime = ChannelRuntime;
+    let mut seen_telegram_tokens = HashSet::new();
 
     // Initialize Telegram channels
     for tg_config in &config.channels.telegram {
         if tg_config.bot_token.is_empty() {
             warn!(
                 "Skipping Telegram account {}: no bot token",
+                tg_config.account_id
+            );
+            continue;
+        }
+        if !seen_telegram_tokens.insert(tg_config.bot_token.clone()) {
+            warn!(
+                "Skipping duplicate Telegram bot token for account {}",
                 tg_config.account_id
             );
             continue;
@@ -348,7 +357,12 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                             .as_ref()
                             .and_then(|m| m.providers.get(provider_name))
                         {
-                            if !p_cfg.api_key.is_empty() {
+                            let provider_key = p_cfg.api_key.trim();
+                            let has_real_provider_key = !provider_key.is_empty()
+                                && !(provider_name == "gemini"
+                                    && provider_key.eq_ignore_ascii_case("cli_oauth"));
+
+                            if has_real_provider_key {
                                 if provider_name == "openai" {
                                     m = m.with_embedder(Arc::new(
                                         crate::memory::embeddings::OpenAiEmbedder::new(
@@ -377,6 +391,12 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                                     ));
                                     info!("Attached Hugging Face embedder ({}) to memory", model);
                                 }
+                            } else if provider_name == "gemini"
+                                && provider_key.eq_ignore_ascii_case("cli_oauth")
+                            {
+                                info!(
+                                    "Skipping Gemini embedder: CLI OAuth mode selected and embeddings require an API key"
+                                );
                             }
                         }
 
@@ -395,6 +415,40 @@ pub async fn run_daemon(config: Config) -> Result<()> {
 
     // Initialize Tools
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+
+    // Memory tools — wire to the raw MemoryStore backend so the agent can
+    // explicitly store, recall, list, and forget memories at runtime.
+    let raw_memory_store: Option<Arc<dyn crate::memory::MemoryStore>> =
+        match config.memory.backend.as_str() {
+            "markdown" => Some(Arc::new(
+                crate::memory::engines::markdown::MarkdownMemory::from_workspace(
+                    &config.workspace_dir,
+                ),
+            )),
+            "none" => None,
+            _ => {
+                let db_path = format!("{}/memory.db", config.workspace_dir);
+                match crate::memory::sqlite::SqliteMemory::new(&db_path) {
+                    Ok(m) => Some(Arc::new(m)),
+                    Err(_) => None,
+                }
+            }
+        };
+
+    if let Some(ref ms) = raw_memory_store {
+        tools.push(Arc::new(crate::tools::memory_store::MemoryStoreTool {
+            memory: ms.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::memory_recall::MemoryRecallTool {
+            memory: ms.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::memory_forget::MemoryForgetTool {
+            memory: ms.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::memory_list::MemoryListTool {
+            memory: ms.clone(),
+        }));
+    }
 
     // File Tools
     tools.push(Arc::new(crate::tools::file_read::FileReadTool {
@@ -499,6 +553,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         default_channel: None,
         default_chat_id: None,
     }));
+    tools.push(Arc::new(crate::tools::message::MessageTool::new()));
 
     // Hardware Tools
     tools.push(Arc::new(

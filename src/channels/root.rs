@@ -37,6 +37,8 @@ pub struct ParsedMessage {
     pub content: String,
     pub session_key: String,
     pub is_group: bool,
+    /// Channel-level update identifier (e.g., Telegram update_id).
+    pub update_id: Option<i64>,
     pub message_id: Option<i64>,
     pub username: Option<String>,
     pub first_name: Option<String>,
@@ -50,6 +52,7 @@ impl ParsedMessage {
             content: content.to_string(),
             session_key: session_key.to_string(),
             is_group: false,
+            update_id: None,
             message_id: None,
             username: None,
             first_name: None,

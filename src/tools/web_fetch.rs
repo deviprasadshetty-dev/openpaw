@@ -67,12 +67,13 @@ impl Tool for WebFetchTool {
             }
         };
 
-        let mut extracted = html_to_text(&body);
+        let extracted = html_to_text(&body);
 
         if extracted.len() > max_chars {
+            let boundary = floor_char_boundary(&extracted, max_chars);
             let truncated = format!(
                 "{}\n\n[Content truncated at {} chars, total {} chars]",
-                &extracted[..max_chars],
+                &extracted[..boundary],
                 max_chars,
                 extracted.len()
             );
@@ -83,26 +84,43 @@ impl Tool for WebFetchTool {
     }
 }
 
+/// Walk back from `max` to the nearest char boundary in `s`.
+/// Returns the largest index `<= max` that is a valid char boundary.
+pub fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    let mut idx = max;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 pub fn html_to_text(html: &str) -> String {
     let mut buf = String::new();
-    let mut i = 0;
-    let bytes = html.as_bytes();
-
     let mut in_script = false;
     let mut in_style = false;
     let mut last_was_newline = false;
     let mut consecutive_newlines = 0;
 
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(tag_end) = bytes[i..].iter().position(|&c| c == b'>') {
-                let tag_end = i + tag_end;
-                let tag_content = &bytes[i + 1..tag_end];
-                let tag_content_str = String::from_utf8_lossy(tag_content).to_lowercase();
-                let tag_lower = tag_content_str.split_whitespace().next().unwrap_or("");
+    // We iterate the HTML as a &str (proper Unicode), advancing char by char.
+    // When we hit '<', we do a sub-slice find on bytes for '>' since tag content
+    // is always ASCII-compatible.
+    let bytes = html.as_bytes();
+    let mut i = 0usize; // byte index
 
-                if tag_content.starts_with(b"/") {
-                    let close_tag = String::from_utf8_lossy(&tag_content[1..]).to_lowercase();
+    while i < html.len() {
+        // ── Tag handling ─────────────────────────────────────────────────────
+        if bytes[i] == b'<' {
+            if let Some(tag_end_rel) = bytes[i..].iter().position(|&c| c == b'>') {
+                let tag_end = i + tag_end_rel;
+                let tag_content = &html[i + 1..tag_end];
+                let tag_lower_str = tag_content.to_ascii_lowercase();
+                let tag_lower = tag_lower_str.split_whitespace().next().unwrap_or("");
+
+                if tag_content.starts_with('/') {
+                    let close_tag = tag_content[1..].to_ascii_lowercase();
                     let close_tag = close_tag.split_whitespace().next().unwrap_or("");
                     if close_tag == "script" {
                         in_script = false;
@@ -164,9 +182,13 @@ pub fn html_to_text(html: &str) -> String {
 
                 if tag_lower.len() == 2
                     && tag_lower.starts_with('h')
-                    && tag_lower.chars().nth(1).unwrap().is_ascii_digit()
+                    && tag_lower
+                        .chars()
+                        .nth(1)
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
                 {
-                    let level = tag_lower.chars().nth(1).unwrap() as u8 - b'0';
+                    let level = tag_lower.as_bytes()[1] - b'0';
                     if !last_was_newline && !buf.is_empty() {
                         append_newline(&mut buf, &mut consecutive_newlines);
                         last_was_newline = true;
@@ -206,26 +228,39 @@ pub fn html_to_text(html: &str) -> String {
         }
 
         if in_script || in_style {
-            i += 1;
+            // Advance by one Unicode char so we don't get stuck inside multibyte sequences
+            let ch = html[i..].chars().next().unwrap_or('\0');
+            i += ch.len_utf8();
             continue;
         }
 
-        let c = bytes[i] as char;
-        if c == '\n' || c == '\r' {
-            if !last_was_newline {
-                buf.push(' ');
+        // ── Text content ─────────────────────────────────────────────────────
+        // Decode the next Unicode scalar value properly.
+        let ch = match html[i..].chars().next() {
+            Some(c) => c,
+            None => break,
+        };
+        let ch_len = ch.len_utf8();
+
+        match ch {
+            '\n' | '\r' => {
+                if !last_was_newline {
+                    buf.push(' ');
+                }
             }
-        } else if c == ' ' || c == '\t' {
-            if !buf.is_empty() && !buf.ends_with(' ') && !last_was_newline {
-                buf.push(' ');
+            ' ' | '\t' => {
+                if !buf.is_empty() && !buf.ends_with(' ') && !last_was_newline {
+                    buf.push(' ');
+                }
             }
-        } else {
-            buf.push(c);
-            last_was_newline = false;
-            consecutive_newlines = 0;
+            _ => {
+                buf.push(ch);
+                last_was_newline = false;
+                consecutive_newlines = 0;
+            }
         }
 
-        i += 1;
+        i += ch_len;
     }
 
     buf.trim_end().to_string()
@@ -235,5 +270,51 @@ fn append_newline(buf: &mut String, consecutive: &mut u32) {
     if *consecutive < 2 {
         buf.push('\n');
         *consecutive += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_floor_char_boundary_ascii() {
+        let s = "hello";
+        assert_eq!(floor_char_boundary(s, 3), 3);
+        assert_eq!(floor_char_boundary(s, 100), 5);
+        assert_eq!(floor_char_boundary(s, 0), 0);
+    }
+
+    #[test]
+    fn test_floor_char_boundary_multibyte() {
+        // "é" is 2 bytes (0xC3 0xA9). If we ask for boundary at byte 1 we should get 0.
+        let s = "éñ";
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 1), 0); // inside 'é'
+        assert_eq!(floor_char_boundary(s, 2), 2); // right after 'é'
+        assert_eq!(floor_char_boundary(s, 3), 2); // inside 'ñ'
+        assert_eq!(floor_char_boundary(s, 4), 4); // right after 'ñ'
+    }
+
+    #[test]
+    fn test_html_to_text_utf8() {
+        let html = "<p>Привет мир</p><p>emoji: 🐱</p>";
+        let text = html_to_text(html);
+        assert!(text.contains("Привет мир"), "Cyrillic preserved: {}", text);
+        assert!(text.contains('🐱'), "Emoji preserved: {}", text);
+    }
+
+    #[test]
+    fn test_html_to_text_multibyte_truncation_no_panic() {
+        // Build HTML with multibyte content and ensure slicing at max_chars doesn't panic.
+        let html = "<p>".to_string() + &"é".repeat(60_000) + "</p>";
+        let extracted = html_to_text(&html);
+        // Simulated truncation: must not panic even if 50_000 is mid-codepoint
+        let max_chars = 50_000;
+        if extracted.len() > max_chars {
+            let boundary = floor_char_boundary(&extracted, max_chars);
+            let _truncated = &extracted[..boundary];
+        }
+        assert!(!extracted.is_empty());
     }
 }

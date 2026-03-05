@@ -181,23 +181,35 @@ async fn main() -> Result<()> {
         Some(Commands::Agent { message }) => {
             // Add Telegram config from environment variable if available (override/append)
             if let Ok(bot_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
-                let allow_from = std::env::var("TELEGRAM_ALLOW_FROM")
-                    .unwrap_or_else(|_| "*".to_string())
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect();
+                let already_configured = config
+                    .channels
+                    .telegram
+                    .iter()
+                    .any(|c| c.bot_token == bot_token);
 
-                config.channels.telegram.push(TelegramConfig {
-                    account_id: "env_main".to_string(),
-                    bot_token,
-                    allow_from,
-                    group_allow_from: vec![],
-                    group_policy: "allowlist".to_string(),
-                    reply_in_private: true,
-                    proxy: std::env::var("TELEGRAM_PROXY").ok(),
-                });
+                if already_configured {
+                    info!(
+                        "TELEGRAM_BOT_TOKEN already present in config; skipping duplicate env Telegram channel"
+                    );
+                } else {
+                    let allow_from = std::env::var("TELEGRAM_ALLOW_FROM")
+                        .unwrap_or_else(|_| "*".to_string())
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect();
 
-                info!("Telegram bot configured from environment");
+                    config.channels.telegram.push(TelegramConfig {
+                        account_id: "env_main".to_string(),
+                        bot_token,
+                        allow_from,
+                        group_allow_from: vec![],
+                        group_policy: "allowlist".to_string(),
+                        reply_in_private: true,
+                        proxy: std::env::var("TELEGRAM_PROXY").ok(),
+                    });
+
+                    info!("Telegram bot configured from environment");
+                }
             }
 
             if let Some(msg) = message {

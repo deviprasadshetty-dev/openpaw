@@ -22,6 +22,39 @@ Whether it's prowling through your file system, sniffing out data in technical d
 
 ## ✨ The Agent's Instincts (Features)
 
+### 🤖 AI Providers
+
+Connect to the best AI models through a unified interface. OpenPaw supports **7 providers out of the box**:
+
+| Provider | Free Tier | Notes |
+|---|---|---|
+| **Gemini** | ✅ 15 req/min, 1M tokens/day | Google AI Studio key |
+| **Gemini CLI** | ✅ No key needed | Reuses your existing `gemini` CLI OAuth session |
+| **OpenAI** | ❌ | GPT-4o, o1, o3 |
+| **Anthropic** | ❌ | Claude 3.5 / 3.7 |
+| **OpenRouter** | ✅ 25+ free models | 200+ models via one key — **auto-detected** |
+| **Kilo.ai** | ✅ Free + 200+ paid | Gateway to hundreds of models — **auto-detected** |
+| **OpenCode** | ✅ | OpenCode Zen free models |
+| **Ollama** | ✅ Fully local | No key needed, runs on your machine |
+
+#### 🆓 Smart Free Model Detection
+When you choose **OpenRouter** or **Kilo.ai** during setup, OpenPaw automatically:
+- Fetches the full model list live from the provider's API
+- **Filters for genuinely free models** (`pricing.prompt == 0`, `pricing.completion == 0`)
+- For OpenRouter, enforces a **minimum 8,192-token context window** — filters out unusable tiny models, keeping only 32K–512K context ones useful for agents
+- Presents a ranked list (largest context first) with a recommended default
+- Saves remaining free models as **automatic runtime fallbacks**
+
+#### 🔄 Automatic Runtime Fallback (Kilo.ai)
+If your selected model fails (rate-limited, overloaded, unavailable), OpenPaw silently retries with the next free model in your fallback list — no interruption, no errors. Logged as warnings so you can see what happened.
+
+```
+WARN [kilocode] Model 'minimax/minimax-m2.1:free' failed: 429. Trying fallbacks…
+WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:free'
+```
+
+---
+
 ### 🧠 Sophisticated Orchestration
 *   **7-Tier Territory Routing:** Advanced logic that routes messages based on Peer, Guild, Team, Account, or Channel constraints. Your agent always knows its place.
 *   **The Whisker-Thin Bus:** A high-throughput internal message bus (via `crossbeam-channel`) that orchestrates silent, deadly-efficient communication between modules.
@@ -56,12 +89,29 @@ Whether it's prowling through your file system, sniffing out data in technical d
     cargo build --release
     ```
 
-2.  **Onboarding (The "First Meow"):**
-    OpenPaw features an interactive onboarding process to scaffold your workspace:
+2.  **Install Globally:**
+    To use OpenPaw from anywhere in your terminal:
     ```bash
-    cargo run -- release onboard
+    cargo install --path .
     ```
-    *This will help you configure your AI providers (OpenAI, Anthropic, Gemini, etc.), set up your agent's soul (`SOUL.md`), and link your communication channels.*
+
+3.  **Onboarding (The "First Meow"):**
+    Run the interactive setup wizard — now with a modern color terminal UI:
+    ```bash
+    openpaw onboard
+    ```
+
+    The wizard walks you through **5 focused steps** — only things that go into `config.json`:
+
+    | Step | What it configures |
+    |---|---|
+    | **1. AI Provider** | Provider, API key, auto-fetch free models (OpenRouter/Kilo.ai) |
+    | **2. Memory** | SQLite / Markdown / None + optional vector embeddings |
+    | **3. Voice** | Groq Whisper transcription (free key at console.groq.com) |
+    | **4. Telegram** | Bot token for mobile chat |
+    | **5. Composio** | External app integrations (Gmail, GitHub, Slack…) |
+
+    No fluff — no questions about names or timezones that don't affect your agent's behaviour.
 
 ---
 

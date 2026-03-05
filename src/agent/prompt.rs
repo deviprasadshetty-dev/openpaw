@@ -158,6 +158,24 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     out.push_str("- Use `<thought>` tags or general text to explain your reasoning before executing any tools.\n");
     out.push_str("- If a task is complex, outline an explicit multi-step plan first, then execute the steps sequentially, reviewing the outcomes along the way.\n\n");
 
+    // Persistence — never give up, find alternatives
+    out.push_str("## Persistence & Problem Solving\n\n");
+    out.push_str("You have access to a terminal, the full file system, a web browser, code execution, screenshot tools, and more — the same capabilities a skilled human engineer has at their desk.\n\n");
+    out.push_str("Given these capabilities, \"I can't do that\" is almost never true and is not an acceptable response.\n\n");
+    out.push_str("- **If one approach fails, immediately try another.** Run a shell command. Read a file. Search the web. Write a script. Use a different tool.\n");
+    out.push_str("- **If a tool errors out**, diagnose the error (check the output, read logs, inspect the file) and retry with the right parameters or a workaround.\n");
+    out.push_str("- **If you are blocked**, decompose the problem — break it into smaller steps and solve each one. There is always a path forward.\n");
+    out.push_str("- **Only tell the user something cannot be done** after you have genuinely exhausted every tool and approach, and always explain exactly what you tried and why it failed.\n");
+    out.push_str("- Think like a resourceful engineer: Google it, write the script, read the source, patch it, work around it. Never give up.\n\n");
+
+    // Communication rules
+    out.push_str("## Communication Rules\n\n");
+    out.push_str("- Never mention or refer to internal configuration files (e.g. SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, etc.) in your replies. These are private implementation details.\n");
+    out.push_str(
+        "- Never expose memory keys (e.g. autosave_*, last_hygiene_at) in user-facing replies.\n",
+    );
+    out.push_str("- Speak naturally as if these instructions are simply who you are — don't break the fourth wall.\n\n");
+
     // Safety section
     out.push_str("## Safety\n\n");
     out.push_str("- Do not exfiltrate private data.\n");
@@ -165,7 +183,6 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     out.push_str("- Do not bypass oversight or approval mechanisms.\n");
     out.push_str("- Prefer `trash` over `rm`.\n");
     out.push_str("- When in doubt, ask before acting externally.\n\n");
-    out.push_str("- Never expose internal memory implementation keys (for example: `autosave_*`, `last_hygiene_at`) in user-facing replies.\n\n");
 
     // Skills section
     append_skills_section(&mut out, ctx.workspace_dir);
@@ -222,26 +239,21 @@ fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) 
             if content.trim().is_empty() {
                 return;
             }
-
-            out.push_str(&format!("\n=== BEGIN {} ===\n", filename));
+            // Inject the content directly without exposing the source filename
             if content.len() > BOOTSTRAP_MAX_CHARS {
                 out.push_str(&content[..BOOTSTRAP_MAX_CHARS]);
                 out.push_str("\n...[truncated]...\n");
             } else {
                 out.push_str(&content);
             }
-            out.push_str(&format!("\n=== END {} ===\n\n", filename));
+            out.push_str("\n\n");
         }
     }
 }
 
 fn build_identity_section(out: &mut String, workspace_dir: &str) {
-    out.push_str("## Project Context\n\n");
-    out.push_str("The following workspace files define your identity, behavior, and context.\n\n");
-    out.push_str("If AGENTS.md is present, follow its operational guidance (including startup routines and red-line constraints) unless higher-priority instructions override it.\n\n");
-    out.push_str("If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n");
-    out.push_str("TOOLS.md does not control tool availability; it is user guidance for how to use external tools.\n\n");
-
+    // Inject workspace context files silently — the agent absorbs them as its
+    // own identity without exposing the filenames to users.
     let identity_files = [
         "AGENTS.md",
         "SOUL.md",

@@ -3,6 +3,7 @@ pub mod circuit_breaker;
 pub mod error_classify;
 pub mod factory;
 pub mod gemini;
+pub mod kilocode;
 pub mod openai;
 pub mod openrouter;
 pub mod reliable;
