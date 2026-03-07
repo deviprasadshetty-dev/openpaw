@@ -117,7 +117,7 @@ impl MemoryStore for PostgresMemory {
         session_id: Option<&str>,
         _importance: Option<f64>,
     ) -> Result<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_str();
         let id = Self::nano_id();
         let cat_str = category.to_string();
@@ -146,7 +146,7 @@ impl MemoryStore for PostgresMemory {
         limit: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let trimmed = query.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
@@ -195,7 +195,7 @@ impl MemoryStore for PostgresMemory {
     }
 
     fn get(&self, key: &str) -> Result<Option<MemoryEntry>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
             "SELECT id, key, content, category, created_at, session_id FROM {} WHERE key = $1",
             self.table_fq()
@@ -225,7 +225,7 @@ impl MemoryStore for PostgresMemory {
         category: Option<MemoryCategory>,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let mut sql = format!(
             "SELECT id, key, content, category, created_at, session_id FROM {}",
             self.table_fq()
@@ -269,14 +269,14 @@ impl MemoryStore for PostgresMemory {
     }
 
     fn forget(&self, key: &str) -> Result<bool> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!("DELETE FROM {} WHERE key = $1", self.table_fq());
         let count = client.execute(&sql, &[&key])?;
         Ok(count > 0)
     }
 
     fn count(&self) -> Result<usize> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!("SELECT COUNT(*) FROM {}", self.table_fq());
         let row = client.query_one(&sql, &[])?;
         let count: i64 = row.get(0);
@@ -284,7 +284,7 @@ impl MemoryStore for PostgresMemory {
     }
 
     fn health_check(&self) -> bool {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         match client.query_one("SELECT 1", &[]) {
             Ok(_) => true,
             Err(_) => false,
@@ -294,7 +294,7 @@ impl MemoryStore for PostgresMemory {
 
 impl SessionStore for PostgresMemory {
     fn save_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
             "INSERT INTO {} (session_id, role, content) VALUES ($1, $2, $3)",
             self.messages_table_fq()
@@ -304,7 +304,7 @@ impl SessionStore for PostgresMemory {
     }
 
     fn load_messages(&self, session_id: &str) -> Result<Vec<MessageEntry>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
             "SELECT role, content FROM {} WHERE session_id = $1 ORDER BY id ASC",
             self.messages_table_fq()
@@ -321,7 +321,7 @@ impl SessionStore for PostgresMemory {
     }
 
     fn clear_messages(&self, session_id: &str) -> Result<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
             "DELETE FROM {} WHERE session_id = $1",
             self.messages_table_fq()
@@ -331,7 +331,7 @@ impl SessionStore for PostgresMemory {
     }
 
     fn clear_autosaved(&self, session_id: Option<&str>) -> Result<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sid) = session_id {
             let sql = format!(
                 "DELETE FROM {} WHERE key LIKE 'autosave_%' AND session_id = $1",

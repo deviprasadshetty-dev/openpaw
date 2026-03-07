@@ -946,7 +946,7 @@ impl Provider for GeminiProvider {
                     .iter()
                     .map(|m| m.content.len() as u32 / 4)
                     .sum();
-                let completion_tokens = (content.len() as u32 + 3) / 4;
+                let completion_tokens = (content.len() as u32).div_ceil(4);
 
                 return Ok(ChatResponse {
                     content: Some(content),
@@ -978,7 +978,7 @@ impl Provider for GeminiProvider {
             .iter()
             .map(|m| m.content.len() as u32 / 4)
             .sum();
-        let completion_tokens = (content.len() as u32 + 3) / 4;
+        let completion_tokens = (content.len() as u32).div_ceil(4);
 
         Ok(ChatResponse {
             content: Some(content),
@@ -1007,8 +1007,8 @@ impl Provider for GeminiProvider {
         request: &ChatRequest,
         mut callback: StreamCallback,
     ) -> Result<ChatResponse> {
-        use crate::providers::sse::SseReader;
         use crate::providers::StreamChunk;
+        use crate::providers::sse::SseReader;
 
         let auth = self
             .auth
@@ -1090,7 +1090,7 @@ impl Provider for GeminiProvider {
             .iter()
             .map(|m| m.content.len() as u32 / 4)
             .sum();
-        let completion_tokens = (full_text.len() as u32 + 3) / 4;
+        let completion_tokens = (full_text.len() as u32).div_ceil(4);
         let usage = TokenUsage {
             prompt_tokens,
             completion_tokens,

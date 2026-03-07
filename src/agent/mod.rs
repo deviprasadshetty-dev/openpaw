@@ -37,6 +37,7 @@ pub struct Agent {
     pub max_tool_iterations: u32,
     pub max_history_messages: usize,
     pub workspace_dir: String,
+    pub config_path: Option<String>,
     pub auto_save: bool,
     pub has_system_prompt: bool,
     pub workspace_prompt_fingerprint: Option<u64>,
@@ -103,7 +104,8 @@ impl Agent {
             token_limit,
             max_tool_iterations: 25,
             max_history_messages: 50,
-            workspace_dir,
+            workspace_dir: workspace_dir.clone(),
+            config_path: None, // Will be set by set_config_path if available
             auto_save: true,
             has_system_prompt: false,
             workspace_prompt_fingerprint: None,

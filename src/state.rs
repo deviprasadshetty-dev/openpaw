@@ -33,7 +33,7 @@ impl StateManager {
     }
 
     pub fn set_last_channel(&self, channel: &str, chat_id: &str) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.last_channel = Some(channel.to_string());
         state.last_chat_id = Some(chat_id.to_string());
         state.updated_at = SystemTime::now()
@@ -43,14 +43,14 @@ impl StateManager {
     }
 
     pub fn get_last_channel(&self) -> (Option<String>, Option<String>) {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         (state.last_channel.clone(), state.last_chat_id.clone())
     }
 
     pub fn save(&self) -> Result<()> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let json = serde_json::to_string_pretty(&*state)?;
-        
+
         let tmp_path = self.state_path.with_extension("tmp");
         if let Some(parent) = self.state_path.parent() {
             fs::create_dir_all(parent)?;
@@ -58,7 +58,7 @@ impl StateManager {
 
         fs::write(&tmp_path, json)?;
         fs::rename(tmp_path, &self.state_path)?;
-        
+
         Ok(())
     }
 
@@ -68,10 +68,10 @@ impl StateManager {
         }
         let content = fs::read_to_string(&self.state_path)?;
         let loaded_state: State = serde_json::from_str(&content)?;
-        
-        let mut state = self.state.lock().unwrap();
+
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         *state = loaded_state;
-        
+
         Ok(())
     }
 }

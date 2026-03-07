@@ -29,9 +29,6 @@ impl Tool for CronRunTool {
             None => return Ok(ToolResult::fail(format!("Job '{}' not found", job_id))),
         };
 
-        let mut output_str = String::new();
-        let mut exit_code = 1;
-
         let sh = if cfg!(target_os = "windows") {
             "cmd"
         } else {
@@ -43,21 +40,19 @@ impl Tool for CronRunTool {
             "-c"
         };
 
-        let res = Command::new(sh).args(&[flag, &job.command]).output();
-        match res {
+        let (exit_code, output_str) = match Command::new(sh).args(&[flag, &job.command]).output() {
             Ok(out) => {
-                exit_code = out.status.code().unwrap_or(1);
-                output_str = String::from_utf8_lossy(&if out.stdout.is_empty() {
+                let code = out.status.code().unwrap_or(1);
+                let text = String::from_utf8_lossy(&if out.stdout.is_empty() {
                     out.stderr
                 } else {
                     out.stdout
                 })
                 .to_string();
+                (code, text)
             }
-            Err(e) => {
-                output_str = format!("Error: {}", e);
-            }
-        }
+            Err(e) => (1, format!("Error: {}", e)),
+        };
 
         if let Some(j) = scheduler.jobs.get_mut(job_id) {
             let status = if exit_code == 0 { "success" } else { "error" };
@@ -66,7 +61,7 @@ impl Tool for CronRunTool {
             j.last_run_secs = Some(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs() as i64,
             );
             scheduler.save();

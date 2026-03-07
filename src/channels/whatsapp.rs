@@ -132,7 +132,7 @@ impl WhatsAppChannel {
                                                 continue;
                                             }
 
-                                            let timestamp = msg
+                                            let _timestamp = msg
                                                 .get("timestamp")
                                                 .and_then(|ts| ts.as_str())
                                                 .and_then(|ts| ts.parse::<u64>().ok())
@@ -271,7 +271,7 @@ impl Channel for WhatsAppChannel {
         "default"
     }
 
-    fn send_message(&self, chat_id: &str, text: &str) -> Result<()> {
+    fn send_message(&self, _chat_id: &str, _text: &str) -> Result<()> {
         // WhatsApp uses async, so we need to block on it
         // In a real implementation, you'd use a runtime or channel
         warn!("WhatsApp send_message called synchronously - needs async runtime");

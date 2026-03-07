@@ -6,8 +6,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::tools::{Tool, ToolResult};
 use crate::config_types::McpServerConfig;
+use crate::tools::{Tool, ToolResult};
 use crate::version;
 
 // ── Tool definition from server ─────────────────────────────────
@@ -60,9 +60,9 @@ impl McpServer {
         let stdin = child.stdin.take().context("Failed to attach to stdin")?;
         let stdout = child.stdout.take().context("Failed to attach to stdout")?;
 
-        *self.child.lock().unwrap() = Some(child);
-        *self.stdin.lock().unwrap() = Some(stdin);
-        *self.stdout.lock().unwrap() = Some(BufReader::new(stdout));
+        *self.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+        *self.stdin.lock().unwrap_or_else(|e| e.into_inner()) = Some(stdin);
+        *self.stdout.lock().unwrap_or_else(|e| e.into_inner()) = Some(BufReader::new(stdout));
 
         // Send initialize request
         let init_params = serde_json::json!({
@@ -145,14 +145,16 @@ impl McpServer {
             "method": method,
         });
         if let Some(p) = params {
-            req.as_object_mut().unwrap().insert("params".to_string(), p);
+            req.as_object_mut()
+                .expect("Request should be an object")
+                .insert("params".to_string(), p);
         }
 
         let mut msg_str = serde_json::to_string(&req)?;
         msg_str.push('\n');
 
         {
-            let mut stdin_guard = self.stdin.lock().unwrap();
+            let mut stdin_guard = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
             let stdin = stdin_guard.as_mut().context("No stdin")?;
             stdin.write_all(msg_str.as_bytes())?;
             stdin.flush()?;
@@ -167,14 +169,16 @@ impl McpServer {
             "method": method,
         });
         if let Some(p) = params {
-            req.as_object_mut().unwrap().insert("params".to_string(), p);
+            req.as_object_mut()
+                .expect("Request should be an object")
+                .insert("params".to_string(), p);
         }
 
         let mut msg_str = serde_json::to_string(&req)?;
         msg_str.push('\n');
 
         {
-            let mut stdin_guard = self.stdin.lock().unwrap();
+            let mut stdin_guard = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
             let stdin = stdin_guard.as_mut().context("No stdin")?;
             stdin.write_all(msg_str.as_bytes())?;
             stdin.flush()?;
@@ -185,7 +189,7 @@ impl McpServer {
 
     fn read_line(&self) -> Result<String> {
         let mut line = String::new();
-        let mut stdout_guard = self.stdout.lock().unwrap();
+        let mut stdout_guard = self.stdout.lock().unwrap_or_else(|e| e.into_inner());
         let stdout = stdout_guard.as_mut().context("No stdout")?;
         let bytes_read = stdout.read_line(&mut line)?;
         if bytes_read == 0 {
@@ -199,7 +203,7 @@ impl Drop for McpServer {
     fn drop(&mut self) {
         if let Ok(mut child_guard) = self.child.lock() {
             if let Some(mut child) = child_guard.take() {
-                let _ = self.stdin.lock().unwrap().take();
+                let _ = self.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -233,7 +237,10 @@ impl Tool for McpToolWrapper {
     fn execute(&self, args: Value) -> Result<ToolResult> {
         match self.server.call_tool(&self.original_name, &args) {
             Ok(output) => Ok(ToolResult::ok(output)),
-            Err(e) => Ok(ToolResult::fail(format!("MCP tool '{}' failed: {}", self.original_name, e))),
+            Err(e) => Ok(ToolResult::fail(format!(
+                "MCP tool '{}' failed: {}",
+                self.original_name, e
+            ))),
         }
     }
 }

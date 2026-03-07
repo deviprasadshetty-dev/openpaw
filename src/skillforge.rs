@@ -20,33 +20,31 @@ pub struct Owner {
 }
 
 #[derive(Debug, Deserialize)]
-struct SearchResponse {
-    items: Vec<GitHubRepo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubRepo {
-    name: String,
-    full_name: String,
-    html_url: String,
-    description: Option<String>,
-    stargazers_count: u64,
-    language: Option<String>,
-    owner: Owner,
-    license: Option<License>,
-}
-
-#[derive(Debug, Deserialize)]
-struct License {
-    key: String,
+struct ClawHubSearchResponse {
+    results: Vec<ClawHubSkill>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ClawHubSkill {
-    score: f64,
+    #[serde(rename = "displayName")]
+    display_name: String,
     slug: String,
-    displayName: String,
     summary: String,
+    score: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillsShSearchResponse {
+    skills: Vec<SkillsShSkill>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillsShSkill {
+    name: String,
+    description: String,
+    source: String,
+    #[serde(default)]
+    installs: u64,
 }
 
 pub struct SkillForge;
@@ -54,15 +52,25 @@ pub struct SkillForge;
 impl SkillForge {
     pub fn scout(query: &str) -> Result<Vec<SkillCandidate>> {
         let mut candidates = Self::scout_github(query).unwrap_or_default();
+
         if let Ok(clawhub_candidates) = Self::scout_clawhub(query) {
-             // Merge results, avoiding duplicates by html_url
+            // Merge results, avoiding duplicates by html_url
             for cand in clawhub_candidates {
                 if !candidates.iter().any(|c| c.html_url == cand.html_url) {
                     candidates.push(cand);
                 }
             }
         }
-        
+
+        if let Ok(skillssh_candidates) = Self::scout_skillssh(query) {
+            // Merge results, avoiding duplicates by html_url
+            for cand in skillssh_candidates {
+                if !candidates.iter().any(|c| c.html_url == cand.html_url) {
+                    candidates.push(cand);
+                }
+            }
+        }
+
         Ok(candidates)
     }
 
@@ -72,29 +80,76 @@ impl SkillForge {
             .build()?;
 
         let url = format!(
-            "https://clawhub.ai/api/search?q={}",
+            "https://clawhub.ai/api/v1/search?q={}",
             urlencoding::encode(query)
         );
 
         let response = client.get(&url).send()?;
 
         if !response.status().is_success() {
-             return Ok(Vec::new());
+            return Ok(Vec::new());
         }
 
-        let skills: Vec<ClawHubSkill> = response.json()?;
-        
-        let candidates = skills
+        let resp: ClawHubSearchResponse = response.json()?;
+
+        let candidates = resp
+            .results
             .into_iter()
             .map(|skill| {
                 SkillCandidate {
-                    name: skill.displayName,
+                    name: skill.display_name,
                     html_url: format!("https://clawhub.ai/skill/{}", skill.slug),
                     description: Some(skill.summary),
                     stargazers_count: (skill.score * 100.0) as u64, // Mapping vector score to "stars" roughly
                     language: None,
-                    owner: Owner { login: "clawhub".to_string() }, // Default owner since API doesn't provide it clearly in search
-                    has_license: true, 
+                    owner: Owner {
+                        login: "clawhub".to_string(),
+                    },
+                    has_license: true,
+                }
+            })
+            .collect();
+
+        Ok(candidates)
+    }
+
+    fn scout_skillssh(query: &str) -> Result<Vec<SkillCandidate>> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("openpaw/0.1")
+            .build()?;
+
+        let url = format!(
+            "https://skills.sh/api/search?q={}&limit=20",
+            urlencoding::encode(query)
+        );
+
+        let response = client.get(&url).send()?;
+
+        if !response.status().is_success() {
+            return Ok(Vec::new());
+        }
+
+        let resp: SkillsShSearchResponse = response.json()?;
+
+        let candidates = resp
+            .skills
+            .into_iter()
+            .map(|skill| {
+                SkillCandidate {
+                    name: skill.name,
+                    html_url: format!("https://github.com/{}", skill.source),
+                    description: Some(skill.description),
+                    stargazers_count: skill.installs / 100, // Mapping installs to "stars" roughly for scoring
+                    language: None,
+                    owner: Owner {
+                        login: skill
+                            .source
+                            .split('/')
+                            .next()
+                            .unwrap_or("skills.sh")
+                            .to_string(),
+                    },
+                    has_license: true,
                 }
             })
             .collect();
@@ -107,17 +162,40 @@ impl SkillForge {
             .user_agent("openpaw/0.1")
             .build()?;
 
-        // Search all compatible skill ecosystems — openpaw is new so also pull
-        // from nullclaw, openclaw, and picoclaw which already have community skills
-        let topics = ["openpaw", "nullclaw", "openclaw", "picoclaw"];
+        #[derive(Debug, Deserialize)]
+        struct GitHubSearchResponse {
+            items: Vec<GitHubRepo>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GitHubRepo {
+            name: String,
+            html_url: String,
+            description: Option<String>,
+            stargazers_count: u64,
+            language: Option<String>,
+            owner: Owner,
+            license: Option<serde_json::Value>,
+        }
+
+        // Search all compatible skill ecosystems and broad terms
+        let topics = [
+            "openpaw",
+            "nullclaw",
+            "openclaw",
+            "picoclaw",
+            "ai-agent-skill",
+            "agent-skill",
+        ];
         let topic_filter = topics
             .iter()
             .map(|t| format!("topic:{}", t))
             .collect::<Vec<_>>()
             .join("+OR+");
 
+        // Broaden search: also search for "skill" in the name or description along with the query
         let url = format!(
-            "https://api.github.com/search/repositories?q={}+({})&sort=stars&order=desc&per_page=30",
+            "https://api.github.com/search/repositories?q={}+({})+skill&sort=stars&order=desc&per_page=30",
             urlencoding::encode(query),
             topic_filter,
         );
@@ -131,7 +209,7 @@ impl SkillForge {
             return Ok(Vec::new());
         }
 
-        let search_results: SearchResponse = response.json()?;
+        let search_results: GitHubSearchResponse = response.json()?;
 
         let candidates = search_results
             .items

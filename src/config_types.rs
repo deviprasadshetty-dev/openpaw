@@ -346,6 +346,18 @@ pub struct TelegramConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WhatsAppNativeConfig {
+    #[serde(default = "default_account_id")]
+    pub account_id: String,
+    pub bridge_url: String,
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub auto_start: bool,
+    pub bridge_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WebhookConfig {}
 
 fn default_account_id() -> String {
@@ -362,6 +374,8 @@ pub struct ChannelsConfig {
     pub cli: bool,
     #[serde(default)]
     pub telegram: Vec<TelegramConfig>,
+    #[serde(default)]
+    pub whatsapp_native: Vec<WhatsAppNativeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook: Option<WebhookConfig>,
 }

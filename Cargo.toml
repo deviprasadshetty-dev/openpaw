@@ -33,4 +33,5 @@ toml = "1.0.3"
 which = "8.0.0"
 browser-use = "0.1"
 headless_chrome = "1.0.18"
+pulldown-cmark = "0.13.1"
 

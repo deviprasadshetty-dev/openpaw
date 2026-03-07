@@ -109,7 +109,7 @@ pub fn enrich_message(
         // Simple sanitization/formatting
         context.push_str(&format!("- {}: {}\n", entry.key, entry.content));
     }
-    context.push_str("\n");
+    context.push('\n');
     context.push_str(user_message);
 
     Ok(context)

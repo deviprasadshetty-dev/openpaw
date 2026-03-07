@@ -722,6 +722,35 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     };
     println!();
 
+    // ══════════════════════════════════════════════════════════════════
+    // STEP 7 — WhatsApp (Native Bridge)
+    // ══════════════════════════════════════════════════════════════════
+    section_header(
+        7,
+        "WhatsApp Native",
+        "Chat via local WhatsApp bridge (whatsmeow)",
+    );
+    println!();
+    print!("  Enable WhatsApp? {}: ", dim("(y/N)"));
+    io::stdout().flush()?;
+    let mut wa_in = String::new();
+    io::stdin().read_line(&mut wa_in)?;
+
+    let whatsapp_native_config = if wa_in.trim().eq_ignore_ascii_case("y") {
+        println!(
+            "  {}  OpenPaw will auto-start the bridge. Scan the QR code in your terminal to pair.",
+            info()
+        );
+        let username = prompt_with_default("  Your Phone Number (e.g. +123...)", "+1...")?;
+
+        println!("  {}  WhatsApp Native configured", ok());
+        Some(("http://localhost:18790".to_string(), username))
+    } else {
+        println!("  {}  Skipped", skip());
+        None
+    };
+    println!();
+
     // ── Write files ──────────────────────────────────────────────────
     if !dir.exists() {
         fs::create_dir_all(dir).context("Failed to create workspace directory")?;
@@ -732,6 +761,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         &selected_default_model,
         &api_key,
         telegram_config.as_ref(),
+        whatsapp_native_config.as_ref(),
         memory_backend,
         &groq_key,
         embed_provider.as_deref(),
@@ -782,6 +812,9 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     if telegram_config.is_some() {
         summary_row("Telegram", "bot configured");
     }
+    if whatsapp_native_config.is_some() {
+        summary_row("WhatsApp Native", "configured");
+    }
     if composio_enabled {
         summary_row("Composio", "enabled");
     }
@@ -826,6 +859,7 @@ fn generate_config(
     default_model: &str,
     api_key: &str,
     telegram: Option<&(String, String)>,
+    whatsapp_native: Option<&(String, String)>,
     memory_backend: &str,
     groq_key: &str,
     embed_provider: Option<&str>,
@@ -869,11 +903,24 @@ fn generate_config(
         None => json!([]),
     };
 
+    let whatsapp_vec = match whatsapp_native {
+        Some((url, phone)) => json!([{
+            "account_id": "main",
+            "bridge_url": url,
+            "allow_from": [phone],
+            "auto_start": true
+        }]),
+        None => json!([]),
+    };
+
     let mut config = json!({
         "default_provider": provider.name,
         "default_model": default_model,
         "models": { "providers": providers },
-        "channels": { "telegram": telegram_vec },
+        "channels": {
+            "telegram": telegram_vec,
+            "whatsapp_native": whatsapp_vec
+        },
         "memory": { "backend": memory_backend },
         "composio": {
             "enabled": composio_enabled,

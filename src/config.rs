@@ -44,6 +44,15 @@ impl Config {
             .get(&self.default_provider)
             .map(|p| p.api_key.clone())
     }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        if self.config_path.is_empty() {
+            return Err(anyhow::anyhow!("No config path set, cannot save"));
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&self.config_path, json)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

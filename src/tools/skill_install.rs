@@ -33,7 +33,7 @@ impl Tool for SkillInstallTool {
         let derived_name = url
             .trim_end_matches('/')
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or("skill")
             .to_string();
 

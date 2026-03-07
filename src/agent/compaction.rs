@@ -38,7 +38,7 @@ pub fn token_estimate(history: &[ChatMessage]) -> u64 {
     for msg in history {
         total_chars += msg.content.len() as u64;
     }
-    (total_chars + 3) / 4
+    total_chars.div_ceil(4)
 }
 
 pub fn force_compress_history(history: &mut Vec<ChatMessage>) -> bool {

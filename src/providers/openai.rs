@@ -281,7 +281,7 @@ impl Provider for OpenAiCompatibleProvider {
             .iter()
             .map(|m| m.content.len() as u32 / 4)
             .sum();
-        let completion_tokens = (full_content.len() as u32 + 3) / 4;
+        let completion_tokens = (full_content.len() as u32).div_ceil(4);
         let usage = TokenUsage {
             prompt_tokens,
             completion_tokens,

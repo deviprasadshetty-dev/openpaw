@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -21,7 +21,7 @@ pub struct TunnelHandle {
 
 impl TunnelHandle {
     pub fn stop(&self) -> Result<()> {
-        let mut child = self.child.lock().unwrap();
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
         child.kill().context("Failed to kill tunnel process")?;
         child.wait().context("Failed to wait for tunnel process")?;
         Ok(())
@@ -39,7 +39,7 @@ pub fn start_tunnel(provider: &str, port: u16) -> Result<TunnelHandle> {
 
 fn start_cloudflared(port: u16) -> Result<TunnelHandle> {
     info!("Starting cloudflared tunnel on port {}", port);
-    
+
     let mut child = Command::new("cloudflared")
         .args(&["tunnel", "--url", &format!("http://localhost:{}", port)])
         .stdout(Stdio::piped())
@@ -47,19 +47,21 @@ fn start_cloudflared(port: u16) -> Result<TunnelHandle> {
         .spawn()
         .context("Failed to spawn cloudflared. Is it installed?")?;
 
-    let stderr = child.stderr.take().ok_or_else(|| anyhow!("Failed to capture stderr"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture stderr"))?;
     let reader = BufReader::new(stderr);
 
     let (tx, rx) = std::sync::mpsc::channel();
 
+    let re = Regex::new(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
+        .expect("Invalid regex for cloudflare tunnel");
     thread::spawn(move || {
-        let re = Regex::new(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com").unwrap();
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                if let Some(mat) = re.find(&l) {
-                    let _ = tx.send(mat.as_str().to_string());
-                    break;
-                }
+        for l in reader.lines().flatten() {
+            if let Some(mat) = re.find(&l) {
+                let _ = tx.send(mat.as_str().to_string());
+                break;
             }
         }
     });
@@ -100,20 +102,21 @@ fn start_ngrok(port: u16) -> Result<TunnelHandle> {
         .spawn()
         .context("Failed to spawn ngrok. Is it installed?")?;
 
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to capture stdout"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
     let reader = BufReader::new(stdout);
 
     let (tx, rx) = std::sync::mpsc::channel();
 
     thread::spawn(move || {
         // Look for JSON with "url" field
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l) {
-                    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
-                        let _ = tx.send(url.to_string());
-                        break;
-                    }
+        for l in reader.lines().flatten() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l) {
+                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                    let _ = tx.send(url.to_string());
+                    break;
                 }
             }
         }

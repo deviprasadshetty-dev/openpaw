@@ -44,12 +44,9 @@ impl Tool for MemoryStoreTool {
             .unwrap_or("core");
         let category = MemoryCategory::from_str(category_str);
 
-        match self
-            .memory
-            .store(key, content, category.clone(), None, None)
-        {
+        match self.memory.store(key, content, category, None, None) {
             Ok(_) => {
-                let msg = format!("Stored memory: {} ({})", key, category.to_string());
+                let msg = format!("Stored memory: {} ({})", key, category);
                 Ok(ToolResult::ok(msg))
             }
             Err(e) => {

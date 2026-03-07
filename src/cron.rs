@@ -93,15 +93,26 @@ impl CronScheduler {
             if let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data) {
                 let mut guard = self.jobs.lock().unwrap();
                 *guard = jobs;
-                tracing::info!("Loaded {} cron jobs from disk", guard.len());
-            } else {
-                tracing::warn!("Failed to parse cron jobs from disk");
             }
+        }
+    }
+
+    pub fn save(&self) {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let mut path = PathBuf::from(home);
+        path.push(".openpaw");
+        path.push("cron.json");
+
+        let guard = self.jobs.lock().unwrap();
+        if let Ok(data) = serde_json::to_string_pretty(&*guard) {
+            let _ = fs::write(path, data);
         }
     }
 
     /// Check all jobs and fire any that are due. Call this every ~60s.
     pub fn tick(&self) {
+        self.load();
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -110,15 +121,29 @@ impl CronScheduler {
         let mut jobs = self.jobs.lock().unwrap();
         let mut to_fire: Vec<String> = Vec::new();
         let mut to_delete: Vec<String> = Vec::new();
+        let mut modified = false;
 
         for (id, job) in jobs.iter_mut() {
             if !job.enabled || job.paused {
                 continue;
             }
+
+            // Initialize next_run_secs if it is 0
+            if job.next_run_secs == 0 {
+                if let Ok(interval) = parse_duration(&job.expression) {
+                    job.next_run_secs = now + interval;
+                    modified = true;
+                } else {
+                    job.paused = true;
+                    modified = true;
+                }
+            }
+
             if job.next_run_secs > 0 && now >= job.next_run_secs {
                 to_fire.push(id.clone());
                 job.last_run_secs = Some(now);
                 job.last_status = Some("running".to_string());
+                modified = true;
 
                 // Advance next_run by parsing expression as an interval
                 if let Ok(interval) = parse_duration(&job.expression) {
@@ -133,10 +158,15 @@ impl CronScheduler {
                 }
             }
         }
-        drop(jobs);
 
         for id in &to_delete {
-            self.jobs.lock().unwrap().remove(id);
+            jobs.remove(id);
+            modified = true;
+        }
+        drop(jobs);
+
+        if modified {
+            self.save();
         }
 
         for id in to_fire {

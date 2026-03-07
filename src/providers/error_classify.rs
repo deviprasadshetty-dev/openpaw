@@ -29,7 +29,11 @@ pub fn classify(status: u16, body: &str) -> ApiErrorKind {
         429 => {
             // Distinguish rate limit vs quota
             let lower = body.to_lowercase();
-            if lower.contains("quota") || lower.contains("billing") || lower.contains("credit") {
+            if lower.contains("quota")
+                || lower.contains("billing")
+                || lower.contains("credit")
+                || lower.contains("freeusagelimiterror")
+            {
                 return ApiErrorKind::Quota;
             }
             return ApiErrorKind::RateLimit;

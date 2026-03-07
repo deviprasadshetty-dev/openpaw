@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::providers::anthropic::AnthropicProvider;
+use crate::providers::fallback::FallbackProvider;
 use crate::providers::kilocode::{
     DEFAULT_FREE_MODELS, KiloCodeProvider, fetch_kilocode_free_models,
 };
@@ -88,6 +89,59 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
     };
 
     Arc::new(ReliableProvider::new(inner).with_retries(max_retries))
+}
+
+/// Create all providers configured in config.json and wrap them in a FallbackProvider.
+pub fn create_with_fallbacks(
+    default_name: &str,
+    config: &crate::config::Config,
+) -> Arc<dyn Provider> {
+    let mut providers = Vec::new();
+
+    // Add the primary requested provider first
+    if let Some(cfg) = config
+        .models
+        .as_ref()
+        .and_then(|m| m.providers.get(default_name))
+    {
+        providers.push(create(
+            default_name,
+            Some(&ProviderConfig {
+                api_key: cfg.api_key.clone(),
+                base_url: cfg.base_url.clone(),
+                max_retries: None,
+            }),
+        ));
+    } else {
+        // Even if not configured in the map, try to create it via defaults/env
+        providers.push(create(default_name, None));
+    }
+
+    // Add all other configured providers as fallbacks
+    if let Some(models) = &config.models {
+        for (name, cfg) in &models.providers {
+            if name == default_name {
+                continue;
+            }
+            providers.push(create(
+                name,
+                Some(&ProviderConfig {
+                    api_key: cfg.api_key.clone(),
+                    base_url: cfg.base_url.clone(),
+                    max_retries: None,
+                }),
+            ));
+        }
+    }
+
+    if providers.len() > 1 {
+        Arc::new(FallbackProvider::new(providers))
+    } else {
+        providers
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| create(default_name, None))
+    }
 }
 
 fn default_base_url(name: &str) -> &'static str {

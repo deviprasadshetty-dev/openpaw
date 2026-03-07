@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod circuit_breaker;
 pub mod error_classify;
 pub mod factory;
+pub mod fallback;
 pub mod gemini;
 pub mod kilocode;
 pub mod openai;

@@ -24,7 +24,7 @@ impl ToolCache {
 
     pub fn get(&self, tool_name: &str, arguments_json: &str) -> Option<ToolExecutionResult> {
         let key = format!("{}:{}", tool_name, arguments_json);
-        let mut cache = self.entries.lock().unwrap();
+        let mut cache = self.entries.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(entry) = cache.get(&key) {
             if entry.timestamp.elapsed() < Duration::from_secs(self.ttl_secs) {
@@ -39,7 +39,7 @@ impl ToolCache {
 
     pub fn insert(&self, tool_name: &str, arguments_json: &str, result: ToolExecutionResult) {
         let key = format!("{}:{}", tool_name, arguments_json);
-        let mut cache = self.entries.lock().unwrap();
+        let mut cache = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         cache.insert(
             key,
             ToolCacheEntry {

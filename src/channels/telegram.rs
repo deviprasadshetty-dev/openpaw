@@ -587,22 +587,44 @@ impl TelegramChannel {
         chunks
     }
 
-    fn markdown_bold_to_html(&self, text: &str) -> String {
-        let mut result = text.to_string();
-        let mut start = 0;
-        while let Some(pos) = result[start..].find("**") {
-            let abs_pos = start + pos;
-            if let Some(close_pos) = result[abs_pos + 2..].find("**") {
-                let abs_close = abs_pos + 2 + close_pos;
-                result.replace_range(abs_pos..abs_pos + 2, "<b>");
-                let new_close = abs_close - 2 + 3;
-                result.replace_range(new_close..new_close + 2, "</b>");
-                start = new_close + 4;
-            } else {
-                break;
+    fn markdown_to_html(&self, text: &str) -> String {
+        use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+
+        fn html_escape(s: &str) -> String {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        }
+
+        let parser = Parser::new(text);
+        let mut html = String::new();
+        for event in parser {
+            match event {
+                Event::Start(Tag::Strong) => html.push_str("<b>"),
+                Event::End(TagEnd::Strong) => html.push_str("</b>"),
+                Event::Start(Tag::Emphasis) => html.push_str("<i>"),
+                Event::End(TagEnd::Emphasis) => html.push_str("</i>"),
+                Event::Start(Tag::CodeBlock(_)) => html.push_str("<pre><code>"),
+                Event::End(TagEnd::CodeBlock) => html.push_str("</code></pre>"),
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    html.push_str(&format!("<a href=\"{}\">", dest_url))
+                }
+                Event::End(TagEnd::Link) => html.push_str("</a>"),
+                Event::Start(Tag::Strikethrough) => html.push_str("<s>"),
+                Event::End(TagEnd::Strikethrough) => html.push_str("</s>"),
+                Event::Start(Tag::Item) => html.push_str("• "),
+                Event::End(TagEnd::Item) => html.push('\n'),
+                Event::Start(Tag::Paragraph) => {}
+                Event::End(TagEnd::Paragraph) => html.push_str("\n\n"),
+                Event::Code(c) => html.push_str(&format!("<code>{}</code>", html_escape(&c))),
+                Event::Text(t) => html.push_str(&html_escape(&t)),
+                Event::SoftBreak => html.push('\n'),
+                Event::HardBreak => html.push('\n'),
+                _ => {}
             }
         }
-        result
+        // Trim trailing newlines and spaces that might be left by paragraph ends
+        html.trim_end().to_string()
     }
 
     fn parse_outbound_attachments(&self, text: &str) -> (String, Vec<OutboundAttachment>) {
@@ -851,7 +873,7 @@ impl TelegramChannel {
         };
 
         let parsed_choices = parse_assistant_choices(text);
-        let html_text = self.markdown_bold_to_html(&parsed_choices.visible_text);
+        let html_text = self.markdown_to_html(&parsed_choices.visible_text);
 
         let reply_markup = if let Some(choices) = parsed_choices.choices {
             let keyboard_buttons: Vec<Value> = choices
@@ -1156,6 +1178,19 @@ mod tests {
             reply_in_private: true,
             proxy: None,
         })
+    }
+
+    #[test]
+    fn test_markdown_to_html() {
+        let ch = make_channel();
+        let html = ch.markdown_to_html("Hello **bold** and *italic* and `code`!");
+        assert_eq!(
+            html,
+            "Hello <b>bold</b> and <i>italic</i> and <code>code</code>!"
+        );
+
+        let html_block = ch.markdown_to_html("```\ncode block\n```");
+        assert_eq!(html_block, "<pre><code>code block\n</code></pre>");
     }
 
     #[test]

@@ -58,7 +58,10 @@ impl SubagentManager {
     }
 
     pub fn set_session_manager(&self, sm: Arc<SessionManager>) {
-        let mut guard = self.session_manager.lock().unwrap();
+        let mut guard = self
+            .session_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *guard = Some(sm);
     }
 
@@ -69,7 +72,7 @@ impl SubagentManager {
         origin_channel: &str,
         origin_chat_id: &str,
     ) -> Result<u64> {
-        let mut tasks = self.tasks.lock().unwrap();
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let running_count = tasks
             .values()
             .filter(|t| t.status == TaskStatus::Running)
@@ -79,7 +82,7 @@ impl SubagentManager {
             return Err(anyhow!("Too many concurrent subagents"));
         }
 
-        let mut next_id = self.next_id.lock().unwrap();
+        let mut next_id = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
         let task_id = *next_id;
         *next_id += 1;
 
@@ -111,14 +114,14 @@ impl SubagentManager {
         // Spawn asynchronous task
         tokio::spawn(async move {
             let sm = {
-                let guard = sm_opt_clone.lock().unwrap();
+                let guard = sm_opt_clone.lock().unwrap_or_else(|e| e.into_inner());
                 guard.clone()
             };
 
             if let Some(sm) = sm {
                 let result = sm.process_message(&subagent_session_key, task_copy).await;
 
-                let mut tasks = tasks_clone.lock().unwrap();
+                let mut tasks = tasks_clone.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(state) = tasks.get_mut(&task_id) {
                     match result {
                         Ok(response) => {
@@ -168,7 +171,7 @@ impl SubagentManager {
                     }
                 }
             } else {
-                let mut tasks = tasks_clone.lock().unwrap();
+                let mut tasks = tasks_clone.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(state) = tasks.get_mut(&task_id) {
                     state.status = TaskStatus::Failed;
                     state.error_msg =
@@ -181,12 +184,12 @@ impl SubagentManager {
     }
 
     pub fn get_task_status(&self, task_id: u64) -> Option<TaskStatus> {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         tasks.get(&task_id).map(|t| t.status)
     }
 
     pub fn get_task_result(&self, task_id: u64) -> Option<String> {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         tasks.get(&task_id).and_then(|t| t.result.clone())
     }
 }

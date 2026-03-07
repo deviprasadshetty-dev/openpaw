@@ -65,6 +65,7 @@ impl CommandRegistry {
         registry.register(Arc::new(ModelCommand));
         registry.register(Arc::new(ResetCommand));
         registry.register(Arc::new(ProviderCommand));
+        registry.register(Arc::new(TempCommand));
         registry
     }
 
@@ -131,13 +132,117 @@ impl Command for ProviderCommand {
         "provider"
     }
     fn description(&self) -> &str {
-        "Switch AI provider"
+        "Show or switch AI provider. Usage: /provider [list | set <name> <key>]"
     }
-    fn execute(&self, agent: &mut Agent, _arg: &str) -> Option<String> {
-        Some(format!(
-            "Provider switching not fully implemented. Current model: {}",
-            agent.model_name
-        ))
+    fn execute(&self, agent: &mut Agent, arg: &str) -> Option<String> {
+        let parts: Vec<&str> = arg.split_whitespace().collect();
+
+        if parts.is_empty() || parts[0] == "list" {
+            let mut msg = String::from("Configured providers:\n");
+            if let Some(path) = &agent.config_path {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if let Ok(cfg) = serde_json::from_str::<crate::config::Config>(&content) {
+                        if let Some(models) = cfg.models {
+                            for name in models.providers.keys() {
+                                let marker = if name == &cfg.default_provider {
+                                    " (current)"
+                                } else {
+                                    ""
+                                };
+                                msg.push_str(&format!("- {}{}\n", name, marker));
+                            }
+                        }
+                        return Some(msg);
+                    }
+                }
+            }
+            return Some("Could not list providers: config not found.".to_string());
+        }
+
+        if parts[0] == "set" && parts.len() >= 2 {
+            let provider_name = parts[1];
+            let api_key = if parts.len() >= 3 {
+                Some(parts[2].to_string())
+            } else {
+                None
+            };
+
+            if let Some(path) = &agent.config_path {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        match serde_json::from_str::<crate::config::Config>(&content) {
+                            Ok(mut cfg) => {
+                                // 1. Update or Add the provider config
+                                if let Some(key) = api_key {
+                                    if let Some(models) = &mut cfg.models {
+                                        let p_cfg = models
+                                            .providers
+                                            .entry(provider_name.to_string())
+                                            .or_insert(crate::config::ProviderConfig {
+                                                api_key: key.clone(),
+                                                base_url: None,
+                                            });
+                                        p_cfg.api_key = key;
+                                    } else {
+                                        let mut providers = std::collections::HashMap::new();
+                                        providers.insert(
+                                            provider_name.to_string(),
+                                            crate::config::ProviderConfig {
+                                                api_key: key,
+                                                base_url: None,
+                                            },
+                                        );
+                                        cfg.models =
+                                            Some(crate::config::ModelsConfig { providers });
+                                    }
+                                }
+
+                                // 2. Update default provider
+                                cfg.default_provider = provider_name.to_string();
+                                cfg.config_path = path.clone();
+
+                                // 3. Save config
+                                if let Err(e) = cfg.save() {
+                                    return Some(format!("Failed to save config: {}", e));
+                                }
+
+                                // 4. Update Agent's provider runtime
+                                use crate::providers::factory;
+                                agent.provider =
+                                    factory::create_with_fallbacks(provider_name, &cfg);
+
+                                return Some(format!(
+                                    "Switched to provider: {}. Config saved.",
+                                    provider_name
+                                ));
+                            }
+                            Err(e) => return Some(format!("Failed to parse config: {}", e)),
+                        }
+                    }
+                    Err(e) => return Some(format!("Failed to read config: {}", e)),
+                }
+            }
+            return Some("Config path not found.".to_string());
+        }
+
+        Some("Usage: /provider [list | set <name> <key>]".to_string())
+    }
+}
+
+struct TempCommand;
+impl Command for TempCommand {
+    fn name(&self) -> &str {
+        "temp"
+    }
+    fn description(&self) -> &str {
+        "Show system temperature (CPU/GPU)"
+    }
+    fn execute(&self, _agent: &mut Agent, _arg: &str) -> Option<String> {
+        use crate::hardware::get_system_temperature;
+        match get_system_temperature() {
+            Ok(t) => Some(format!("System Temperature: {}", t)),
+            Err(e) => Some(format!("Error fetching temperature: {}", e)),
+        }
     }
 }
 

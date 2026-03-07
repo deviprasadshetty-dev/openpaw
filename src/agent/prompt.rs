@@ -145,7 +145,7 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         if let Some(uuid) = &cc.sender_uuid {
             out.push_str(&format!("- Sender UUID: {}\n", uuid));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     if let Some(caps) = ctx.capabilities_section {
@@ -307,7 +307,7 @@ fn build_tools_section(out: &mut String, tools: &[Arc<dyn Tool>], use_native_too
         out.push_str("- Only use tools when you need to perform actions like reading files, executing commands, or accessing external data\n\n");
     }
 
-    out.push_str("\n");
+    out.push('\n');
 }
 
 fn append_channel_attachments_section(out: &mut String) {

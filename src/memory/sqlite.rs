@@ -112,7 +112,7 @@ impl SqliteMemory {
     }
 
     pub fn store_embedding_by_key(&self, key: &str, embedding: &[f32]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let memory_id: String = conn.query_row(
             "SELECT id FROM memories WHERE key = ?1",
             params![key],
@@ -163,7 +163,7 @@ impl SqliteMemory {
         format!("{}-{:x}", ts, rand_hi)
     }
     fn store_embedding_internal(&self, memory_id: &str, embedding: &[f32]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
         let dim = embedding.len() as i64;
         conn.execute(
@@ -188,7 +188,7 @@ impl MemoryStore for SqliteMemory {
         session_id: Option<&str>,
         importance: Option<f64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_str();
         let id = Self::nano_id();
         let cat_str = category.to_string();
@@ -222,7 +222,7 @@ impl MemoryStore for SqliteMemory {
         limit: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let trimmed = query.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
@@ -236,11 +236,11 @@ impl MemoryStore for SqliteMemory {
         let fts_match = fts_query.join(" OR ");
 
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.key, m.content, m.category, m.created_at, bm25(memories_fts) as score, m.session_id 
-             FROM memories_fts f 
-             JOIN memories m ON m.rowid = f.rowid 
-             WHERE memories_fts MATCH ?1 
-             ORDER BY score 
+            "SELECT m.id, m.key, m.content, m.category, m.created_at, bm25(memories_fts) as score, m.session_id
+             FROM memories_fts f
+             JOIN memories m ON m.rowid = f.rowid
+             WHERE memories_fts MATCH ?1
+             ORDER BY score
              LIMIT ?2"
         )?;
 
@@ -334,7 +334,7 @@ impl MemoryStore for SqliteMemory {
     }
 
     fn get(&self, key: &str) -> Result<Option<MemoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT id, key, content, category, created_at, session_id FROM memories WHERE key = ?1")?;
 
         let mut rows = stmt.query(params![key])?;
@@ -361,7 +361,7 @@ impl MemoryStore for SqliteMemory {
         category: Option<MemoryCategory>,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut results = Vec::new();
 
         if let Some(cat) = category {
@@ -421,19 +421,19 @@ impl MemoryStore for SqliteMemory {
     }
 
     fn forget(&self, key: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let deleted = conn.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
         Ok(deleted > 0)
     }
 
     fn count(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
     fn health_check(&self) -> bool {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row("SELECT 1", [], |r| r.get::<_, i32>(0))
             .is_ok()
     }
@@ -448,7 +448,7 @@ impl MemoryStore for SqliteMemory {
     }
 
     fn semantic_recall(&self, query_embedding: &[f32], limit: usize) -> Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut stmt = conn.prepare("SELECT memory_id, embedding FROM embeddings")?;
         let mut rows = stmt.query([])?;
@@ -495,7 +495,7 @@ impl MemoryStore for SqliteMemory {
     }
 
     fn decay_importance(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Decay importance by 10% for memories older than 1 day
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -511,7 +511,7 @@ impl MemoryStore for SqliteMemory {
 
 impl SessionStore for SqliteMemory {
     fn save_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
             params![session_id, role, content],
@@ -520,7 +520,7 @@ impl SessionStore for SqliteMemory {
     }
 
     fn load_messages(&self, session_id: &str) -> Result<Vec<MessageEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC")?;
 
@@ -539,7 +539,7 @@ impl SessionStore for SqliteMemory {
     }
 
     fn clear_messages(&self, session_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "DELETE FROM messages WHERE session_id = ?",
             params![session_id],
@@ -548,7 +548,7 @@ impl SessionStore for SqliteMemory {
     }
 
     fn clear_autosaved(&self, session_id: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sid) = session_id {
             conn.execute(
                 "DELETE FROM memories WHERE key LIKE 'autosave_%' AND session_id = ?1",

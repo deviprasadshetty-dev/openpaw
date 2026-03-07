@@ -48,6 +48,7 @@ pub struct SessionManager {
     memory: Option<Arc<dyn Memory>>,
     model_name: String,
     workspace_dir: String,
+    config_path: Option<String>,
 }
 
 impl SessionManager {
@@ -57,6 +58,7 @@ impl SessionManager {
         memory: Option<Arc<dyn Memory>>,
         model_name: String,
         workspace_dir: String,
+        config_path: Option<String>,
     ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
@@ -65,12 +67,13 @@ impl SessionManager {
             memory,
             model_name,
             workspace_dir,
+            config_path,
         }
     }
 
     /// Retrieve an existing session by its key, or create a new one.
     pub fn get_or_create(&self, session_key: &str) -> Arc<Session> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(session) = sessions.get(session_key) {
             let now = SystemTime::now()
@@ -88,6 +91,7 @@ impl SessionManager {
             self.model_name.clone(),
             self.workspace_dir.clone(),
         );
+        agent.config_path = self.config_path.clone();
 
         if let Some(mem) = &self.memory {
             agent = agent.with_memory(Arc::clone(mem));
@@ -157,7 +161,7 @@ impl SessionManager {
 
     /// Evict sessions idle longer than `max_idle_secs`. Returns the number evicted.
     pub fn evict_idle(&self, max_idle_secs: u64) -> usize {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -181,6 +185,9 @@ impl SessionManager {
     }
 
     pub fn session_count(&self) -> usize {
-        self.sessions.lock().unwrap().len()
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 }

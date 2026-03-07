@@ -8,7 +8,7 @@ use crate::cron::CronScheduler;
 use crate::gateway;
 use crate::heartbeat::HeartbeatEngine;
 use crate::providers::Provider;
-use crate::providers::factory::{self, ProviderConfig};
+use crate::providers::factory;
 use crate::session::SessionManager;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -302,16 +302,7 @@ pub fn start_outbound_dispatcher(
 /// Create the appropriate provider based on config, wrapped in ReliableProvider.
 fn create_provider(config: &Config) -> Arc<dyn Provider> {
     let provider_name = &config.default_provider;
-    let provider_config = config
-        .models
-        .as_ref()
-        .and_then(|m| m.providers.get(provider_name))
-        .map(|p| ProviderConfig {
-            api_key: p.api_key.clone(),
-            base_url: p.base_url.clone(),
-            max_retries: None,
-        });
-    factory::create(provider_name, provider_config.as_ref())
+    factory::create_with_fallbacks(provider_name, config)
 }
 
 pub async fn run_daemon(config: Config) -> Result<()> {
@@ -525,6 +516,15 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     tools.push(Arc::new(crate::tools::skill_install::SkillInstallTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
+    tools.push(Arc::new(crate::tools::skill_list::SkillListTool {
+        workspace_dir: config.workspace_dir.clone(),
+        builtin_dir: config.workspace_dir.clone(), // Assuming built-ins are also in workspace for now or reachable
+    }));
+    tools.push(Arc::new(
+        crate::tools::skill_uninstall::SkillUninstallTool {
+            workspace_dir: config.workspace_dir.clone(),
+        },
+    ));
 
     // Browser Open Tool
     tools.push(Arc::new(crate::tools::browser_open::BrowserOpenTool {
@@ -591,6 +591,11 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         memory,
         config.default_model.clone().unwrap_or("gpt-4o".to_string()),
         config.workspace_dir.clone(),
+        if config.config_path.is_empty() {
+            None
+        } else {
+            Some(config.config_path.clone())
+        },
     ));
 
     // Start Inbound Dispatcher
@@ -602,6 +607,30 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     subagent_manager.set_session_manager(session_manager.clone());
 
     // Initialize Channels
+    let mut _bridge_manager = None;
+    for wa_cfg in &config.channels.whatsapp_native {
+        if wa_cfg.auto_start {
+            let bridge_dir = if let Some(dir) = &wa_cfg.bridge_dir {
+                dir.clone()
+            } else {
+                format!(
+                    "{}/src/channels/whatsapp_native_bridge",
+                    config.workspace_dir
+                )
+            };
+
+            let manager = crate::channels::whatsapp_bridge_manager::BridgeManager::new(bridge_dir);
+            match manager.start() {
+                Ok(_) => {
+                    info!("WhatsApp Bridge started automatically.");
+                    _bridge_manager = Some(manager);
+                    break;
+                }
+                Err(e) => warn!("Failed to auto-start WhatsApp Bridge: {}", e),
+            }
+        }
+    }
+
     let (registry, polling_threads) = init_channels(&config, bus.clone());
     let registry = Arc::new(registry);
 
