@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::debug;
 
 use crate::providers::{
-    ChatMessage, ChatRequest, ChatResponse, FunctionCall, Provider, TokenUsage, ToolCall, ToolSpec,
+    ChatRequest, ChatResponse, FunctionCall, Provider, TokenUsage, ToolCall, ToolSpec,
 };
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";

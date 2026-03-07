@@ -41,10 +41,68 @@ struct License {
     key: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ClawHubSkill {
+    score: f64,
+    slug: String,
+    displayName: String,
+    summary: String,
+}
+
 pub struct SkillForge;
 
 impl SkillForge {
     pub fn scout(query: &str) -> Result<Vec<SkillCandidate>> {
+        let mut candidates = Self::scout_github(query).unwrap_or_default();
+        if let Ok(clawhub_candidates) = Self::scout_clawhub(query) {
+             // Merge results, avoiding duplicates by html_url
+            for cand in clawhub_candidates {
+                if !candidates.iter().any(|c| c.html_url == cand.html_url) {
+                    candidates.push(cand);
+                }
+            }
+        }
+        
+        Ok(candidates)
+    }
+
+    fn scout_clawhub(query: &str) -> Result<Vec<SkillCandidate>> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("openpaw/0.1")
+            .build()?;
+
+        let url = format!(
+            "https://clawhub.ai/api/search?q={}",
+            urlencoding::encode(query)
+        );
+
+        let response = client.get(&url).send()?;
+
+        if !response.status().is_success() {
+             return Ok(Vec::new());
+        }
+
+        let skills: Vec<ClawHubSkill> = response.json()?;
+        
+        let candidates = skills
+            .into_iter()
+            .map(|skill| {
+                SkillCandidate {
+                    name: skill.displayName,
+                    html_url: format!("https://clawhub.ai/skill/{}", skill.slug),
+                    description: Some(skill.summary),
+                    stargazers_count: (skill.score * 100.0) as u64, // Mapping vector score to "stars" roughly
+                    language: None,
+                    owner: Owner { login: "clawhub".to_string() }, // Default owner since API doesn't provide it clearly in search
+                    has_license: true, 
+                }
+            })
+            .collect();
+
+        Ok(candidates)
+    }
+
+    fn scout_github(query: &str) -> Result<Vec<SkillCandidate>> {
         let client = reqwest::blocking::Client::builder()
             .user_agent("openpaw/0.1")
             .build()?;

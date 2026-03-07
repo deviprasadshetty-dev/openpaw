@@ -3,7 +3,6 @@ use reqwest::header;
 use serde::Deserialize;
 use std::env;
 use std::io::{self, Write};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {

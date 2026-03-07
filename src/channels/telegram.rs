@@ -972,6 +972,11 @@ impl Channel for TelegramChannel {
     }
 
     fn send_message(&self, chat_id: &str, text: &str) -> Result<()> {
+        // chat_id arriving from the bus may have a "telegram:" routing prefix
+        // (stored as "telegram:<numeric_id>" in ParsedMessage). Strip it so the
+        // Telegram API receives only the raw numeric chat id.
+        let chat_id = chat_id.strip_prefix("telegram:").unwrap_or(chat_id);
+
         // Stop the typing heartbeat for this chat before sending the answer
         self.stop_typing_heartbeat(chat_id);
 
@@ -1023,6 +1028,7 @@ impl Channel for TelegramChannel {
     }
 
     fn send_stream_chunk(&self, chat_id: &str, text: &str) -> Result<()> {
+        let chat_id = chat_id.strip_prefix("telegram:").unwrap_or(chat_id);
         let text_to_send = if text.is_empty() { "..." } else { text };
 
         let safe_text = if text_to_send.len() > MAX_MESSAGE_LEN {

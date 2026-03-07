@@ -685,6 +685,43 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         };
     println!();
 
+    println!();
+
+    // ══════════════════════════════════════════════════════════════════
+    // STEP 6 — Brave Search
+    // ══════════════════════════════════════════════════════════════════
+    section_header(
+        6,
+        "Web Search",
+        "Enable Brave Search for high-quality web results",
+    );
+    println!();
+    println!(
+        "  {}  Get your key at {}",
+        info(),
+        cyan("https://api.search.brave.com/app/keys")
+    );
+    println!();
+    print!("  Enable Brave Search? {}: ", dim("(y/N)"));
+    io::stdout().flush()?;
+    let mut brave_in = String::new();
+    io::stdin().read_line(&mut brave_in)?;
+
+    let brave_api_key = if brave_in.trim().eq_ignore_ascii_case("y") {
+        let key = prompt_secret("  Brave Search API key")?;
+        if key.is_empty() {
+            println!("  {}  No key provided — skipping", skip());
+            None
+        } else {
+            println!("  {}  Brave Search enabled", ok());
+            Some(key)
+        }
+    } else {
+        println!("  {}  Skipped", skip());
+        None
+    };
+    println!();
+
     // ── Write files ──────────────────────────────────────────────────
     if !dir.exists() {
         fs::create_dir_all(dir).context("Failed to create workspace directory")?;
@@ -704,6 +741,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         composio_api_key.as_deref(),
         &composio_entity_id,
         &kilocode_fallback_models,
+        brave_api_key.as_deref(),
     );
     fs::write(dir.join("config.json"), config)?;
     scaffold_workspace(dir, &ProjectContext::default())?;
@@ -797,6 +835,7 @@ fn generate_config(
     composio_api_key: Option<&str>,
     composio_entity_id: &str,
     kilocode_fallback_models: &[String],
+    brave_api_key: Option<&str>,
 ) -> String {
     use serde_json::json;
 
@@ -843,7 +882,8 @@ fn generate_config(
         },
         "http_request": {
             "enabled": true,
-            "search_provider": "duckduckgo"
+            "search_provider": if brave_api_key.is_some() { "brave" } else { "duckduckgo" },
+            "brave_search_api_key": brave_api_key
         }
     });
 

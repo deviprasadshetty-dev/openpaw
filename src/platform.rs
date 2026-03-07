@@ -1,5 +1,5 @@
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Returns the user's home directory.
 /// Windows: USERPROFILE -> HOMEDRIVE+HOMEPATH

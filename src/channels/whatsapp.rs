@@ -1,22 +1,14 @@
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
+use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
 use std::fs::File;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
-use super::Channel;
+use super::root::{Channel, ParsedMessage};
 
 pub const API_VERSION: &str = "v18.0";
-
-#[derive(Clone, Debug)]
-pub struct ParsedMessage {
-    pub sender: String,
-    pub content: String,
-    pub timestamp: u64,
-}
 
 pub struct WhatsAppChannel {
     access_token: String,
@@ -119,8 +111,10 @@ impl WhatsAppChannel {
                                                     } else {
                                                         &self.allow_from
                                                     };
-                                                
-                                                let allowed = effective_allow_from.iter().any(|a| a == "*" || a == &normalized);
+
+                                                let allowed = effective_allow_from
+                                                    .iter()
+                                                    .any(|a| a == "*" || a == &normalized);
                                                 if effective_allow_from.is_empty() || !allowed {
                                                     continue;
                                                 }
@@ -144,11 +138,15 @@ impl WhatsAppChannel {
                                                 .and_then(|ts| ts.parse::<u64>().ok())
                                                 .unwrap_or_else(Self::now_epoch_secs);
 
-                                            result.push(ParsedMessage {
-                                                sender: normalized,
-                                                content: body.to_string(),
-                                                timestamp,
-                                            });
+                                            let mut parsed_msg = ParsedMessage::new(
+                                                &normalized,
+                                                &normalized, // chat_id = sender for individuals
+                                                body,
+                                                &normalized,
+                                            );
+                                            parsed_msg.is_group = is_group_msg;
+
+                                            result.push(parsed_msg);
                                         }
                                     }
                                 }
@@ -170,33 +168,47 @@ impl WhatsAppChannel {
         // Quick parse to find image ID
         let val: Value = serde_json::from_str(payload).ok()?;
         // Simplify navigation for brevity, assuming standard structure similar to parse logic
-        let msg = val.get("entry")?.get(0)?.get("changes")?.get(0)?.get("value")?.get("messages")?.get(0)?;
+        let msg = val
+            .get("entry")?
+            .get(0)?
+            .get("changes")?
+            .get(0)?
+            .get("value")?
+            .get("messages")?
+            .get(0)?;
         let media_id = msg.get("image")?.get("id")?.as_str()?;
 
         // Step 1: Get media URL
         let info_url = format!("https://graph.facebook.com/{}/{}", API_VERSION, media_id);
         let auth_header = format!("Bearer {}", self.access_token);
 
-        let info_resp = self.client.get(&info_url)
+        let info_resp = self
+            .client
+            .get(&info_url)
             .header("Authorization", &auth_header)
             .send()
-            .await.ok()?;
-        
+            .await
+            .ok()?;
+
         let info_json: Value = info_resp.json().await.ok()?;
         let media_url = info_json.get("url")?.as_str()?;
 
         // Step 2: Download bytes
-        let media_bytes = self.client.get(media_url)
+        let media_bytes = self
+            .client
+            .get(media_url)
             .header("Authorization", &auth_header)
             .send()
-            .await.ok()?
+            .await
+            .ok()?
             .bytes()
-            .await.ok()?;
+            .await
+            .ok()?;
 
         // Step 3: Write to tmp file
         let rand_id = rand::random::<u64>();
         let local_path = format!("/tmp/whatsapp_{:x}.dat", rand_id);
-        
+
         let mut file = File::create(&local_path).ok()?;
         file.write_all(&media_bytes).ok()?;
 
@@ -227,7 +239,9 @@ impl WhatsAppChannel {
             }
         });
 
-        let resp = self.client.post(&url)
+        let resp = self
+            .client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.access_token))
             .json(&body)
             .send()

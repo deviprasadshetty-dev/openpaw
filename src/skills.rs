@@ -13,6 +13,15 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub command: String,
+    #[serde(default)]
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub name: String,
     #[serde(default = "default_version")]
@@ -23,6 +32,8 @@ pub struct Skill {
     pub author: String,
     #[serde(default)]
     pub instructions: String,
+    #[serde(default)]
+    pub tools: Vec<SkillToolDefinition>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -93,6 +104,7 @@ pub fn load_skill(skill_dir: &Path) -> Result<Skill> {
             available: true,
             missing_deps: "".into(),
             path: "".into(),
+            tools: vec![],
         }
     } else {
         anyhow::bail!("No skill manifest or instructions found in {:?}", skill_dir);
@@ -102,7 +114,13 @@ pub fn load_skill(skill_dir: &Path) -> Result<Skill> {
 
     // Normalize sibling-agent names so imported skills don't confuse OpenPaw
     // about its own identity (e.g. a Nullclaw skill saying "you are Nullclaw").
+    skill.name = normalize_agent_name(&skill.name);
     skill.instructions = normalize_agent_name(&skill.instructions);
+
+    // Also normalize tool descriptions
+    for t in &mut skill.tools {
+        t.description = normalize_agent_name(&t.description);
+    }
 
     Ok(skill)
 }

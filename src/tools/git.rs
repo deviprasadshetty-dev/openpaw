@@ -1,7 +1,7 @@
 use super::{path_security, process_util, Tool, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct GitTool {
     pub workspace_dir: String,

@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 #[cfg(unix)]
 const SYSTEM_BLOCKED_PREFIXES: &[&str] = &[

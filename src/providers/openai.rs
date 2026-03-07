@@ -1,9 +1,8 @@
 use crate::providers::{
     ChatRequest, ChatResponse, FunctionCall, Provider, StreamCallback, TokenUsage, ToolCall,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 

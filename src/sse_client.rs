@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 #[derive(Debug)]
 pub enum SseLineResult {

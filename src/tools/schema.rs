@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 pub enum CleaningStrategy {
     Gemini,
@@ -38,7 +38,7 @@ impl SchemaCleanr {
                 }
 
                 let mut vals_to_clean = Vec::new();
-                for (k, v) in map.iter_mut() {
+                for (_k, v) in map.iter_mut() {
                     vals_to_clean.push(v);
                 }
                 for v in vals_to_clean {

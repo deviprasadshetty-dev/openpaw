@@ -58,13 +58,13 @@ pub fn run(args: &[&str], opts: RunOptions) -> Result<RunResult> {
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
 
-    if let Some(mut stdout) = child.stdout.take() {
+    if let Some(stdout) = child.stdout.take() {
         // Read up to limit
         let mut handle = stdout.take(opts.max_output_bytes as u64);
         handle.read_to_end(&mut stdout_bytes)?;
     }
 
-    if let Some(mut stderr) = child.stderr.take() {
+    if let Some(stderr) = child.stderr.take() {
         let mut handle = stderr.take(opts.max_output_bytes as u64);
         handle.read_to_end(&mut stderr_bytes)?;
     }

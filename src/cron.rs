@@ -1,11 +1,10 @@
 use crate::bus::Bus;
 use crate::config::Config;
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,11 +70,33 @@ pub struct CronScheduler {
     bus: Arc<Bus>,
 }
 
+use std::fs;
+use std::path::PathBuf;
+
 impl CronScheduler {
     pub fn init(_allocator: (), _config: &Config, bus: &Arc<Bus>) -> Self {
-        Self {
+        let scheduler = Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             bus: bus.clone(),
+        };
+        scheduler.load();
+        scheduler
+    }
+
+    pub fn load(&self) {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let mut path = PathBuf::from(home);
+        path.push(".openpaw");
+        path.push("cron.json");
+
+        if let Ok(data) = fs::read_to_string(path) {
+            if let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data) {
+                let mut guard = self.jobs.lock().unwrap();
+                *guard = jobs;
+                tracing::info!("Loaded {} cron jobs from disk", guard.len());
+            } else {
+                tracing::warn!("Failed to parse cron jobs from disk");
+            }
         }
     }
 

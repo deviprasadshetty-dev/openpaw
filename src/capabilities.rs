@@ -3,7 +3,6 @@ use crate::channel_catalog;
 use crate::config::Config;
 use crate::memory::engines::registry as memory_registry;
 use crate::tools::root::Tool;
-use serde::Serialize;
 use serde_json::json;
 
 const CORE_TOOL_NAMES: &[&str] = &[

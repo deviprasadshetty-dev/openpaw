@@ -63,7 +63,7 @@ impl Migration {
             return Err(anyhow!("Cannot migrate from self (source == workspace)"));
         }
 
-        let mut stats = MigrationStats::default();
+        let stats = MigrationStats::default();
         let mut _entries: Vec<SourceEntry> = Vec::new();
         let mut _seen_keys: HashSet<String> = HashSet::new();
 

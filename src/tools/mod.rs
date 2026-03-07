@@ -36,6 +36,7 @@ pub mod screenshot;
 pub mod shell;
 pub mod skill_install;
 pub mod skill_search;
+pub mod skill_tool;
 pub mod spawn;
 pub mod spi;
 pub mod web_fetch;

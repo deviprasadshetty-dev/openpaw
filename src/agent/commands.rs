@@ -1,9 +1,10 @@
 use crate::agent::Agent;
+use std::collections::HashMap;
+use std::sync::Arc;
 
-pub const BARE_SESSION_RESET_PROMPT: &str =
-    "A new session was started via /new or /reset. Execute your Session Startup sequence now - read the required files before responding to the user. Then greet the user in your configured persona, if one is provided. Be yourself - use your defined voice, mannerisms, and mood. Keep it to 1-3 sentences and ask what they want to do. If the runtime model differs from default_model in the system prompt, mention the default model. Do not mention internal steps, files, tools, or reasoning.";
+pub const BARE_SESSION_RESET_PROMPT: &str = "A new session was started via /new or /reset. Execute your Session Startup sequence now - read the required files before responding to the user. Then greet the user in your configured persona, if one is provided. Be yourself - use your defined voice, mannerisms, and mood. Keep it to 1-3 sentences and ask what they want to do. If the runtime model differs from default_model in the system prompt, mention the default model. Do not mention internal steps, files, tools, or reasoning.";
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SlashCommand {
     pub name: String,
     pub arg: String,
@@ -16,8 +17,10 @@ pub fn parse_slash_command(message: &str) -> Option<SlashCommand> {
     }
 
     let body = &trimmed[1..];
-    let split_idx = body.find(|c| c == ':' || c == ' ' || c == '\t').unwrap_or(body.len());
-    
+    let split_idx = body
+        .find(|c| c == ':' || c == ' ' || c == '\t')
+        .unwrap_or(body.len());
+
     let raw_name = &body[..split_idx];
     if raw_name.is_empty() {
         return None;
@@ -44,13 +47,105 @@ pub fn parse_slash_command(message: &str) -> Option<SlashCommand> {
     })
 }
 
-fn is_slash_name(cmd: &SlashCommand, expected: &str) -> bool {
-    cmd.name.eq_ignore_ascii_case(expected)
+pub trait Command: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn execute(&self, agent: &mut Agent, arg: &str) -> Option<String>;
+}
+
+pub struct CommandRegistry {
+    commands: HashMap<String, Arc<dyn Command>>,
+}
+
+impl CommandRegistry {
+    pub fn new() -> Self {
+        let mut registry = Self {
+            commands: HashMap::new(),
+        };
+        registry.register(Arc::new(ModelCommand));
+        registry.register(Arc::new(ResetCommand));
+        registry.register(Arc::new(ProviderCommand));
+        registry
+    }
+
+    pub fn register(&mut self, cmd: Arc<dyn Command>) {
+        self.commands.insert(cmd.name().to_lowercase(), cmd);
+    }
+
+    pub fn handle_message(agent: &mut Agent, message: &str) -> Option<String> {
+        let parsed = parse_slash_command(message)?;
+        let cmd = {
+            let registry = &agent.command_registry;
+            registry.commands.get(&parsed.name.to_lowercase()).cloned()
+        };
+
+        if let Some(cmd) = cmd {
+            return cmd.execute(agent, &parsed.arg);
+        }
+        None
+    }
+}
+
+struct ModelCommand;
+impl Command for ModelCommand {
+    fn name(&self) -> &str {
+        "model"
+    }
+    fn description(&self) -> &str {
+        "Show or change the current model"
+    }
+    fn execute(&self, agent: &mut Agent, arg: &str) -> Option<String> {
+        if arg.is_empty() {
+            return Some(format!("Current model: {}", agent.model_name));
+        }
+        agent.model_name = arg.to_string();
+        // Recalculate token limits
+        use crate::agent::context_tokens::resolve_context_tokens;
+        use crate::agent::max_tokens::resolve_max_tokens;
+
+        agent.token_limit = resolve_context_tokens(None, &agent.model_name);
+        agent.max_tokens = resolve_max_tokens(None, &agent.model_name);
+
+        Some(format!("Switched model to: {}", agent.model_name))
+    }
+}
+
+struct ResetCommand;
+impl Command for ResetCommand {
+    fn name(&self) -> &str {
+        "reset"
+    }
+    fn description(&self) -> &str {
+        "Reset the current session"
+    }
+    fn execute(&self, agent: &mut Agent, _arg: &str) -> Option<String> {
+        agent.reset_history();
+        agent.memory_session_id = Some("new-session".to_string());
+        Some("Session reset.".to_string())
+    }
+}
+
+struct ProviderCommand;
+impl Command for ProviderCommand {
+    fn name(&self) -> &str {
+        "provider"
+    }
+    fn description(&self) -> &str {
+        "Switch AI provider"
+    }
+    fn execute(&self, agent: &mut Agent, _arg: &str) -> Option<String> {
+        Some(format!(
+            "Provider switching not fully implemented. Current model: {}",
+            agent.model_name
+        ))
+    }
 }
 
 pub fn bare_session_reset_prompt(message: &str) -> Option<&'static str> {
     if let Some(cmd) = parse_slash_command(message) {
-        if (is_slash_name(&cmd, "new") || is_slash_name(&cmd, "reset")) && cmd.arg.is_empty() {
+        if (cmd.name.eq_ignore_ascii_case("new") || cmd.name.eq_ignore_ascii_case("reset"))
+            && cmd.arg.is_empty()
+        {
             return Some(BARE_SESSION_RESET_PROMPT);
         }
     }
@@ -58,44 +153,6 @@ pub fn bare_session_reset_prompt(message: &str) -> Option<&'static str> {
 }
 
 pub fn handle_slash_command(agent: &mut Agent, message: &str) -> Option<String> {
-    let cmd = parse_slash_command(message)?;
-
-    if is_slash_name(&cmd, "model") {
-        if cmd.arg.is_empty() {
-            return Some(format!("Current model: {}", agent.model_name));
-        }
-        agent.model_name = cmd.arg.clone();
-        // Recalculate token limits
-        use crate::agent::context_tokens::resolve_context_tokens;
-        use crate::agent::max_tokens::resolve_max_tokens;
-        
-        agent.token_limit = resolve_context_tokens(None, &agent.model_name);
-        agent.max_tokens = resolve_max_tokens(None, &agent.model_name);
-        
-        return Some(format!("Switched model to: {}", agent.model_name));
-    }
-
-    if is_slash_name(&cmd, "provider") {
-         // Placeholder for provider switching logic
-         return Some(format!("Provider switching not fully implemented. Current: {}", agent.model_name));
-    }
-    
-    if is_slash_name(&cmd, "new") || is_slash_name(&cmd, "reset") {
-        agent.reset_history();
-        agent.memory_session_id = Some("new-session".to_string()); // Simple rotation
-        if !cmd.arg.is_empty() {
-             // If arg provided, it's a new session with a prompt
-             // We don't return a response, we let the agent loop handle it as a new turn
-             // But handleSlashCommand is supposed to return Option<String>.
-             // If we return None, the caller might process it as a normal message?
-             // In NullClaw, handleSlashCommand returns ?[]const u8.
-             // If it returns a string, that string is returned to the user and NO LLM call is made.
-             // If it returns null, the message is processed normally.
-             // But /new with arg should probably start a new session AND process the arg as the first message.
-             // For now, let's just clear history.
-        }
-        return Some("Session reset.".to_string());
-    }
-
-    None
+    // Legacy bridge to the new registry
+    CommandRegistry::handle_message(agent, message)
 }

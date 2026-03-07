@@ -1,6 +1,6 @@
 use super::{MemoryCategory, MemoryEntry, MemoryStore, MessageEntry, SessionStore};
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 

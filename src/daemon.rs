@@ -1,4 +1,3 @@
-use crate::agent::memory_loader::Memory;
 use crate::bus::{self, Bus};
 use crate::channel_adapters::find_polling_descriptor;
 use crate::channel_loop::{self, ChannelRuntime, PollingState};
@@ -15,7 +14,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -117,7 +116,7 @@ pub async fn gateway_thread(config: Config) {
 }
 
 pub fn heartbeat_thread(
-    config: Config,
+    _config: Config,
     _state: Arc<std::sync::Mutex<DaemonState>>,
     engine: HeartbeatEngine,
 ) {
@@ -216,7 +215,7 @@ pub fn init_bus() -> Arc<Bus> {
 
 pub fn init_channels(
     config: &Config,
-    bus: Arc<Bus>,
+    _bus: Arc<Bus>,
 ) -> (ChannelRegistry, Vec<(PollingState, thread::JoinHandle<()>)>) {
     let mut registry = ChannelRegistry::new();
     let mut polling_threads = Vec::new();
@@ -511,6 +510,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let mut search_tool = crate::tools::web_search::WebSearchTool::default();
     let req_config = &config.http_request;
     search_tool.provider = req_config.search_provider.clone();
+    search_tool.api_key = req_config.brave_search_api_key.clone();
     tools.push(Arc::new(search_tool));
 
     // Web Fetch Tool
@@ -549,9 +549,14 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         workspace_dir: config.workspace_dir.clone(),
     }));
     tools.push(Arc::new(crate::tools::delegate::DelegateTool {}));
+    // Initialize Subagent Manager
+    let subagent_manager = Arc::new(crate::subagent::SubagentManager::new(
+        bus.clone(),
+        crate::subagent::SubagentConfig::default(),
+    ));
+
     tools.push(Arc::new(crate::tools::spawn::SpawnTool {
-        default_channel: None,
-        default_chat_id: None,
+        subagent_manager: subagent_manager.clone(),
     }));
     tools.push(Arc::new(crate::tools::message::MessageTool::new()));
 
@@ -565,6 +570,21 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
     tools.push(Arc::new(crate::tools::spi::SpiTool {}));
 
+    // Dynamic Skill Tools — tools defined in SKILL.toml/skill.json
+    if let Ok(skills) = crate::skills::list_skills(Path::new(&config.workspace_dir)) {
+        for skill in skills {
+            if skill.enabled && skill.available {
+                let skill_path = std::path::PathBuf::from(&skill.path);
+                for tool_def in skill.tools {
+                    tools.push(Arc::new(crate::tools::skill_tool::DynamicSkillTool {
+                        definition: tool_def,
+                        skill_path: skill_path.clone(),
+                    }));
+                }
+            }
+        }
+    }
+
     let session_manager = Arc::new(SessionManager::new(
         provider,
         tools,
@@ -577,6 +597,9 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let bus_clone = bus.clone();
     let sm_clone = session_manager.clone();
     thread::spawn(move || inbound_dispatcher_thread(bus_clone, sm_clone));
+
+    // Finish Subagent Manager initialization (inject session manager to break circularity)
+    subagent_manager.set_session_manager(session_manager.clone());
 
     // Initialize Channels
     let (registry, polling_threads) = init_channels(&config, bus.clone());

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::info;
 
 use crate::agent::Agent;
 use crate::agent::memory_loader::Memory;

@@ -104,6 +104,8 @@ pub struct HttpRequestConfig {
     pub search_provider: String,
     #[serde(default)]
     pub search_fallback_providers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brave_search_api_key: Option<String>,
 }
 
 impl Default for HttpRequestConfig {
@@ -116,6 +118,7 @@ impl Default for HttpRequestConfig {
             search_base_url: None,
             search_provider: default_search_provider(),
             search_fallback_providers: Vec::new(),
+            brave_search_api_key: None,
         }
     }
 }

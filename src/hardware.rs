@@ -90,7 +90,7 @@ pub fn discover_hardware() -> Result<Vec<DiscoveredDevice>> {
 }
 
 fn discover_macos() -> Result<Vec<DiscoveredDevice>> {
-    let output = Command::new("system_profiler")
+    let _output = Command::new("system_profiler")
         .arg("SPUSBDataType")
         .output()?;
     

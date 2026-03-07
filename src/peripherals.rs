@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Default)]
 pub struct PeripheralCapabilities {

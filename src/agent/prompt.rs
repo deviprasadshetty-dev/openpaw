@@ -2,7 +2,7 @@ use crate::agent::Tool;
 use crate::skills::{check_requirements, list_skills};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

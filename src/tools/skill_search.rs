@@ -95,7 +95,7 @@ impl Tool for SkillSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search GitHub for openpaw-compatible skills (also finds nullclaw/openclaw/picoclaw skills). Returns a scored list with install URLs. Use skill_install to install one."
+        "Search GitHub for OpenPaw-compatible skills (also finds PicoClaw/OpenClaw skills). Returns a scored list with install URLs. Use skill_install to install one."
     }
 
     fn parameters_json(&self) -> String {
@@ -143,7 +143,7 @@ impl Tool for SkillSearchTool {
             let rec = recommendation(total);
 
             lines.push(format!(
-                "{}. **{}** by {}\n   {}\n   ⭐ {} | Score: {:.0}% | Rec: {}\n   URL: {}\n",
+                "{}. **{}** by {}\n   {}\n   ⭐/Score {} | Score: {:.0}% | Rec: {}\n   URL: {}\n",
                 i + 1,
                 c.name,
                 c.owner.login,

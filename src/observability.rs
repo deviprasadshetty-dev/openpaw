@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use tracing::{info, instrument};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ObserverEvent {

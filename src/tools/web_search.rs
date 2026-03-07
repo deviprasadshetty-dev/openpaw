@@ -8,6 +8,7 @@ pub struct WebSearchTool {
     pub searxng_base_url: Option<String>,
     pub provider: String,
     pub fallback_providers: Vec<String>,
+    pub api_key: Option<String>,
     pub timeout_secs: u64,
 }
 
@@ -17,6 +18,7 @@ impl Default for WebSearchTool {
             searxng_base_url: None,
             provider: "duckduckgo".to_string(),
             fallback_providers: Vec::new(),
+            api_key: None,
             timeout_secs: 30,
         }
     }
@@ -97,6 +99,63 @@ impl Tool for WebSearchTool {
                 }
             } else {
                 Ok(ToolResult::fail("searxng_base_url not configured"))
+            }
+        } else if provider == "brave" {
+            let api_key = match &self.api_key {
+                Some(k) => k,
+                None => return Ok(ToolResult::fail("Brave Search API key not configured")),
+            };
+
+            let count = args
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5)
+                .min(10);
+            let url = format!(
+                "https://api.search.brave.com/res/v1/web/search?q={s}&count={d}",
+                s = urlencoding::encode(query),
+                d = count
+            );
+
+            let res = client
+                .get(&url)
+                .header("X-Subscription-Token", api_key)
+                .header("Accept", "application/json")
+                .send();
+
+            match res {
+                Ok(resp) => {
+                    let json: Value = resp.json().unwrap_or(Value::Null);
+                    if let Some(results) = json
+                        .get("web")
+                        .and_then(|w| w.get("results"))
+                        .and_then(|r| r.as_array())
+                    {
+                        if results.is_empty() {
+                            return Ok(ToolResult::ok("No web results found."));
+                        }
+
+                        let mut output = format!("Brave Search results for '{}':\n\n", query);
+                        for res in results {
+                            let title = res
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("No Title");
+                            let url = res.get("url").and_then(|v| v.as_str()).unwrap_or("#");
+                            let desc = res
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            output.push_str(&format!("- [{}]({})\n  {}\n\n", title, url, desc));
+                        }
+                        Ok(ToolResult::ok(output))
+                    } else {
+                        Ok(ToolResult::ok(
+                            "No web results found or invalid response format.",
+                        ))
+                    }
+                }
+                Err(e) => Ok(ToolResult::fail(format!("Brave Search failed: {}", e))),
             }
         } else {
             Ok(ToolResult::fail(format!(

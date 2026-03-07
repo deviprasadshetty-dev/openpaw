@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 pub const START_TAG: &str = "<nc_choices>";
 pub const END_TAG: &str = "</nc_choices>";

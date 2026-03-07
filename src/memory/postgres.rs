@@ -1,5 +1,5 @@
 use super::{MemoryCategory, MemoryEntry, MemoryStore, MessageEntry, SessionStore};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use postgres::{Client, NoTls};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};

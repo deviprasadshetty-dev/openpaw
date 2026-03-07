@@ -1,11 +1,9 @@
 use crate::bus::Bus;
-use crate::channel_adapters;
 use crate::channel_loop::{ChannelRuntime, PollingState};
 use crate::channel_catalog;
 use crate::channels::dispatch::{ChannelRegistry, SupervisedChannel};
 use crate::channels::root::Channel;
 use crate::config::Config;
-use anyhow::Result;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 

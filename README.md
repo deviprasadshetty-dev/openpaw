@@ -61,15 +61,17 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 *   **Persistent Memory:** SQLite-backed long-term memory with Full-Text Search (FTS5). OpenPaw remembers your preferences like a cat remembers its favorite sunny spot.
 
 ### 🛠️ Sharpening the Claws (The Toolbelt)
-*   **MCP Host Implementation:** OpenPaw hosts and orchestrates Model Context Protocol (MCP) servers natively, expanding its "territory" to thousands of standardized tools.
-*   **Hardware-Aware RAG:** A specialized sensory system for technical documentation. It parses markdown pin-aliases and provides the exact board-specific context needed for hardware hacks.
-*   **Deep Web Prowling:** Powered by `browser-use`, OpenPaw navigates the web with human-like precision, using isolated profiles to keep your digital "scent" hidden.
-*   **SkillForge Ecosystem:** Automatically scout and integrate community "Skills" from GitHub. Compatible with the NullClaw and OpenClaw ecosystems.
+*   **MCP Host Implementation**: OpenPaw hosts and orchestrates Model Context Protocol (MCP) servers natively, expanding its "territory" to thousands of standardized tools.
+*   **Hardware-Aware RAG**: A specialized sensory system for technical documentation. It parses markdown pin-aliases and provides the exact board-specific context needed for hardware hacks.
+*   **Deep Web Prowling**: Powered by `browser-use`, OpenPaw navigates the web with human-like precision. Optimized for speed with **headless mode by default** and a specialized `read_page` action for clean Markdown extraction.
+*   **Brave Search Integration**: High-quality web results via Brave's Search API. Returns rich, agent-friendly snippets for superior information gathering.
+*   **Background Sub-agents**: OpenPaw can spawn and manage background workers for long-running tasks, allowing it to multi-task without blocking your main conversation.
+*   **SkillForge Ecosystem**: Automatically scout and integrate community "Skills" from GitHub. Compatible with the NullClaw and OpenClaw ecosystems.
 
 ### 🔌 Multimodal Senses
-*   **Hardware Gateway:** Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer.
-*   **Multimodal Ears (Groq/Whisper):** Bi-directional voice support. OpenPaw can "hear" Telegram voice notes and transcribe them instantly using ultra-low latency STT.
-*   **Multi-Channel Prowling:** Robust adapters for Telegram, CLI, and a high-performance HTTP Gateway for custom webhooks.
+*   **Hardware Gateway**: Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer.
+*   **Multimodal Ears (Groq/Whisper)**: Bi-directional voice support. OpenPaw can "hear" Telegram voice notes and transcribe them instantly using ultra-low latency STT.
+*   **Multi-Channel Prowling**: Robust adapters for **Telegram**, **CLI**, and **WhatsApp (Native)**. The WhatsApp integration uses Linked Device emulation (QR code scanning) for stable, official-API-free connectivity.
 
 ---
 
@@ -80,11 +82,22 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 - SQLite (bundled)
 - A modern browser (Chrome/Edge/Brave) for web automation.
 
-### Installation
+### ⚡ One-Line Install
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy ByPass -Command "irm https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/install.ps1 | iex"
+```
+
+**Linux/macOS:**
+```bash
+curl -sSf https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/install.sh | bash
+```
+
+### Installation (Manual)
 
 1.  **Clone & Build:**
     ```bash
-    git clone https://github.com/your-username/openpaw.git
+    git clone https://github.com/deviprasadshetty-dev/openpaw.git
     cd openpaw
     cargo build --release
     ```
@@ -101,7 +114,7 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
     openpaw onboard
     ```
 
-    The wizard walks you through **5 focused steps** — only things that go into `config.json`:
+    The wizard walks you through **6 focused steps** — only things that go into `config.json`:
 
     | Step | What it configures |
     |---|---|
@@ -110,6 +123,7 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
     | **3. Voice** | Groq Whisper transcription (free key at console.groq.com) |
     | **4. Telegram** | Bot token for mobile chat |
     | **5. Composio** | External app integrations (Gmail, GitHub, Slack…) |
+    | **6. Web Search** | Brave Search API key for high-quality web results |
 
     No fluff — no questions about names or timezones that don't affect your agent's behaviour.
 

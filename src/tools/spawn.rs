@@ -1,10 +1,11 @@
 use super::{Tool, ToolResult};
+use crate::subagent::SubagentManager;
 use anyhow::Result;
 use serde_json::Value;
+use std::sync::Arc;
 
 pub struct SpawnTool {
-    pub default_channel: Option<String>,
-    pub default_chat_id: Option<String>,
+    pub subagent_manager: Arc<SubagentManager>,
 }
 
 impl Tool for SpawnTool {
@@ -17,7 +18,7 @@ impl Tool for SpawnTool {
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"task":{"type":"string","minLength":1,"description":"The task/prompt for the subagent"},"label":{"type":"string","description":"Optional human-readable label for tracking"}},"required":["task"]}"#.to_string()
+        r#"{"type":"object","properties":{"task":{"type":"string","minLength":1,"description":"The task/prompt for the subagent"},"label":{"type":"string","description":"Optional human-readable label for tracking"},"origin_channel":{"type":"string","description":"Internal: channel to report back to"},"origin_chat_id":{"type":"string","description":"Internal: chat ID to report back to"}},"required":["task"]}"#.to_string()
     }
 
     fn execute(&self, args: Value) -> Result<ToolResult> {
@@ -35,16 +36,28 @@ impl Tool for SpawnTool {
             .and_then(|v| v.as_str())
             .unwrap_or("subagent");
 
-        // let channel = self.default_channel.as_deref().unwrap_or("system");
-        // let chat_id = self.default_chat_id.as_deref().unwrap_or("agent");
+        let origin_channel = args
+            .get("origin_channel")
+            .and_then(|v| v.as_str())
+            .unwrap_or("system");
 
-        // TODO: interface with an actual SubagentManager
-        let task_id = 1; // mock task_id
+        let origin_chat_id = args
+            .get("origin_chat_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent");
 
-        let msg = format!(
-            "Subagent '{}' spawned with task_id={}. Results will be delivered as system messages.",
-            label, task_id
-        );
-        Ok(ToolResult::ok(msg))
+        match self
+            .subagent_manager
+            .spawn(task, label, origin_channel, origin_chat_id)
+        {
+            Ok(task_id) => {
+                let msg = format!(
+                    "✅ Subagent '{}' spawned successfully (Task ID: {}). It will report back to {}/{} when done.",
+                    label, task_id, origin_channel, origin_chat_id
+                );
+                Ok(ToolResult::ok(msg))
+            }
+            Err(e) => Ok(ToolResult::fail(format!("Failed to spawn subagent: {}", e))),
+        }
     }
 }

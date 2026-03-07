@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::providers::ChatMessage;
 use super::Provider;
+use crate::providers::ChatMessage;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub const DEFAULT_COMPACTION_KEEP_RECENT: u32 = 20;
@@ -114,46 +114,56 @@ pub fn auto_compact_history(
         return false;
     }
 
-    let compact_end = start + compact_count;
+    let mut compact_end = start + compact_count;
 
     // TODO: Implement multi-part summarization for very large histories
-    let summary = summarize_slice(
-        provider,
-        model_name,
-        history,
-        start,
-        compact_end,
-        config
-    ).unwrap_or_else(|| "Context summarized due to length.".to_string());
+    let summary = summarize_slice(provider, model_name, history, start, compact_end, config)
+        .unwrap_or_else(|| "Context summarized due to length.".to_string());
 
     // Construct the final summary message content
     // Potentially read workspace context here (AGENTS.md)
     let mut summary_content = format!("[Compaction summary]\n{}", summary);
-    if let Some(workspace_context) = read_workspace_context_for_summary(config.workspace_dir.as_deref()) {
+    if let Some(workspace_context) =
+        read_workspace_context_for_summary(config.workspace_dir.as_deref())
+    {
         if !workspace_context.is_empty() {
             summary_content.push_str("\n\n");
             summary_content.push_str(&workspace_context);
         }
     }
 
-    // Replace compacted messages
-    // We keep history[0] (system), then insert summary, then keep the rest.
-    let mut new_history = Vec::with_capacity(keep_recent + 2);
-    if has_system {
-        new_history.push(history[0].clone());
+    // Advance compact_end to the next "user" message to ensure the kept history starts with a user prompt.
+    // Strict APIs like Gemini and Anthropic will reject histories that start with "assistant" or don't alternate.
+    while compact_end < history.len() && history[compact_end].role != "user" {
+        compact_end += 1;
     }
-    
-    new_history.push(ChatMessage {
-        role: "assistant".to_string(),
-        content: summary.clone(),
-        name: None,
-        tool_calls: None,
-        tool_call_id: None,
-        content_parts: None,
-    });
-    
+
+    if compact_end >= history.len() {
+        return false; // Cannot compact without breaking the conversation completely
+    }
+
+    let mut new_history = Vec::new();
+
+    if has_system {
+        let mut sys_msg = history[0].clone();
+        sys_msg
+            .content
+            .push_str("\n\n--- COMPACTED PAST CONTEXT ---\n");
+        sys_msg.content.push_str(&summary_content);
+        new_history.push(sys_msg);
+    } else {
+        new_history.push(ChatMessage {
+            role: "system".to_string(),
+            content: summary_content,
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        });
+    }
+
     new_history.extend_from_slice(&history[compact_end..]);
-    
+
     *history = new_history;
     true
 }
@@ -167,13 +177,30 @@ fn summarize_slice(
     config: &CompactionConfig,
 ) -> Option<String> {
     let transcript = build_compaction_transcript(history, start, end, config.max_source_chars);
-    
+
     let summarizer_system = "You are a conversation compaction engine. Summarize older chat history into concise context for future turns. Preserve: user preferences, commitments, decisions, unresolved tasks, key facts. Omit: filler, repeated chit-chat, verbose tool logs. Output plain text bullet points only.";
-    let summarizer_user = format!("Summarize the following conversation history for context preservation. Keep it short (max 12 bullet points).\n\n{}", transcript);
+    let summarizer_user = format!(
+        "Summarize the following conversation history for context preservation. Keep it short (max 12 bullet points).\n\n{}",
+        transcript
+    );
 
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: summarizer_system.to_string(), name: None, tool_calls: None, tool_call_id: None, content_parts: None },
-        ChatMessage { role: "user".to_string(), content: summarizer_user, name: None, tool_calls: None, tool_call_id: None, content_parts: None },
+        ChatMessage {
+            role: "system".to_string(),
+            content: summarizer_system.to_string(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: summarizer_user,
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        },
     ];
 
     let request = crate::providers::ChatRequest {
@@ -190,19 +217,34 @@ fn summarize_slice(
         Ok(resp) => resp.content,
         Err(_) => {
             // Fallback: truncate transcript
-            let max_len = std::cmp::min(transcript.len(), config.max_summary_chars as usize);
-            Some(transcript[..max_len].to_string())
+            let safe_len = transcript
+                .char_indices()
+                .nth(config.max_summary_chars as usize)
+                .map(|(i, _)| i)
+                .unwrap_or(transcript.len());
+            Some(transcript[..safe_len].to_string())
         }
     }
 }
 
-fn build_compaction_transcript(history: &[ChatMessage], start: usize, end: usize, max_chars: u32) -> String {
+fn build_compaction_transcript(
+    history: &[ChatMessage],
+    start: usize,
+    end: usize,
+    max_chars: u32,
+) -> String {
     let mut buf = String::new();
     for msg in &history[start..end] {
         let role = msg.role.to_uppercase();
         buf.push_str(&role);
         buf.push_str(": ");
-        let content = if msg.content.len() > 500 { &msg.content[..500] } else { &msg.content };
+        let safe_500 = msg
+            .content
+            .char_indices()
+            .nth(500)
+            .map(|(i, _)| i)
+            .unwrap_or(msg.content.len());
+        let content = &msg.content[..safe_500];
         buf.push_str(content);
         buf.push('\n');
         if buf.len() > max_chars as usize {
@@ -221,8 +263,13 @@ fn read_workspace_context_for_summary(workspace_dir: Option<&str>) -> Option<Str
     if let Ok(content) = std::fs::read_to_string(path) {
         // Extract specific sections like "Session Startup" or "Red Lines" if needed
         // For now, just truncate and return
-        if content.len() > 2000 {
-            Some(format!("{}\n...[truncated]...", &content[..2000]))
+        let safe_2000 = content
+            .char_indices()
+            .nth(2000)
+            .map(|(i, _)| i)
+            .unwrap_or(content.len());
+        if content.len() > safe_2000 {
+            Some(format!("{}\n...[truncated]...", &content[..safe_2000]))
         } else {
             Some(content)
         }

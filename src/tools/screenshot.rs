@@ -1,4 +1,4 @@
-use super::{process_util, Tool, ToolResult};
+use super::{Tool, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -27,15 +27,15 @@ impl Tool for ScreenshotTool {
              return Ok(ToolResult::fail("Invalid filename"));
         }
 
-        let output_path = format!("{}/{}", self.workspace_dir, filename);
+        let _output_path = format!("{}/{}", self.workspace_dir, filename);
 
         #[cfg(target_os = "macos")]
         {
-            let cmd_args = vec!["screencapture", "-x", &output_path];
+            let cmd_args = vec!["screencapture", "-x", &_output_path];
             let result = process_util::run(&cmd_args, process_util::RunOptions::default())?;
             
             if result.success {
-                 Ok(ToolResult::ok(format!("[IMAGE:{}]", output_path)))
+                 Ok(ToolResult::ok(format!("[IMAGE:{}]", _output_path)))
             } else {
                  let err_msg = if !result.stderr.is_empty() { result.stderr } else { "unknown error".to_string() };
                  Ok(ToolResult::fail(format!("Screenshot command failed: {}", err_msg)))

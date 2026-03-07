@@ -18,9 +18,9 @@ pub trait Memory: Send + Sync {
     ) -> Result<Vec<MemoryEntry>>;
     fn semantic_recall(
         &self,
-        query: &str,
-        limit: usize,
-        session_id: Option<&str>,
+        _query: &str,
+        _limit: usize,
+        _session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
         Ok(vec![])
     }

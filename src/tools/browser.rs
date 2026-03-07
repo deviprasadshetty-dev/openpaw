@@ -152,13 +152,21 @@ impl BrowserTool {
     // ── Internal helpers ─────────────────────────────────────────
 
     /// Returns a live session, launching the browser if needed.
-    /// Discards and relaunches if the existing session has died.
-    fn session(&self) -> Result<Arc<BrowserSession>> {
+    /// Discards and relaunches if the existing session has died or if headless mode changes.
+    fn session(&self, headless_override: Option<bool>) -> Result<Arc<BrowserSession>> {
         let mut guard = self.session_store.lock();
+
+        let is_headless = headless_override.unwrap_or_else(|| {
+            std::env::var("OPENPAW_BROWSER_HEADLESS")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(true) // Default to true for speed
+        });
 
         // Health-check existing session before reusing
         if let Some(ref s) = *guard {
             if session_is_alive(s) {
+                // For now, we don't relaunch just for headless change to avoid flickering,
+                // but we could if we wanted to be strict.
                 return Ok(Arc::clone(s));
             }
             tracing::warn!("Existing browser session is dead — relaunching.");
@@ -194,7 +202,7 @@ impl BrowserTool {
         let config = LaunchOptions::new()
             .chrome_path(browser_path)
             .user_data_dir(profile_dir.into())
-            .headless(false); // visible — user can watch the agent
+            .headless(is_headless);
 
         let session = Arc::new(BrowserSession::launch(config)?);
         *guard = Some(Arc::clone(&session));
@@ -253,37 +261,66 @@ impl BrowserTool {
     // ── Actions ──────────────────────────────────────────────────
 
     /// navigate — go to a URL and wait for the page to settle.
-    fn do_navigate(&self, args: &Value) -> Result<ToolResult> {
+    fn do_navigate(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) => u.to_owned(),
             None => return Ok(ToolResult::fail("Missing 'url' for navigate")),
         };
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         s.navigate(&url).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        match s.wait_for_navigation() {
-            Ok(_) => {}
-            Err(e) => tracing::warn!("Navigation wait timed out or failed: {}", e),
-        }
+        // Faster wait logic — only wait if needed
+        let _ = s.wait_for_navigation();
 
         let final_url = s.tab().get_url();
         Ok(ToolResult::ok(format!("Navigated → {}", final_url)))
     }
 
+    /// read_page — get clean Markdown content of the current page.
+    fn do_read_page(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
+        let max_chars = args
+            .get("max_chars")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(20_000);
+
+        let s = self.session(headless)?;
+        let html = s
+            .tab()
+            .get_content()
+            .map_err(|e| anyhow::anyhow!("Failed to get content: {}", e))?;
+
+        // Reuse html_to_text from web_fetch
+        let extracted = crate::tools::web_fetch::html_to_text(&html);
+
+        if extracted.len() > max_chars {
+            let boundary = crate::tools::web_fetch::floor_char_boundary(&extracted, max_chars);
+            let truncated = format!(
+                "{}\n\n[Content truncated at {} chars, total {} chars]",
+                &extracted[..boundary],
+                max_chars,
+                extracted.len()
+            );
+            return Ok(ToolResult::ok(truncated));
+        }
+
+        Ok(ToolResult::ok(extracted))
+    }
+
     /// click — click an element by CSS selector or @eN index.
-    fn do_click(&self, args: &Value) -> Result<ToolResult> {
+    fn do_click(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let sel = match Self::resolve_selector(args) {
             Ok(s) => s,
             Err(e) => return Ok(e),
         };
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("click", Value::Object(sel)), "click")
     }
 
     /// type — focus an element and type text into it.
     /// Set `"append": true` to append instead of replacing existing content.
-    fn do_type(&self, args: &Value) -> Result<ToolResult> {
+    fn do_type(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let mut sel = match Self::resolve_selector(args) {
             Ok(s) => s,
             Err(e) => return Ok(e),
@@ -296,7 +333,7 @@ impl BrowserTool {
 
         sel.insert("value".into(), Value::String(text));
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         // "fill" clears existing content then types; "type" appends key-by-key
         let tool = if args
             .get("append")
@@ -311,7 +348,7 @@ impl BrowserTool {
     }
 
     /// scroll — scroll the page or a scoped element.
-    fn do_scroll(&self, args: &Value) -> Result<ToolResult> {
+    fn do_scroll(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let direction = args
             .get("direction")
             .and_then(|v| v.as_str())
@@ -336,7 +373,7 @@ impl BrowserTool {
             }
         }
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(
             s.execute_tool(tool_name, Value::Object(tool_args)),
             "scroll",
@@ -344,17 +381,17 @@ impl BrowserTool {
     }
 
     /// hover — move the mouse over an element (triggers CSS :hover, dropdowns, tooltips).
-    fn do_hover(&self, args: &Value) -> Result<ToolResult> {
+    fn do_hover(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let sel = match Self::resolve_selector(args) {
             Ok(s) => s,
             Err(e) => return Ok(e),
         };
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("hover", Value::Object(sel)), "hover")
     }
 
     /// select — pick an option from a `<select>` dropdown.
-    fn do_select(&self, args: &Value) -> Result<ToolResult> {
+    fn do_select(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let mut sel = match Self::resolve_selector(args) {
             Ok(s) => s,
             Err(e) => return Ok(e),
@@ -367,24 +404,24 @@ impl BrowserTool {
 
         sel.insert("value".into(), Value::String(value));
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("select", Value::Object(sel)), "select")
     }
 
     /// check / uncheck — toggle a checkbox or radio button.
-    fn do_check(&self, args: &Value, check: bool) -> Result<ToolResult> {
+    fn do_check(&self, args: &Value, check: bool, headless: Option<bool>) -> Result<ToolResult> {
         let mut sel = match Self::resolve_selector(args) {
             Ok(s) => s,
             Err(e) => return Ok(e),
         };
         sel.insert("checked".into(), Value::Bool(check));
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("check", Value::Object(sel)), "check")
     }
 
     /// key_press — send a keyboard key or chord (e.g. "Enter", "Escape", "Control+a").
-    fn do_key_press(&self, args: &Value) -> Result<ToolResult> {
+    fn do_key_press(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let key = match args.get("key").and_then(|v| v.as_str()) {
             Some(k) => k.to_owned(),
             None => return Ok(ToolResult::fail("Missing 'key' for key_press")),
@@ -400,7 +437,7 @@ impl BrowserTool {
             }
         }
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(
             s.execute_tool("key_press", Value::Object(tool_args)),
             "key_press",
@@ -408,7 +445,7 @@ impl BrowserTool {
     }
 
     /// wait — pause for a fixed duration OR wait until an element appears.
-    fn do_wait(&self, args: &Value) -> Result<ToolResult> {
+    fn do_wait(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         // Element-wait takes priority over plain duration
         if args.get("selector").is_some() {
             let mut sel = match Self::resolve_selector(args) {
@@ -421,7 +458,7 @@ impl BrowserTool {
                 .unwrap_or(5000);
             sel.insert("timeout".into(), timeout_ms.into());
 
-            let s = self.session()?;
+            let s = self.session(headless)?;
             return Self::map_browser_result(
                 s.execute_tool("wait_for_element", Value::Object(sel)),
                 "wait",
@@ -439,17 +476,17 @@ impl BrowserTool {
     }
 
     /// get_text — extract the visible text of a specific element.
-    fn do_get_text(&self, args: &Value) -> Result<ToolResult> {
+    fn do_get_text(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let sel = match Self::resolve_selector(args) {
             Ok(s) => s,
             Err(e) => return Ok(e),
         };
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("get_text", Value::Object(sel)), "get_text")
     }
 
     /// drag_and_drop — drag from one element/coordinate to another.
-    fn do_drag_and_drop(&self, args: &Value) -> Result<ToolResult> {
+    fn do_drag_and_drop(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let source = match args.get("source").and_then(|v| v.as_str()) {
             Some(s) => s.to_owned(),
             None => return Ok(ToolResult::fail("Missing 'source' for drag_and_drop")),
@@ -461,13 +498,13 @@ impl BrowserTool {
 
         let tool_args = serde_json::json!({ "source": source, "target": target });
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("drag_and_drop", tool_args), "drag_and_drop")
     }
 
     /// back / forward — browser history navigation.
-    fn do_history(&self, direction: &str) -> Result<ToolResult> {
-        let s = self.session()?;
+    fn do_history(&self, direction: &str, headless: Option<bool>) -> Result<ToolResult> {
+        let s = self.session(headless)?;
         let tool = match direction {
             "back" => "go_back",
             "forward" => "go_forward",
@@ -477,7 +514,7 @@ impl BrowserTool {
     }
 
     /// new_tab — open a URL in a new browser tab and optionally switch to it.
-    fn do_new_tab(&self, args: &Value) -> Result<ToolResult> {
+    fn do_new_tab(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let url = args
             .get("url")
             .and_then(|v| v.as_str())
@@ -486,23 +523,23 @@ impl BrowserTool {
         let switch = args.get("switch").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let tool_args = serde_json::json!({ "url": url, "switch": switch });
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("new_tab", tool_args), "new_tab")
     }
 
     /// switch_tab — bring a specific tab into focus by index or URL fragment.
-    fn do_switch_tab(&self, args: &Value) -> Result<ToolResult> {
+    fn do_switch_tab(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         if args.get("tab_index").is_none() && args.get("url_contains").is_none() {
             return Ok(ToolResult::fail(
                 "Provide 'tab_index' or 'url_contains' for switch_tab",
             ));
         }
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool("switch_tab", args.clone()), "switch_tab")
     }
 
     /// read_dom — extract the simplified, indexed DOM tree.
-    fn do_read_dom(&self, args: &Value) -> Result<ToolResult> {
+    fn do_read_dom(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         // serde_json::Value has no .as_usize() — use .as_u64() and cast
         let max_chars = args
             .get("max_dom_length")
@@ -511,7 +548,7 @@ impl BrowserTool {
             .unwrap_or(10_000)
             .clamp(1_000, 100_000);
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         let dom = s.extract_simplified_dom()?;
         let json_str = dom.to_json()?;
 
@@ -541,8 +578,8 @@ impl BrowserTool {
     /// `BrowserSession` has no `.screenshot()` method — we go through the
     /// underlying `headless_chrome` Tab handle which exposes `capture_screenshot`.
     /// Saves PNG to `<workspace>/screenshots/<unix_ts>.png` AND returns base64.
-    fn do_screenshot(&self, args: &Value) -> Result<ToolResult> {
-        let s = self.session()?;
+    fn do_screenshot(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
+        let s = self.session(headless)?;
 
         // Give the page a moment to finish rendering
         let settle_ms = args
@@ -581,13 +618,13 @@ impl BrowserTool {
     }
 
     /// eval — execute arbitrary JavaScript in the page context.
-    fn do_eval(&self, args: &Value) -> Result<ToolResult> {
+    fn do_eval(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let script = match args.get("script").and_then(|v| v.as_str()) {
             Some(s) => s.to_owned(),
             None => return Ok(ToolResult::fail("Missing 'script' for eval")),
         };
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         let result = s
             .tab()
             .evaluate(&script, false)
@@ -596,7 +633,7 @@ impl BrowserTool {
     }
 
     /// execute — pass-through to any browser-use tool by name.
-    fn do_tool_execute(&self, args: &Value) -> Result<ToolResult> {
+    fn do_tool_execute(&self, args: &Value, headless: Option<bool>) -> Result<ToolResult> {
         let tool_name = match args.get("tool_name").and_then(|v| v.as_str()) {
             Some(t) => t.to_owned(),
             None => return Ok(ToolResult::fail("Missing 'tool_name' for execute")),
@@ -606,7 +643,7 @@ impl BrowserTool {
             .cloned()
             .unwrap_or(serde_json::json!({}));
 
-        let s = self.session()?;
+        let s = self.session(headless)?;
         Self::map_browser_result(s.execute_tool(&tool_name, tool_args), &tool_name)
     }
 
@@ -662,7 +699,7 @@ impl Tool for BrowserTool {
             "action": {
               "type": "string",
               "enum": [
-                "navigate",
+                "navigate", "read_page",
                 "click", "type", "scroll", "hover",
                 "select", "check", "uncheck", "key_press",
                 "wait", "get_text", "drag_and_drop",
@@ -694,9 +731,11 @@ impl Tool for BrowserTool {
             "url_contains": { "type": "string",  "description": "URL fragment to identify tab for switch_tab" },
             "switch":       { "type": "boolean", "description": "Switch to new tab after opening (default true)" },
 
+            "max_chars":      { "type": "integer", "description": "Max chars for read_page (default 20000)" },
             "max_dom_length": { "type": "integer", "description": "Max chars of DOM output (default 10000, max 100000)" },
             "settle_ms":      { "type": "integer", "description": "ms to wait before screenshot (default 500)" },
 
+            "headless":  { "type": "boolean", "description": "Override default headless mode" },
             "script":    { "type": "string", "description": "JavaScript to evaluate for eval action" },
             "tool_name": { "type": "string", "description": "browser-use tool name for execute action" },
             "tool_args": { "type": "object", "description": "Arguments for execute action" }
@@ -707,32 +746,35 @@ impl Tool for BrowserTool {
     }
 
     fn execute(&self, args: Value) -> Result<ToolResult> {
+        let headless = args.get("headless").and_then(|v| v.as_bool());
+
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return Ok(ToolResult::fail("Missing 'action'")),
         };
 
         match action {
-            "navigate" => self.do_navigate(&args),
-            "click" => self.do_click(&args),
-            "type" => self.do_type(&args),
-            "scroll" => self.do_scroll(&args),
-            "hover" => self.do_hover(&args),
-            "select" => self.do_select(&args),
-            "check" => self.do_check(&args, true),
-            "uncheck" => self.do_check(&args, false),
-            "key_press" => self.do_key_press(&args),
-            "wait" => self.do_wait(&args),
-            "get_text" => self.do_get_text(&args),
-            "drag_and_drop" => self.do_drag_and_drop(&args),
-            "back" => self.do_history("back"),
-            "forward" => self.do_history("forward"),
-            "new_tab" => self.do_new_tab(&args),
-            "switch_tab" => self.do_switch_tab(&args),
-            "read_dom" => self.do_read_dom(&args),
-            "screenshot" => self.do_screenshot(&args),
-            "eval" => self.do_eval(&args),
-            "execute" => self.do_tool_execute(&args),
+            "navigate" => self.do_navigate(&args, headless),
+            "read_page" => self.do_read_page(&args, headless),
+            "click" => self.do_click(&args, headless),
+            "type" => self.do_type(&args, headless),
+            "scroll" => self.do_scroll(&args, headless),
+            "hover" => self.do_hover(&args, headless),
+            "select" => self.do_select(&args, headless),
+            "check" => self.do_check(&args, true, headless),
+            "uncheck" => self.do_check(&args, false, headless),
+            "key_press" => self.do_key_press(&args, headless),
+            "wait" => self.do_wait(&args, headless),
+            "get_text" => self.do_get_text(&args, headless),
+            "drag_and_drop" => self.do_drag_and_drop(&args, headless),
+            "back" => self.do_history("back", headless),
+            "forward" => self.do_history("forward", headless),
+            "new_tab" => self.do_new_tab(&args, headless),
+            "switch_tab" => self.do_switch_tab(&args, headless),
+            "read_dom" => self.do_read_dom(&args, headless),
+            "screenshot" => self.do_screenshot(&args, headless),
+            "eval" => self.do_eval(&args, headless),
+            "execute" => self.do_tool_execute(&args, headless),
             "close" => self.do_close(),
             _ => Ok(ToolResult::fail(format!("Unknown action '{}'", action))),
         }

@@ -176,7 +176,7 @@ pub fn html_to_text(html: &str) -> String {
                 if block_tags.contains(&tag_lower) {
                     if !last_was_newline && !buf.is_empty() {
                         append_newline(&mut buf, &mut consecutive_newlines);
-                        last_was_newline = true;
+                        // last_was_newline = true; // Overwritten below
                     }
                 }
 
@@ -191,7 +191,6 @@ pub fn html_to_text(html: &str) -> String {
                     let level = tag_lower.as_bytes()[1] - b'0';
                     if !last_was_newline && !buf.is_empty() {
                         append_newline(&mut buf, &mut consecutive_newlines);
-                        last_was_newline = true;
                     }
                     buf.push_str(&"#".repeat(level as usize));
                     buf.push(' ');

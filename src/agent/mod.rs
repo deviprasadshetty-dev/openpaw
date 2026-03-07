@@ -44,6 +44,7 @@ pub struct Agent {
     pub history: Vec<ChatMessage>,
     pub total_tokens: u64,
     pub tool_cache: crate::tools::cache::ToolCache,
+    pub command_registry: commands::CommandRegistry,
 }
 
 /// Removes raw tool-call markup from LLM output that leaked into the final text.
@@ -110,6 +111,7 @@ impl Agent {
             history: Vec::new(),
             total_tokens: 0,
             tool_cache: crate::tools::cache::ToolCache::new(30), // Default 30s TTL
+            command_registry: commands::CommandRegistry::new(),
         }
     }
 
@@ -142,7 +144,8 @@ impl Agent {
 
     pub async fn turn(&mut self, user_message: String) -> Result<String> {
         // Handle Slash Commands
-        if let Some(slash_response) = commands::handle_slash_command(self, &user_message) {
+        if let Some(slash_response) = commands::CommandRegistry::handle_message(self, &user_message)
+        {
             return Ok(slash_response);
         }
 
@@ -474,7 +477,8 @@ impl Agent {
         let shared_callback = std::sync::Arc::new(std::sync::Mutex::new(callback));
 
         // Handle slash commands (no streaming needed)
-        if let Some(slash_response) = commands::handle_slash_command(self, &user_message) {
+        if let Some(slash_response) = commands::CommandRegistry::handle_message(self, &user_message)
+        {
             if let Ok(mut cb) = shared_callback.lock() {
                 cb(StreamChunk::Delta(slash_response.clone()));
                 cb(StreamChunk::Done(crate::providers::TokenUsage::default()));

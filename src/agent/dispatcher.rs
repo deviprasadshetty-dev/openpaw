@@ -98,60 +98,36 @@ fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
+use regex::Regex;
+
 fn parse_xml_tool_calls(response: &str) -> ParseResult {
-    let mut text_parts = Vec::new();
+    let re = Regex::new(r"(?s)(<tool_call>|\[TOOL_CALL\]|\[tool_call\])(.*?)(</tool_call>|\[/TOOL_CALL\]|\[/tool_call\])").unwrap();
+    
     let mut calls = Vec::new();
-    let mut remaining = response;
+    let mut last_end = 0;
+    let mut text_parts = Vec::new();
 
-    while !remaining.is_empty() {
-        let xml_start = remaining.find("<tool_call>");
-        let br_start_upper = remaining.find("[TOOL_CALL]");
-        let br_start_lower = remaining.find("[tool_call]");
-
-        let mut best_start = None;
-        let mut open_c = '<';
-
-        if let Some(s) = xml_start {
-            best_start = Some(s);
-        }
-        if let Some(s) = br_start_upper {
-            if best_start.is_none() || s < best_start.unwrap() {
-                best_start = Some(s);
-                open_c = '[';
+    for caps in re.captures_iter(response) {
+        // Text before the match
+        if let Some(m) = caps.get(0) {
+            if m.start() > last_end {
+                text_parts.push(response[last_end..m.start()].trim().to_string());
             }
-        }
-        if let Some(s) = br_start_lower {
-            if best_start.is_none() || s < best_start.unwrap() {
-                best_start = Some(s);
-                open_c = '[';
-            }
+            last_end = m.end();
         }
 
-        if let Some(start) = best_start {
-            let before = remaining[..start].trim();
-            if !before.is_empty() {
-                text_parts.push(before.to_string());
-            }
-
-            let after_open = &remaining[start + 11..];
-            let close_tag_start = format!("{}/", open_c);
-
-            if let Some(close_idx) = after_open.find(&close_tag_start) {
-                let inner = &after_open[..close_idx].trim();
-
-                // Extremely basic JSON array/object extraction
-                if let Some(json_start) = inner.find('{').or_else(|| inner.find('[')) {
-                    let json_end = inner.rfind('}').or_else(|| inner.rfind(']'));
-
-                    let json_slice = match json_end {
-                        Some(end) if end >= json_start => &inner[json_start..=end],
-                        None if inner.len() > json_start => &inner[json_start..],
-                        _ => "",
-                    };
-
-                    if !json_slice.is_empty() {
+        // The content inside the tags
+        if let Some(inner) = caps.get(2) {
+            let inner_str = inner.as_str().trim();
+            // Try to find JSON inside (in case of extra whitespace or characters)
+            if let Some(json_start) = inner_str.find('{').or_else(|| inner_str.find('[')) {
+                let json_end = inner_str.rfind('}').or_else(|| inner_str.rfind(']'));
+                
+                if let Some(end) = json_end {
+                    if end >= json_start {
+                        let json_slice = &inner_str[json_start..=end];
                         if let Ok(Value::Object(obj)) = serde_json::from_str(json_slice) {
-                            if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                                 let args = obj
                                     .get("arguments")
                                     .map(|v| {
@@ -172,29 +148,20 @@ fn parse_xml_tool_calls(response: &str) -> ParseResult {
                         }
                     }
                 }
-
-                let remaining_start = after_open[close_idx..]
-                    .find('>')
-                    .map(|i| close_idx + i + 1)
-                    .or_else(|| after_open[close_idx..].find(']').map(|i| close_idx + i + 1))
-                    .unwrap_or(close_idx);
-
-                remaining = &after_open[remaining_start..];
-            } else {
-                break;
             }
-        } else {
-            break;
         }
     }
 
-    let trailing = remaining.trim();
-    if !trailing.is_empty() {
-        text_parts.push(trailing.to_string());
+    // Remaining text after the last match
+    if last_end < response.len() {
+        let trailing = response[last_end..].trim();
+        if !trailing.is_empty() {
+            text_parts.push(trailing.to_string());
+        }
     }
 
     ParseResult {
-        text: text_parts.join("\n"),
+        text: text_parts.join("\n").trim().to_string(),
         calls,
     }
 }

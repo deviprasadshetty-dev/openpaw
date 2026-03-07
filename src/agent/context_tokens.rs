@@ -228,7 +228,7 @@ struct ProviderModelSplit<'a> {
     model: &'a str,
 }
 
-fn split_provider_model(model_ref: &str) -> ProviderModelSplit {
+fn split_provider_model(model_ref: &str) -> ProviderModelSplit<'_> {
     if let Some(slash) = model_ref.find('/') {
         ProviderModelSplit {
             provider: Some(&model_ref[..slash]),

@@ -91,11 +91,11 @@ impl Tool for SkillInstallTool {
         }
 
         // Verify the cloned repo has at least one expected structure file
+        let has_skill_md = Path::new(&format!("{}/SKILL.md", target)).exists();
         let has_skill_toml = Path::new(&format!("{}/SKILL.toml", target)).exists();
         let has_skill_json = Path::new(&format!("{}/skill.json", target)).exists();
-        let has_skill_md = Path::new(&format!("{}/SKILL.md", target)).exists();
 
-        if !has_skill_toml && !has_skill_json && !has_skill_md {
+        if !has_skill_md && !has_skill_toml && !has_skill_json {
             // Not a valid skill — remove and reject
             let _ = std::fs::remove_dir_all(&target);
             return Ok(ToolResult::fail(format!(
