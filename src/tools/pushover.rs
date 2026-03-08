@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
@@ -24,7 +24,7 @@ impl Tool for PushoverTool {
         r#"{"type":"object","properties":{"message":{"type":"string","description":"The notification message"},"title":{"type":"string","description":"Optional title"},"priority":{"type":"integer","description":"Priority -2..2 (default 0)"},"sound":{"type":"string","description":"Optional sound name"}},"required":["message"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let message = match args.get("message").and_then(|v| v.as_str()) {
             Some(m) if !m.is_empty() => m,
             _ => return Ok(ToolResult::fail("Missing required 'message' parameter")),
@@ -72,12 +72,12 @@ impl Tool for PushoverTool {
 
         if token.is_empty() {
             return Ok(ToolResult::fail(
-                "Failed to load Pushover credentials from .env file",
+                "Pushover PUSHOVER_TOKEN is missing. Please set it in your .env file or run 'openpaw onboard' to configure it.",
             ));
         }
         if user_key.is_empty() {
             return Ok(ToolResult::fail(
-                "Failed to load Pushover credentials from .env file",
+                "Pushover PUSHOVER_USER_KEY is missing. Please set it in your .env file or run 'openpaw onboard' to configure it.",
             ));
         }
 

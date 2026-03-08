@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::skills::list_skills_merged;
 use anyhow::Result;
 use serde_json::Value;
@@ -23,7 +23,7 @@ impl Tool for SkillListTool {
         r#"{"type":"object","properties":{},"required":[]}"#.to_string()
     }
 
-    fn execute(&self, _args: Value) -> Result<ToolResult> {
+    fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
         let skills =
             list_skills_merged(Path::new(&self.builtin_dir), Path::new(&self.workspace_dir))?;
 

@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use base64::Engine;
 use browser_use::browser::{BrowserSession, config::LaunchOptions};
@@ -745,7 +745,7 @@ impl Tool for BrowserTool {
         .to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let headless = args.get("headless").and_then(|v| v.as_bool());
 
         let action = match args.get("action").and_then(|v| v.as_str()) {

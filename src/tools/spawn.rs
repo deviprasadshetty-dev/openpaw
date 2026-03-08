@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::subagent::SubagentManager;
 use anyhow::Result;
 use serde_json::Value;
@@ -21,7 +21,7 @@ impl Tool for SpawnTool {
         r#"{"type":"object","properties":{"task":{"type":"string","minLength":1,"description":"The task/prompt for the subagent"},"label":{"type":"string","description":"Optional human-readable label for tracking"},"origin_channel":{"type":"string","description":"Internal: channel to report back to"},"origin_chat_id":{"type":"string","description":"Internal: chat ID to report back to"}},"required":["task"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let task = match args.get("task").and_then(|v| v.as_str()) {
             Some(t) => t.trim(),
             None => return Ok(ToolResult::fail("Missing 'task' parameter")),

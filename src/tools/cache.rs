@@ -26,8 +26,10 @@ impl ToolCache {
         let key = format!("{}:{}", tool_name, arguments_json);
         let mut cache = self.entries.lock().unwrap_or_else(|e| e.into_inner());
 
+        let ttl = self.tool_specific_ttl(tool_name);
+
         if let Some(entry) = cache.get(&key) {
-            if entry.timestamp.elapsed() < Duration::from_secs(self.ttl_secs) {
+            if entry.timestamp.elapsed() < Duration::from_secs(ttl) {
                 return Some(entry.result.clone());
             } else {
                 // Expired
@@ -35,6 +37,16 @@ impl ToolCache {
             }
         }
         None
+    }
+
+    fn tool_specific_ttl(&self, tool_name: &str) -> u64 {
+        match tool_name {
+            "memory_recall" => 600, // 10 min
+            "web_search" => 1800,   // 30 min
+            "file_read" => 60,      // 1 min
+            "shell" => 30,          // 30 sec (commands may have side effects)
+            _ => self.ttl_secs.max(300), // Default 5 min
+        }
     }
 
     pub fn insert(&self, tool_name: &str, arguments_json: &str, result: ToolExecutionResult) {

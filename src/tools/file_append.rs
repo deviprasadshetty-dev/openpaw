@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult, path_security};
+use super::{Tool, ToolContext, ToolResult, path_security};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
@@ -25,7 +25,7 @@ impl Tool for FileAppendTool {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path to the file within the workspace"},"content":{"type":"string","description":"Content to append to the file"}},"required":["path","content"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolResult::fail("Missing 'path' parameter")),

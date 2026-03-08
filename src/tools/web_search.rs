@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -37,7 +37,7 @@ impl Tool for WebSearchTool {
         r#"{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Search query"},"count":{"type":"integer","minimum":1,"maximum":10,"default":5,"description":"Number of results (1-10)"},"provider":{"type":"string","description":"Optional provider override"}},"required":["query"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) => q.trim(),
             None => return Ok(ToolResult::fail("Missing required 'query' parameter")),

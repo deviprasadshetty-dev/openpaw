@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::skills::SkillToolDefinition;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -25,7 +25,7 @@ impl Tool for DynamicSkillTool {
         serde_json::to_string(&self.definition.parameters).unwrap_or_else(|_| "{}".to_string())
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let mut cmd_str = self.definition.command.clone();
 
         // Replace placeholders {{arg_name}} with values from args

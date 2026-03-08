@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::tools::cron_utils::CronScheduler;
 use anyhow::Result;
 use serde_json::Value;
@@ -18,7 +18,7 @@ impl Tool for ScheduleTool {
         r#"{"type":"object","properties":{"action":{"type":"string","enum":["create","add","once","list","get","cancel","remove","pause","resume"],"description":"Action to perform"},"expression":{"type":"string","description":"Cron expression for recurring tasks"},"delay":{"type":"string","description":"Delay for one-shot tasks (e.g. '30m', '2h')"},"command":{"type":"string","description":"Shell command to execute"},"id":{"type":"string","description":"Task ID"}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return Ok(ToolResult::fail("Missing 'action' parameter")),
@@ -74,7 +74,14 @@ impl Tool for ScheduleTool {
                 if command.is_empty() || expression.is_empty() {
                     return Ok(ToolResult::fail("Missing 'command' or 'expression'"));
                 }
-                match scheduler.add_job(expression, command, None) {
+                match scheduler.add_job(
+                    expression,
+                    command,
+                    None,
+                    &context.channel,
+                    &context.chat_id,
+                    &context.session_key,
+                ) {
                     Ok(job) => Ok(ToolResult::ok(format!(
                         "Created job {} | {}",
                         job.id, job.expression
@@ -88,7 +95,14 @@ impl Tool for ScheduleTool {
                 if command.is_empty() || delay.is_empty() {
                     return Ok(ToolResult::fail("Missing 'command' or 'delay'"));
                 }
-                match scheduler.add_job("", command, Some(delay)) {
+                match scheduler.add_job(
+                    "",
+                    command,
+                    Some(delay),
+                    &context.channel,
+                    &context.chat_id,
+                    &context.session_key,
+                ) {
                     Ok(job) => Ok(ToolResult::ok(format!("Created one-shot task {}", job.id))),
                     Err(e) => Ok(ToolResult::fail(format!("Error: {}", e))),
                 }

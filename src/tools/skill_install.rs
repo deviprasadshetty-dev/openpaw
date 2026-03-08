@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
@@ -23,7 +23,7 @@ impl Tool for SkillInstallTool {
         r#"{"type":"object","properties":{"url":{"type":"string","description":"GitHub repository URL of the skill to install, e.g. https://github.com/user/my-skill"},"name":{"type":"string","description":"Optional: custom folder name for the skill (defaults to the repo name)"}},"required":["url"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) if !u.trim().is_empty() => u.trim().to_string(),
             _ => return Ok(ToolResult::fail("Missing 'url' parameter")),

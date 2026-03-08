@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenPaw Control Panel</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <span class="paw-icon">🐾</span>
+                <h1>OpenPaw</h1>
+            </div>
+            <nav class="tabs">
+                <button class="tab-btn active" data-tab="config">Config</button>
+                <button class="tab-btn" data-tab="chat">Chat</button>
+            </nav>
+        </header>
+
+        <!-- Config Tab -->
+        <div id="config-tab" class="tab-content active">
+            <div class="config-container">
+                <div class="config-sidebar">
+                    <h3>Sections</h3>
+                    <ul class="config-nav">
+                        <li><a href="#ai-provider" class="active">AI Provider</a></li>
+                        <li><a href="#memory">Memory</a></li>
+                        <li><a href="#channels">Channels</a></li>
+                        <li><a href="#http-request">HTTP Request</a></li>
+                        <li><a href="#browser">Browser</a></li>
+                        <li><a href="#composio">Composio</a></li>
+                    </ul>
+                </div>
+                <div class="config-form">
+                    <form id="config-form">
+                        <!-- AI Provider Section -->
+                        <section id="ai-provider" class="config-section">
+                            <h2>AI Provider Settings</h2>
+                            <div class="form-group">
+                                <label for="default_provider">Default Provider</label>
+                                <select id="default_provider" name="default_provider">
+                                    <option value="gemini">Gemini</option>
+                                    <option value="openai">OpenAI</option>
+                                    <option value="anthropic">Anthropic</option>
+                                    <option value="openrouter">OpenRouter</option>
+                                    <option value="kilo">Kilo.ai</option>
+                                    <option value="ollama">Ollama</option>
+                                    <option value="lmstudio">LM Studio</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="default_model">Default Model</label>
+                                <input type="text" id="default_model" name="default_model" placeholder="e.g., gemini-2.5-flash">
+                            </div>
+
+                            <div class="provider-keys">
+                                <h4>API Keys</h4>
+                                <div class="form-group">
+                                    <label for="gemini_key">Gemini API Key</label>
+                                    <input type="password" id="gemini_key" name="providers.gemini.api_key" class="api-key-input">
+                                </div>
+                                <div class="form-group">
+                                    <label for="openai_key">OpenAI API Key</label>
+                                    <input type="password" id="openai_key" name="providers.openai.api_key" class="api-key-input">
+                                </div>
+                                <div class="form-group">
+                                    <label for="anthropic_key">Anthropic API Key</label>
+                                    <input type="password" id="anthropic_key" name="providers.anthropic.api_key" class="api-key-input">
+                                </div>
+                                <div class="form-group">
+                                    <label for="openrouter_key">OpenRouter API Key</label>
+                                    <input type="password" id="openrouter_key" name="providers.openrouter.api_key" class="api-key-input">
+                                </div>
+                                <div class="form-group">
+                                    <label for="kilo_key">Kilo.ai API Key</label>
+                                    <input type="password" id="kilo_key" name="providers.kilo.api_key" class="api-key-input">
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Memory Section -->
+                        <section id="memory" class="config-section">
+                            <h2>Memory Settings</h2>
+                            <div class="form-group">
+                                <label for="memory_backend">Backend</label>
+                                <select id="memory_backend" name="memory.backend">
+                                    <option value="sqlite">SQLite</option>
+                                    <option value="markdown">Markdown</option>
+                                    <option value="none">None</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="embedding_model">Embedding Model</label>
+                                <input type="text" id="embedding_model" name="memory.embedding_model" placeholder="e.g., Qwen/Qwen3-Embedding-0.6B">
+                            </div>
+                        </section>
+
+                        <!-- Channels Section -->
+                        <section id="channels" class="config-section">
+                            <h2>Channels</h2>
+                            <div class="form-group">
+                                <label for="telegram_token">Telegram Bot Token</label>
+                                <input type="password" id="telegram_token" name="channels.telegram[0].bot_token" class="api-key-input">
+                            </div>
+                            <div class="form-group">
+                                <label for="allow_from">Allow From (usernames)</label>
+                                <input type="text" id="allow_from" name="channels.telegram[0].allow_from" placeholder="@username1, @username2">
+                            </div>
+                        </section>
+
+                        <!-- HTTP Request Section -->
+                        <section id="http-request" class="config-section">
+                            <h2>HTTP Request</h2>
+                            <div class="form-group checkbox-group">
+                                <label>
+                                    <input type="checkbox" id="http_enabled" name="http_request.enabled">
+                                    Enable HTTP Requests
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="search_provider">Search Provider</label>
+                                <select id="search_provider" name="http_request.search_provider">
+                                    <option value="duckduckgo">DuckDuckGo</option>
+                                    <option value="brave">Brave Search</option>
+                                </select>
+                            </div>
+                        </section>
+
+                        <!-- Browser Section -->
+                        <section id="browser" class="config-section">
+                            <h2>Browser Automation</h2>
+                            <div class="form-group checkbox-group">
+                                <label>
+                                    <input type="checkbox" id="browser_enabled" name="browser.enabled">
+                                    Enable Browser
+                                </label>
+                            </div>
+                        </section>
+
+                        <!-- Composio Section -->
+                        <section id="composio" class="config-section">
+                            <h2>Composio Integration</h2>
+                            <div class="form-group checkbox-group">
+                                <label>
+                                    <input type="checkbox" id="composio_enabled" name="composio.enabled">
+                                    Enable Composio
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="composio_key">Composio API Key</label>
+                                <input type="password" id="composio_key" name="composio.api_key" class="api-key-input">
+                            </div>
+                            <div class="form-group">
+                                <label for="composio_entity">Entity ID</label>
+                                <input type="text" id="composio_entity" name="composio.entity_id" value="default">
+                            </div>
+                        </section>
+
+                        <div class="form-actions">
+                            <button type="button" id="load-config" class="btn btn-secondary">Load Config</button>
+                            <button type="submit" class="btn btn-primary">Save Config</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Tab -->
+        <div id="chat-tab" class="tab-content">
+            <div class="chat-container">
+                <div class="chat-messages" id="chat-messages">
+                    <div class="message system-message">
+                        <div class="message-content">
+                            Welcome to OpenPaw Chat! Connect to start chatting with your agent.
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <div class="connection-status" id="connection-status">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Disconnected</span>
+                    </div>
+                    <div class="chat-input-wrapper">
+                        <input type="text" id="chat-input" placeholder="Type your message..." disabled>
+                        <button id="send-btn" class="btn btn-primary" disabled>
+                            <span>Send</span>
+                            <span class="send-icon">➤</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

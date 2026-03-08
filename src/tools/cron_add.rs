@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::tools::cron_utils::CronScheduler;
 use anyhow::Result;
 use serde_json::Value;
@@ -16,7 +16,7 @@ impl Tool for CronAddTool {
         r#"{"type":"object","properties":{"expression":{"type":"string","description":"Cron expression (e.g. '*/5 * * * *')"},"delay":{"type":"string","description":"Delay for one-shot tasks (e.g. '30m', '2h')"},"command":{"type":"string","description":"Shell command to execute"},"name":{"type":"string","description":"Optional job name"}},"required":["command"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing required 'command' parameter")),
@@ -32,7 +32,14 @@ impl Tool for CronAddTool {
         }
 
         let mut scheduler = CronScheduler::new();
-        match scheduler.add_job(expression.unwrap_or(""), command, delay) {
+        match scheduler.add_job(
+            expression.unwrap_or(""),
+            command,
+            delay,
+            &context.channel,
+            &context.chat_id,
+            &context.session_key,
+        ) {
             Ok(job) => Ok(ToolResult::ok(format!(
                 "Created cron job {}: {} -> {}",
                 job.id, job.expression, job.command

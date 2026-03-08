@@ -115,6 +115,66 @@ pub async fn gateway_thread(config: Config) {
     }
 }
 
+fn print_startup_info(config: &Config) {
+    println!();
+    println!("╔═══════════════════════════════════════════════════════════╗");
+    println!("║           🐾 OpenPaw Agent Started Successfully!          ║");
+    println!("╚═══════════════════════════════════════════════════════════╝");
+    println!();
+
+    // Web UI info
+    let host = if config.gateway.allow_public_bind.unwrap_or(false) {
+        "0.0.0.0".to_string()
+    } else {
+        config.gateway.host.clone()
+    };
+    println!("🌐 Web UI:    http://{}:{}", host, config.gateway.port);
+    println!("             Configure settings and chat with your agent!");
+    println!();
+
+    // Telegram info
+    if !config.channels.telegram.is_empty() {
+        println!(
+            "📱 Telegram: {} bot(s) configured",
+            config.channels.telegram.len()
+        );
+        for (i, tg) in config.channels.telegram.iter().enumerate() {
+            println!("   [{}] Account: {}", i + 1, tg.account_id);
+            if !tg.allow_from.is_empty() {
+                println!("       Allow from: {}", tg.allow_from.join(", "));
+            }
+        }
+        println!("             Users can message your bot directly on Telegram!");
+        println!();
+    }
+
+    // Other channels
+    if !config.channels.whatsapp_native.is_empty() {
+        println!(
+            "💬 WhatsApp: {} account(s) configured",
+            config.channels.whatsapp_native.len()
+        );
+        println!();
+    }
+
+    // AI Provider info
+    println!(
+        "🤖 AI Provider: {} ({})",
+        config.default_provider,
+        config.default_model.as_deref().unwrap_or("default model")
+    );
+    println!();
+
+    // Quick tips
+    println!("╭───────────────────────────────────────────────────────────────╮");
+    println!("│ Quick Tips:                                                   │");
+    println!("│ • Open Web UI in your browser to configure & chat             │");
+    println!("│ • Message your Telegram bot to interact on the go             │");
+    println!("│ • Press Ctrl+C to stop the agent                              │");
+    println!("╰───────────────────────────────────────────────────────────────╯");
+    println!();
+}
+
 pub fn heartbeat_thread(
     _config: Config,
     _state: Arc<std::sync::Mutex<DaemonState>>,
@@ -138,11 +198,11 @@ pub fn scheduler_thread(_config: Config, scheduler: Arc<CronScheduler>) {
 pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionManager>) {
     info!("Inbound dispatcher thread started");
 
-    // Create a local Tokio runtime for executing async session logic
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // Create a multi-threaded Tokio runtime for concurrent processing
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("Failed to build local runtime for inbound dispatcher");
+        .expect("Failed to build multi-thread runtime for inbound dispatcher");
 
     loop {
         if is_shutdown_requested() {
@@ -155,10 +215,12 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
             let content = msg.content.clone();
             let channel = msg.channel.clone();
             let chat_id = msg.chat_id.clone();
+            let sender_id = msg.sender_id.clone();
+            let session_key_inner = msg.session_key.clone();
             let sm = session_manager.clone();
             let bus_clone = bus.clone();
 
-            rt.block_on(async move {
+            rt.spawn(async move {
                 // Pass a callback to the agent that streams deltas back to the channel
                 let cb_channel = channel.clone();
                 let cb_chat_id = chat_id.clone();
@@ -176,8 +238,8 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
                         let now = std::time::Instant::now();
                         let mut last = last_emit.lock().unwrap();
 
-                        // Limit to 1 chunk per second
-                        if now.duration_since(*last).as_millis() > 1000 {
+                        // Limit to 5 chunks per second (200ms) for smoother streaming
+                        if now.duration_since(*last).as_millis() > 200 {
                             *last = now;
                             let outbound = bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &acc);
                             let _ = cb_bus.publish_outbound(outbound);
@@ -185,8 +247,15 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
                     }
                 });
 
+                let context = crate::tools::ToolContext {
+                    channel: channel.clone(),
+                    chat_id: chat_id.clone(),
+                    sender_id: sender_id.clone(),
+                    session_key: session_key_inner.clone(),
+                };
+
                 match sm
-                    .process_message_stream(&session_key, content, stream_cb)
+                    .process_message_stream(&session_key, content, context, stream_cb)
                     .await
                 {
                     Ok(response_text) => {
@@ -200,7 +269,13 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
                             "Failed to process message for session {}: {}",
                             session_key, e
                         );
-                        // Optionally send error back to user
+                        // FIXED: Send error back to user instead of silent failure
+                        let error_msg = format!(
+                            "⚠️ I encountered an error while processing your request: {}",
+                            e
+                        );
+                        let outbound = bus::make_outbound(&channel, &chat_id, &error_msg);
+                        let _ = bus_clone.publish_outbound(outbound);
                     }
                 }
             });
@@ -300,7 +375,7 @@ pub fn start_outbound_dispatcher(
 }
 
 /// Create the appropriate provider based on config, wrapped in ReliableProvider.
-fn create_provider(config: &Config) -> Arc<dyn Provider> {
+pub fn create_provider(config: &Config) -> Arc<dyn Provider> {
     let provider_name = &config.default_provider;
     factory::create_with_fallbacks(provider_name, config)
 }
@@ -642,6 +717,15 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let ds_clone = daemon_state.clone();
     let config_clone = config.clone();
     thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine));
+
+    // Start Gateway (Web UI)
+    let config_clone = config.clone();
+    tokio::spawn(async move {
+        gateway_thread(config_clone).await;
+    });
+
+    // Print startup info
+    print_startup_info(&config);
 
     // Start Scheduler
     let scheduler = Arc::new(CronScheduler::init((), &config, &bus));

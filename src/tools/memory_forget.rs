@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::memory::MemoryStore;
 use anyhow::Result;
 use serde_json::Value;
@@ -21,7 +21,7 @@ impl Tool for MemoryForgetTool {
         r#"{"type":"object","properties":{"key":{"type":"string","description":"The key of the memory to forget"}},"required":["key"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let key = match args.get("key").and_then(|v| v.as_str()) {
             Some(k) => k,
             None => return Ok(ToolResult::fail("Missing 'key' parameter")),

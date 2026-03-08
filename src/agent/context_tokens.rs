@@ -158,6 +158,10 @@ const PROVIDER_WINDOWS: &[ContextWindowEntry] = &[
         tokens: 128_000,
     },
     ContextWindowEntry {
+        key: "lmstudio",
+        tokens: 8192,
+    },
+    ContextWindowEntry {
         key: "qwen",
         tokens: 128_000,
     },
@@ -341,4 +345,8 @@ pub fn resolve_context_tokens(token_limit_override: Option<u64>, model_ref: &str
     token_limit_override
         .or_else(|| lookup_context_tokens(model_ref))
         .unwrap_or(DEFAULT_CONTEXT_TOKENS)
+}
+
+pub fn is_small_model_context(token_limit: u64) -> bool {
+    token_limit <= 16384
 }

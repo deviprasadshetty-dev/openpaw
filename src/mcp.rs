@@ -1,3 +1,4 @@
+use crate::tools::{Tool, ToolContext, ToolResult};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config_types::McpServerConfig;
-use crate::tools::{Tool, ToolResult};
+// ── Tool definition from server ─────────────────────────────────
 use crate::version;
 
 // ── Tool definition from server ─────────────────────────────────
@@ -234,8 +235,8 @@ impl Tool for McpToolWrapper {
         self.params_json_str.clone()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
-        match self.server.call_tool(&self.original_name, &args) {
+    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
+        match self.server.call_tool(&self.original_name, &arguments) {
             Ok(output) => Ok(ToolResult::ok(output)),
             Err(e) => Ok(ToolResult::fail(format!(
                 "MCP tool '{}' failed: {}",

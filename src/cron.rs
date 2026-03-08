@@ -59,6 +59,9 @@ pub struct CronJob {
     #[serde(default)]
     pub created_at_s: i64,
     pub last_output: Option<String>,
+    pub channel: Option<String>,
+    pub chat_id: Option<String>,
+    pub session_key: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -170,21 +173,26 @@ impl CronScheduler {
         }
 
         for id in to_fire {
-            // Send the job's command/prompt to the bus as a system message
-            let jobs = self.jobs.lock().unwrap();
-            let cmd = if let Some(j) = jobs.get(&id) {
-                j.command.clone()
+            let guard = self.jobs.lock().unwrap();
+            let (cmd, channel, chat_id, session_key) = if let Some(j) = guard.get(&id) {
+                (
+                    j.command.clone(),
+                    j.channel.clone().unwrap_or_else(|| "cron".to_string()),
+                    j.chat_id.clone().unwrap_or_else(|| "cron".to_string()),
+                    j.session_key
+                        .clone()
+                        .unwrap_or_else(|| format!("cron_{}", id)),
+                )
             } else {
-                // already deleted (one-shot)
                 continue;
             };
-            drop(jobs);
+            drop(guard);
             let _ = self.bus.publish_inbound(crate::bus::make_inbound(
-                "cron",
-                "cron",
-                "",
+                &channel,
+                &channel,
+                &chat_id,
                 &cmd,
-                &format!("cron_{}", id),
+                &session_key,
             ));
         }
     }

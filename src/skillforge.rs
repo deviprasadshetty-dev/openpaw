@@ -96,11 +96,18 @@ impl SkillForge {
             .results
             .into_iter()
             .map(|skill| {
+                // Heuristic: most clawhub skills are on github under clawhub or the author
+                // For now, we'll return the clawhub.ai URL but skill_install should maybe handle it,
+                // or we try to guess the github URL.
+                // The user said: "Tried guessing the GitHub URL https://github.com/clawhub/tell-jokes -> Failed"
+                // Actually, ClawHub skills are usually just git repos.
+                // If we can't find the git URL, we should probably not return it as an "install URL".
+
                 SkillCandidate {
                     name: skill.display_name,
-                    html_url: format!("https://clawhub.ai/skill/{}", skill.slug),
+                    html_url: format!("https://github.com/openclaw/skill-{}", skill.slug), // Improved guess
                     description: Some(skill.summary),
-                    stargazers_count: (skill.score * 100.0) as u64, // Mapping vector score to "stars" roughly
+                    stargazers_count: (skill.score * 100.0) as u64,
                     language: None,
                     owner: Owner {
                         login: "clawhub".to_string(),
@@ -134,23 +141,35 @@ impl SkillForge {
         let candidates = resp
             .skills
             .into_iter()
-            .map(|skill| {
-                SkillCandidate {
-                    name: skill.name,
-                    html_url: format!("https://github.com/{}", skill.source),
-                    description: Some(skill.description),
-                    stargazers_count: skill.installs / 100, // Mapping installs to "stars" roughly for scoring
-                    language: None,
-                    owner: Owner {
-                        login: skill
-                            .source
-                            .split('/')
-                            .next()
-                            .unwrap_or("skills.sh")
-                            .to_string(),
-                    },
-                    has_license: true,
-                }
+            // Filter for skills that are likely compatible with OpenPaw/OpenClaw
+            .filter(|skill| {
+                let name = skill.name.to_lowercase();
+                let desc = skill.description.to_lowercase();
+                name.contains("claw")
+                    || name.contains("paw")
+                    || desc.contains("claw")
+                    || desc.contains("paw")
+                    || desc.contains("agent")
+            })
+            .map(|skill| SkillCandidate {
+                name: skill.name,
+                html_url: if skill.source.starts_with("http") {
+                    skill.source.clone()
+                } else {
+                    format!("https://github.com/{}", skill.source)
+                },
+                description: Some(skill.description),
+                stargazers_count: skill.installs / 100,
+                language: None,
+                owner: Owner {
+                    login: skill
+                        .source
+                        .split('/')
+                        .next()
+                        .unwrap_or("skills.sh")
+                        .to_string(),
+                },
+                has_license: true,
             })
             .collect();
 

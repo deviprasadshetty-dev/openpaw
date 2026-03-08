@@ -9,6 +9,7 @@ pub struct MemoryEntry {
 }
 
 pub trait Memory: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
     fn store(&self, key: &str, content: &str, session_id: Option<&str>) -> Result<()>;
     fn recall(
         &self,
@@ -29,6 +30,9 @@ pub trait Memory: Send + Sync {
 pub struct NoopMemory;
 
 impl Memory for NoopMemory {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn store(&self, _key: &str, _content: &str, _session_id: Option<&str>) -> Result<()> {
         Ok(())
     }
@@ -49,6 +53,9 @@ pub struct MemoryAdapter<S: crate::memory::MemoryStore> {
 }
 
 impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAdapter<S> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn store(&self, key: &str, content: &str, session_id: Option<&str>) -> Result<()> {
         self.inner.store(
             key,
@@ -99,6 +106,12 @@ pub fn enrich_message(
     user_message: &str,
     session_id: Option<&str>,
 ) -> Result<String> {
+    // Skip enrichment for very short or trivial messages to save prompt tokens
+    let trimmed = user_message.trim();
+    if trimmed.len() < 10 {
+        return Ok(user_message.to_string());
+    }
+
     let entries = memory.recall(user_message, 5, session_id)?;
     if entries.is_empty() {
         return Ok(user_message.to_string());

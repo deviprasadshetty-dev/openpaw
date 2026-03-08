@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::memory::{MemoryCategory, MemoryStore};
 use anyhow::Result;
 use serde_json::Value;
@@ -21,8 +21,8 @@ impl Tool for MemoryStoreTool {
         r#"{"type":"object","properties":{"key":{"type":"string","description":"Unique key for this memory"},"content":{"type":"string","description":"The information to remember"},"category":{"type":"string","enum":["core","daily","conversation"],"description":"Memory category"}},"required":["key","content"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
-        let key = match args.get("key").and_then(|v| v.as_str()) {
+    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
+        let key = match arguments.get("key").and_then(|v| v.as_str()) {
             Some(k) => k,
             None => return Ok(ToolResult::fail("Missing 'key' parameter")),
         };
@@ -30,7 +30,7 @@ impl Tool for MemoryStoreTool {
             return Ok(ToolResult::fail("'key' must not be empty"));
         }
 
-        let content = match args.get("content").and_then(|v| v.as_str()) {
+        let content = match arguments.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing 'content' parameter")),
         };
@@ -38,7 +38,7 @@ impl Tool for MemoryStoreTool {
             return Ok(ToolResult::fail("'content' must not be empty"));
         }
 
-        let category_str = args
+        let category_str = arguments
             .get("category")
             .and_then(|v| v.as_str())
             .unwrap_or("core");

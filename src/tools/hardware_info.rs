@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -58,7 +58,7 @@ impl Tool for HardwareBoardInfoTool {
         r#"{"type":"object","properties":{"board":{"type":"string","description":"Board name (e.g. nucleo-f401re). If omitted, returns info for first configured board."}}}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
         if self.boards.is_empty() {
             return Ok(ToolResult::fail(
                 "No peripherals configured. Add boards to config.toml [peripherals.boards].",
@@ -66,7 +66,8 @@ impl Tool for HardwareBoardInfoTool {
         }
 
         let board =
-            args.get("board")
+            arguments
+                .get("board")
                 .and_then(|v| v.as_str())
                 .unwrap_or(if !self.boards.is_empty() {
                     &self.boards[0]

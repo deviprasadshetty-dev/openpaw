@@ -13,6 +13,9 @@ pub struct CronJob {
     pub next_run_secs: i64,
     pub last_status: Option<String>,
     pub last_run_secs: Option<i64>,
+    pub channel: Option<String>,
+    pub chat_id: Option<String>,
+    pub session_key: Option<String>,
 }
 
 pub struct CronScheduler {
@@ -61,6 +64,9 @@ impl CronScheduler {
         expression: &str,
         command: &str,
         delay: Option<&str>,
+        channel: &str,
+        chat_id: &str,
+        session_key: &str,
     ) -> Result<CronJob, anyhow::Error> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let id = format!(
@@ -82,6 +88,9 @@ impl CronScheduler {
             next_run_secs: 0,
             last_status: None,
             last_run_secs: None,
+            channel: Some(channel.to_string()),
+            chat_id: Some(chat_id.to_string()),
+            session_key: Some(session_key.to_string()),
         };
         self.jobs.insert(id.clone(), job.clone());
         self.save();

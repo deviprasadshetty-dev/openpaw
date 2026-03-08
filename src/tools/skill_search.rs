@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -102,7 +102,7 @@ impl Tool for SkillSearchTool {
         r#"{"type":"object","properties":{"query":{"type":"string","description":"What kind of skill to search for, e.g. 'git deployment' or 'telegram notifications'"}},"required":["query"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) if !q.trim().is_empty() => q.trim().to_string(),
             _ => return Ok(ToolResult::fail("Missing 'query' parameter")),

@@ -1,6 +1,6 @@
 use crate::config_types::{
     BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
-    McpServerConfig, MemoryConfig,
+    McpServerConfig, MemoryConfig, PushoverConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,8 @@ pub struct Config {
     pub composio: ComposioConfig,
     #[serde(default)]
     pub hardware: HardwareConfig,
+    #[serde(default)]
+    pub pushover: PushoverConfig,
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]

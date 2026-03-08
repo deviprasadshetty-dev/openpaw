@@ -11,7 +11,7 @@ use tracing::warn;
 
 use super::circuit_breaker::CircuitBreaker;
 use crate::providers::error_classify::classify;
-use crate::providers::{ChatRequest, ChatResponse, Provider};
+use crate::providers::{ChatRequest, ChatResponse, Provider, SharedRetryState};
 
 pub struct ReliableProvider {
     inner: Arc<dyn Provider>,
@@ -43,29 +43,36 @@ impl ReliableProvider {
 
 impl Provider for ReliableProvider {
     fn chat(&self, request: &ChatRequest) -> Result<ChatResponse> {
-        if let Err(e) = self.circuit_breaker.check_and_attempt() {
-            return Err(anyhow::anyhow!("{}", e));
-        }
+        let shared_retry = std::sync::Arc::new(SharedRetryState::new(self.max_retries));
+        self.chat_with_retry(request, &shared_retry)
+    }
 
+    fn chat_with_retry(
+        &self,
+        request: &ChatRequest,
+        shared_retry: &std::sync::Arc<SharedRetryState>,
+    ) -> Result<ChatResponse> {
         let mut backoff_ms = self.initial_backoff_ms;
-        let mut last_err = anyhow::anyhow!("No attempts made");
 
-        for attempt in 0..=self.max_retries {
-            match self.inner.chat(request) {
+        loop {
+            if let Err(e) = self.circuit_breaker.check_and_attempt() {
+                return Err(anyhow::anyhow!("{}", e));
+            }
+
+            match self.inner.chat_with_retry(request, shared_retry) {
                 Ok(resp) => {
                     self.circuit_breaker.record_success();
                     return Ok(resp);
                 }
                 Err(e) => {
+                    self.circuit_breaker.record_failure();
                     let msg = e.to_string();
-                    // Extract HTTP status from error message if available
                     let status = extract_status_from_message(&msg);
                     let kind = classify(status, &msg);
 
-                    if !kind.is_retryable() || attempt == self.max_retries {
+                    if !kind.is_retryable() || !shared_retry.can_retry() {
                         warn!(
                             provider = self.inner.get_name(),
-                            attempt,
                             error_kind = ?kind,
                             "Non-retryable error or max retries reached: {}",
                             msg
@@ -73,17 +80,16 @@ impl Provider for ReliableProvider {
                         return Err(e);
                     }
 
+                    let attempt = shared_retry.increment_attempts();
                     warn!(
                         provider = self.inner.get_name(),
                         attempt, backoff_ms, "Retryable error ({:?}), backing off: {}", kind, msg
                     );
                     thread::sleep(Duration::from_millis(backoff_ms));
                     backoff_ms = (backoff_ms * 2).min(self.max_backoff_ms);
-                    last_err = e;
                 }
             }
         }
-        Err(last_err)
     }
 
     fn supports_native_tools(&self) -> bool {
@@ -103,8 +109,7 @@ impl Provider for ReliableProvider {
             return Err(anyhow::anyhow!("{}", e));
         }
 
-        // StreamCallback is consumed on use (Box<dyn FnMut>), so we can't retry.
-        // Attempt streaming once — on failure, fall back to non-streaming retry path.
+        // B-5: Don't automatically fall back to blocking chat, as stream callback is consumed.
         match self.inner.chat_stream(request, callback) {
             Ok(resp) => {
                 self.circuit_breaker.record_success();
@@ -112,19 +117,7 @@ impl Provider for ReliableProvider {
             }
             Err(e) => {
                 self.circuit_breaker.record_failure();
-                let msg = e.to_string();
-                let status = extract_status_from_message(&msg);
-                let kind = classify(status, &msg);
-
-                if kind.is_retryable() {
-                    warn!(
-                        provider = self.inner.get_name(),
-                        "Stream failed ({:?}), falling back to non-streaming retry: {}", kind, msg
-                    );
-                    self.chat(request)
-                } else {
-                    Err(e)
-                }
+                Err(e)
             }
         }
     }

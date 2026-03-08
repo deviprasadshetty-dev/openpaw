@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -17,7 +17,7 @@ impl Tool for DelegateTool {
         r#"{"type":"object","properties":{"agent":{"type":"string","minLength":1,"description":"Name of the agent to delegate to"},"prompt":{"type":"string","minLength":1,"description":"The task/prompt to send to the sub-agent"},"context":{"type":"string","description":"Optional context to prepend"}},"required":["agent","prompt"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let agent_name = match args.get("agent").and_then(|v| v.as_str()) {
             Some(a) => a.trim(),
             None => return Ok(ToolResult::fail("Missing 'agent' parameter")),

@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
@@ -21,7 +21,7 @@ impl Tool for SkillUninstallTool {
         r#"{"type":"object","properties":{"name":{"type":"string","description":"Name of the skill to uninstall (the folder name in workspace/skills/)"}},"required":["name"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let name = match args.get("name").and_then(|v| v.as_str()) {
             Some(n) if !n.trim().is_empty() => n.trim(),
             _ => return Ok(ToolResult::fail("Missing 'name' parameter")),

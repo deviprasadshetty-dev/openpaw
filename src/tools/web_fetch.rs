@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -29,7 +29,7 @@ impl Tool for WebFetchTool {
         r#"{"type":"object","properties":{"url":{"type":"string","description":"URL to fetch (http or https)"},"max_chars":{"type":"integer","default":50000,"description":"Maximum characters to return"}},"required":["url"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => return Ok(ToolResult::fail("Missing required 'url' parameter")),

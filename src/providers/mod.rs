@@ -5,6 +5,7 @@ pub mod factory;
 pub mod fallback;
 pub mod gemini;
 pub mod kilocode;
+pub mod ollama;
 pub mod openai;
 pub mod openrouter;
 pub mod reliable;
@@ -182,9 +183,42 @@ pub enum StreamChunk {
 /// Callback type for streaming responses. Called once per chunk.
 pub type StreamCallback = Box<dyn FnMut(StreamChunk) + Send>;
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+pub struct SharedRetryState {
+    pub total_attempts: AtomicU32,
+    pub max_total: u32,
+}
+
+impl SharedRetryState {
+    pub fn new(max_total: u32) -> Self {
+        Self {
+            total_attempts: AtomicU32::new(0),
+            max_total,
+        }
+    }
+
+    pub fn can_retry(&self) -> bool {
+        self.total_attempts.load(Ordering::Relaxed) < self.max_total
+    }
+
+    pub fn increment_attempts(&self) -> u32 {
+        self.total_attempts.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+
 pub trait Provider: Send + Sync {
     /// Send a chat request to the LLM (blocking, returns full response)
     fn chat(&self, request: &ChatRequest) -> Result<ChatResponse>;
+
+    /// Send a chat request with shared retry awareness
+    fn chat_with_retry(
+        &self,
+        request: &ChatRequest,
+        _shared_retry: &std::sync::Arc<SharedRetryState>,
+    ) -> Result<ChatResponse> {
+        self.chat(request)
+    }
 
     /// Send a chat request and stream deltas via callback.
     /// Default implementation falls back to blocking `chat()`.

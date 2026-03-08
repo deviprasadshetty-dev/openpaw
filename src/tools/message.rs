@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,7 +42,7 @@ impl Tool for MessageTool {
         r#"{"type":"object","properties":{"content":{"type":"string","minLength":1,"description":"Message text to send"},"channel":{"type":"string","description":"Target channel (telegram, discord, slack, etc.). Defaults to current."},"chat_id":{"type":"string","description":"Target chat/room ID. Defaults to current."}},"required":["content"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
         let content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing required 'content' parameter")),
@@ -55,7 +55,7 @@ impl Tool for MessageTool {
         let channel = args
             .get("channel")
             .and_then(|v| v.as_str())
-            .unwrap_or_else(|| self.default_channel.as_deref().unwrap_or(""));
+            .unwrap_or(&context.channel);
 
         if channel.is_empty() {
             return Ok(ToolResult::fail(
@@ -66,7 +66,7 @@ impl Tool for MessageTool {
         let chat_id = args
             .get("chat_id")
             .and_then(|v| v.as_str())
-            .unwrap_or_else(|| self.default_chat_id.as_deref().unwrap_or(""));
+            .unwrap_or(&context.chat_id);
 
         if chat_id.is_empty() {
             return Ok(ToolResult::fail(

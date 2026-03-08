@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::memory::{MemoryCategory, MemoryStore};
 use anyhow::Result;
 use serde_json::Value;
@@ -21,7 +21,7 @@ impl Tool for MemoryListTool {
         r#"{"type":"object","properties":{"limit":{"type":"integer","description":"Max entries to return (default: 5, max: 100)"},"category":{"type":"string","description":"Optional category filter (core|daily|conversation|custom)"},"session_id":{"type":"string","description":"Optional session filter"},"include_content":{"type":"boolean","description":"Include content preview (default: true)"},"include_internal":{"type":"boolean","description":"Include internal autosave/hygiene keys (default: false)"}}}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5);
         let limit = if limit > 0 && limit <= 100 {
             limit as usize
@@ -40,7 +40,7 @@ impl Tool for MemoryListTool {
             Ok(mut entries) => {
                 // Sort by timestamp descending (newest first)
                 entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-                
+
                 // Apply limit
                 if entries.len() > limit {
                     entries.truncate(limit);
@@ -59,7 +59,8 @@ impl Tool for MemoryListTool {
                     }
                     Ok(ToolResult::ok(out))
                 }
-            } Err(e) => Ok(ToolResult::fail(format!(
+            }
+            Err(e) => Ok(ToolResult::fail(format!(
                 "Failed to list memory entries: {}",
                 e
             ))),

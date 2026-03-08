@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::agent::Agent;
 use crate::agent::memory_loader::Memory;
 use crate::providers::Provider;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolContext};
 
 /// Session wraps an Agent instance for an ongoing conversation.
 /// It maintains the last active time and an internal async mutex to serialize turns
@@ -105,7 +105,12 @@ impl SessionManager {
     }
 
     /// Safely process a message for a specific session.
-    pub async fn process_message(&self, session_key: &str, message: String) -> Result<String> {
+    pub async fn process_message(
+        &self,
+        session_key: &str,
+        message: String,
+        context: ToolContext,
+    ) -> Result<String> {
         let session_arc = self.get_or_create(session_key);
 
         let now = SystemTime::now()
@@ -115,7 +120,7 @@ impl SessionManager {
         session_arc.last_active.store(now, Ordering::SeqCst);
 
         let mut agent_guard = session_arc.agent.lock().await;
-        let response = agent_guard.turn(message).await?;
+        let response = agent_guard.turn(message, &context).await?;
 
         session_arc.turn_count.fetch_add(1, Ordering::SeqCst);
         session_arc.last_active.store(
@@ -134,6 +139,7 @@ impl SessionManager {
         &self,
         session_key: &str,
         message: String,
+        context: ToolContext,
         callback: crate::providers::StreamCallback,
     ) -> Result<String> {
         let session_arc = self.get_or_create(session_key);
@@ -145,7 +151,7 @@ impl SessionManager {
         session_arc.last_active.store(now, Ordering::SeqCst);
 
         let mut agent_guard = session_arc.agent.lock().await;
-        let response = agent_guard.turn_stream(message, callback).await?;
+        let response = agent_guard.turn_stream(message, &context, callback).await?;
 
         session_arc.turn_count.fetch_add(1, Ordering::SeqCst);
         session_arc.last_active.store(

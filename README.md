@@ -36,6 +36,7 @@ Connect to the best AI models through a unified interface. OpenPaw supports **7 
 | **Kilo.ai** | ✅ Free + 200+ paid | Gateway to hundreds of models — **auto-detected** |
 | **OpenCode** | ✅ | OpenCode Zen free models |
 | **Ollama** | ✅ Fully local | No key needed, runs on your machine |
+| **LM Studio** | ✅ Fully local | No key needed, runs on your machine (port 1234) |
 
 #### 🆓 Smart Free Model Detection
 When you choose **OpenRouter** or **Kilo.ai** during setup, OpenPaw automatically:

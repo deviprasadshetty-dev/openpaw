@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::tools::cron_utils::CronScheduler;
 use anyhow::Result;
 use serde_json::Value;
@@ -16,7 +16,7 @@ impl Tool for CronListTool {
         r#"{"type":"object","properties":{}}"#.to_string()
     }
 
-    fn execute(&self, _args: Value) -> Result<ToolResult> {
+    fn execute(&self, _args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let scheduler = CronScheduler::new();
         let jobs = scheduler.list_jobs();
 

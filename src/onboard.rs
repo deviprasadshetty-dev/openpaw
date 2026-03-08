@@ -1,6 +1,7 @@
 use crate::providers::kilocode::{
     DEFAULT_FREE_MODELS, fetch_kilocode_free_models, preferred_kilocode_model_index,
 };
+use crate::providers::ollama::OllamaProvider;
 use crate::providers::openrouter::{
     fetch_openrouter_free_models, format_openrouter_model, preferred_openrouter_model_index,
 };
@@ -189,6 +190,24 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         "Which AI service should power your agent?",
     );
 
+    let ollama_available = OllamaProvider::new(None).is_available();
+    let lmstudio_available = is_lmstudio_available();
+
+    if ollama_available {
+        println!(
+            "  {}  {} Ollama detected running locally! Recommended for 100% privacy.",
+            ok(),
+            green("Local AI:")
+        );
+    }
+    if lmstudio_available {
+        println!(
+            "  {}  {} LM Studio detected running locally!",
+            ok(),
+            green("Local AI:")
+        );
+    }
+
     let providers = vec![
         ProviderConfig {
             name: "gemini".to_string(),
@@ -224,6 +243,11 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
             name: "ollama".to_string(),
             default_model: "llama3.2".to_string(),
             base_url: Some("http://localhost:11434/v1".to_string()),
+        },
+        ProviderConfig {
+            name: "lmstudio".to_string(),
+            default_model: "local-model".to_string(),
+            base_url: Some("http://localhost:1234/v1".to_string()),
         },
     ];
 
@@ -261,6 +285,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
             "Kilo.ai Gateway — free + 200+ paid models",
         ),
         ("ollama", "None", "100% local, no key needed"),
+        ("lmstudio", "None", "100% local, no key needed"),
     ];
     for (i, p) in providers.iter().enumerate() {
         let (_, key_label, note) = badges[i];
@@ -285,10 +310,11 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     println!();
 
     // ── API Key ──────────────────────────────────────────────────────
-    let api_key = if provider.name == "ollama" {
+    let api_key = if provider.name == "ollama" || provider.name == "lmstudio" {
         println!(
-            "  {}  Ollama runs locally — {}",
+            "  {}  {} runs locally — {}",
             ok(),
+            capitalize(&provider.name),
             dim("no API key needed")
         );
         String::new()
@@ -422,6 +448,37 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
                     "Could not reach OpenRouter ({}) — using default",
                     e
                 ));
+            }
+        }
+    } else if provider.name == "ollama" {
+        spin_start("Fetching Ollama local models");
+        match fetch_ollama_models() {
+            Ok(models) if !models.is_empty() => {
+                spin_done(&format!("{} model(s) found", models.len()));
+                println!();
+                // Find qwen if possible as user requested qwen
+                let default_idx = models.iter().position(|m| m.contains("qwen")).unwrap_or(0);
+                list_models_simple(&models, default_idx);
+                let choice = prompt_choice("  Select model", models.len(), default_idx + 1) - 1;
+                selected_default_model = models[choice].clone();
+            }
+            _ => {
+                spin_warn("No local models found — you may need to run `ollama pull llama3.2` first");
+            }
+        }
+    } else if provider.name == "lmstudio" {
+        spin_start("Fetching LM Studio local models");
+        match fetch_lmstudio_models() {
+            Ok(models) if !models.is_empty() => {
+                spin_done(&format!("{} model(s) found", models.len()));
+                println!();
+                let default_idx = 0;
+                list_models_simple(&models, default_idx);
+                let choice = prompt_choice("  Select model", models.len(), default_idx + 1) - 1;
+                selected_default_model = models[choice].clone();
+            }
+            _ => {
+                spin_warn("No local models found — make sure a model is loaded in LM Studio");
             }
         }
     } else if provider.name == "kilocode" {
@@ -751,6 +808,42 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     };
     println!();
 
+    // ══════════════════════════════════════════════════════════════════
+    // STEP 8 — Pushover
+    // ══════════════════════════════════════════════════════════════════
+    section_header(
+        8,
+        "Pushover Notifications",
+        "Get alerts on your phone when tasks finish",
+    );
+    println!();
+    println!(
+        "  {}  Get your token and user key at {}",
+        info(),
+        cyan("https://pushover.net")
+    );
+    println!();
+    print!("  Enable Pushover? {}: ", dim("(y/N)"));
+    io::stdout().flush()?;
+    let mut push_in = String::new();
+    io::stdin().read_line(&mut push_in)?;
+
+    let pushover_config = if push_in.trim().eq_ignore_ascii_case("y") {
+        let token = prompt_secret("  Pushover Application Token")?;
+        let user_key = prompt_secret("  Pushover User Key")?;
+        if token.is_empty() || user_key.is_empty() {
+            println!("  {}  Missing keys — skipping", skip());
+            None
+        } else {
+            println!("  {}  Pushover enabled", ok());
+            Some((token, user_key))
+        }
+    } else {
+        println!("  {}  Skipped", skip());
+        None
+    };
+    println!();
+
     // ── Write files ──────────────────────────────────────────────────
     if !dir.exists() {
         fs::create_dir_all(dir).context("Failed to create workspace directory")?;
@@ -772,6 +865,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         &composio_entity_id,
         &kilocode_fallback_models,
         brave_api_key.as_deref(),
+        pushover_config.as_ref(),
     );
     fs::write(dir.join("config.json"), config)?;
     scaffold_workspace(dir, &ProjectContext::default())?;
@@ -817,6 +911,9 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     }
     if composio_enabled {
         summary_row("Composio", "enabled");
+    }
+    if pushover_config.is_some() {
+        summary_row("Pushover", "enabled");
     }
     println!();
     println!("  {}  Next steps:", bold("→"));
@@ -870,6 +967,7 @@ fn generate_config(
     composio_entity_id: &str,
     kilocode_fallback_models: &[String],
     brave_api_key: Option<&str>,
+    pushover: Option<&(String, String)>,
 ) -> String {
     use serde_json::json;
 
@@ -931,6 +1029,11 @@ fn generate_config(
             "enabled": true,
             "search_provider": if brave_api_key.is_some() { "brave" } else { "duckduckgo" },
             "brave_search_api_key": brave_api_key
+        },
+        "pushover": {
+            "enabled": pushover.is_some(),
+            "token": pushover.map(|p| p.0.clone()),
+            "user_key": pushover.map(|p| p.1.clone())
         }
     });
 
@@ -983,6 +1086,57 @@ fn write_if_missing(path: &Path, content: &str) -> Result<()> {
         fs::write(path, content).context(format!("Failed to write {}", path.display()))?;
     }
     Ok(())
+}
+
+fn fetch_ollama_models() -> Result<Vec<String>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let res = client.get("http://localhost:11434/api/tags").send()?;
+    if !res.status().is_success() {
+        anyhow::bail!("Ollama error {}", res.status());
+    }
+    let payload: serde_json::Value = res.json()?;
+    let mut models = Vec::new();
+    if let Some(arr) = payload["models"].as_array() {
+        for m in arr {
+            if let Some(name) = m["name"].as_str() {
+                models.push(name.to_string());
+            }
+        }
+    }
+    Ok(models)
+}
+
+fn is_lmstudio_available() -> bool {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build();
+    if let Ok(client) = client {
+        client.get("http://localhost:1234/v1/models").send().is_ok()
+    } else {
+        false
+    }
+}
+
+fn fetch_lmstudio_models() -> Result<Vec<String>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let res = client.get("http://localhost:1234/v1/models").send()?;
+    if !res.status().is_success() {
+        anyhow::bail!("LM Studio error {}", res.status());
+    }
+    let payload: serde_json::Value = res.json()?;
+    let mut models = Vec::new();
+    if let Some(arr) = payload["data"].as_array() {
+        for m in arr {
+            if let Some(id) = m["id"].as_str() {
+                models.push(id.to_string());
+            }
+        }
+    }
+    Ok(models)
 }
 
 fn fetch_opencode_free_models(api_key: &str) -> Result<Vec<String>> {

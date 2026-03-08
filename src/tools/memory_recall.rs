@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::memory::MemoryStore;
 use anyhow::Result;
 use serde_json::Value;
@@ -21,8 +21,8 @@ impl Tool for MemoryRecallTool {
         r#"{"type":"object","properties":{"query":{"type":"string","description":"Keywords or phrase to search for in memory"},"limit":{"type":"integer","description":"Max results to return (default: 5)"}},"required":["query"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
-        let query = match args.get("query").and_then(|v| v.as_str()) {
+    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
+        let query = match arguments.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => return Ok(ToolResult::fail("Missing 'query' parameter")),
         };
@@ -30,7 +30,7 @@ impl Tool for MemoryRecallTool {
             return Ok(ToolResult::fail("'query' must not be empty"));
         }
 
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5);
+        let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5);
         let limit = if limit > 0 && limit <= 100 {
             limit as usize
         } else {

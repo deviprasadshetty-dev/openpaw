@@ -5,6 +5,7 @@ pub mod dispatcher;
 pub mod max_tokens;
 pub mod memory_loader;
 pub mod prompt;
+pub mod response_cache;
 pub mod routing;
 
 pub use routing::{
@@ -15,10 +16,12 @@ pub use routing::{
 use anyhow::Result;
 use regex::Regex;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing::warn;
 
+use crate::model_router::ModelRoutingConfig;
 use crate::providers::{ChatMessage, ChatRequest, Provider, ToolSpec};
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolContext};
 
 use compaction::{CompactionConfig, auto_compact_history, trim_history};
 use context_tokens as context_tokens_resolver;
@@ -46,6 +49,11 @@ pub struct Agent {
     pub total_tokens: u64,
     pub tool_cache: crate::tools::cache::ToolCache,
     pub command_registry: commands::CommandRegistry,
+    pub model_routing_config: ModelRoutingConfig,
+    pub cached_system_prompt: OnceLock<String>,
+    pub last_tool_hash: u64,
+    pub cost_tracker: Option<crate::cost::CostTracker>,
+    pub response_cache: response_cache::ResponseCache,
 }
 
 /// Removes raw tool-call markup from LLM output that leaked into the final text.
@@ -56,28 +64,36 @@ pub struct Agent {
 ///   - `` ```tool_code...``` `` fenced blocks that look like Python/JSON dumps
 /// Returns a trimmed result; falls back to "\u{2705} Done." if everything was stripped.
 pub fn strip_tool_call_markup(text: &str) -> String {
-    // 1. XML-style <tool_call>...</tool_call>
-    let xml_re = Regex::new(r"(?si)<tool_call>.*?</tool_call>").unwrap();
+    use std::sync::OnceLock;
+
+    static XML_RE: OnceLock<Regex> = OnceLock::new();
+    static BRACKET_RE: OnceLock<Regex> = OnceLock::new();
+    static FENCED_TC_RE: OnceLock<Regex> = OnceLock::new();
+    static FENCED_PY_RE: OnceLock<Regex> = OnceLock::new();
+    static FENCED_PY2_RE: OnceLock<Regex> = OnceLock::new();
+
+    let xml_re = XML_RE.get_or_init(|| Regex::new(r"(?si)<tool_call>.*?</tool_call>").unwrap());
     let out = xml_re.replace_all(text, "");
 
-    // 2. Bracket-style [tool_call]...[/tool_call] (case-insensitive)
-    let bracket_re = Regex::new(r"(?si)\[tool_call\].*?\[/tool_call\]").unwrap();
+    let bracket_re =
+        BRACKET_RE.get_or_init(|| Regex::new(r"(?si)\[tool_call\].*?\[/tool_call\]").unwrap());
     let out = bracket_re.replace_all(&out, "");
 
-    // 3. Fenced ```tool_call ... ``` code blocks
-    let fenced_tc_re = Regex::new(r"(?si)```\s*tool_call.*?```").unwrap();
+    let fenced_tc_re =
+        FENCED_TC_RE.get_or_init(|| Regex::new(r"(?si)```\s*tool_call.*?```").unwrap());
     let out = fenced_tc_re.replace_all(&out, "");
 
-    // 4. Fenced ```tool_code ... ``` blocks that look like Python/JSON dumps
-    //    (heuristic: block starts with 'import json' or 'json.loads(')
-    let fenced_py_re = Regex::new(r"(?si)```\s*tool_code\s*\nimport json.*?```").unwrap();
+    let fenced_py_re = FENCED_PY_RE
+        .get_or_init(|| Regex::new(r"(?si)```\s*tool_code\s*\nimport json.*?```").unwrap());
     let out = fenced_py_re.replace_all(&out, "");
-    let fenced_py2_re = Regex::new(r"(?si)```\s*tool_code\s*\njson\.loads\(.*?```").unwrap();
+
+    let fenced_py2_re = FENCED_PY2_RE
+        .get_or_init(|| Regex::new(r"(?si)```\s*tool_code\s*\njson\.loads\(.*?```").unwrap());
     let out = fenced_py2_re.replace_all(&out, "");
 
     let trimmed = out.trim().to_string();
     if trimmed.is_empty() {
-        "\u{2705} Done.".to_string()
+        "\u{2705} Done (Action completed).".to_string()
     } else {
         trimmed
     }
@@ -94,11 +110,11 @@ impl Agent {
         let token_limit = context_tokens_resolver::resolve_context_tokens(None, &model_name);
         let max_tokens = max_tokens_resolver::resolve_max_tokens(None, &model_name);
 
-        Self {
+        let mut agent = Self {
             provider,
             tools,
             memory: Arc::new(NoopMemory), // Default to no-op
-            model_name,
+            model_name: model_name.clone(),
             temperature: 0.7,
             max_tokens,
             token_limit,
@@ -112,9 +128,29 @@ impl Agent {
             memory_session_id: None,
             history: Vec::new(),
             total_tokens: 0,
-            tool_cache: crate::tools::cache::ToolCache::new(30), // Default 30s TTL
+            tool_cache: crate::tools::cache::ToolCache::new(300), // Default 5 min TTL
             command_registry: commands::CommandRegistry::new(),
+            model_routing_config: ModelRoutingConfig {
+                cheap_model: model_name.clone(), // Default to same, will be tuned by config
+                default_model: model_name,
+            },
+            cached_system_prompt: OnceLock::new(),
+            last_tool_hash: 0,
+            cost_tracker: Some(crate::cost::CostTracker::init(
+                &workspace_dir,
+                true,
+                10.0,
+                100.0,
+                80,
+            )),
+            response_cache: response_cache::ResponseCache::new(3600), // 1 hour TTL
+        };
+
+        if context_tokens_resolver::is_small_model_context(token_limit) {
+            agent.max_tool_iterations = 100; // Increased for local models
         }
+
+        agent
     }
 
     pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
@@ -126,6 +162,39 @@ impl Agent {
         self.history.clear();
         self.has_system_prompt = false;
         self.workspace_prompt_fingerprint = None;
+        self.cached_system_prompt = OnceLock::new();
+        self.last_tool_hash = 0;
+    }
+
+    fn compute_tool_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        for tool in &self.tools {
+            tool.name().hash(&mut hasher);
+            tool.parameters_json().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    pub fn build_system_prompt_cached(&mut self) -> Result<String> {
+        let current_tool_hash = self.compute_tool_hash();
+        let workspace_fp = prompt::workspace_prompt_fingerprint(&self.workspace_dir);
+
+        if let Some(cached) = self.cached_system_prompt.get() {
+            if current_tool_hash == self.last_tool_hash
+                && Some(workspace_fp) == self.workspace_prompt_fingerprint
+            {
+                return Ok(cached.clone());
+            }
+        }
+
+        let prompt = self.build_system_prompt()?;
+        self.cached_system_prompt = OnceLock::new();
+        let _ = self.cached_system_prompt.set(prompt.clone());
+        self.last_tool_hash = current_tool_hash;
+        self.workspace_prompt_fingerprint = Some(workspace_fp);
+        Ok(prompt)
     }
 
     pub fn build_system_prompt(&mut self) -> Result<String> {
@@ -139,21 +208,28 @@ impl Agent {
             capabilities_section: caps,
             conversation_context,
             use_native_tools: self.provider.supports_native_tools(),
+            token_limit: self.token_limit,
         };
 
         Ok(prompt::build_system_prompt(ctx))
     }
 
-    pub async fn turn(&mut self, user_message: String) -> Result<String> {
+    pub async fn turn(&mut self, user_message: String, context: &ToolContext) -> Result<String> {
+        use crate::model_router;
+
         // Handle Slash Commands
         if let Some(slash_response) = commands::CommandRegistry::handle_message(self, &user_message)
         {
             return Ok(slash_response);
         }
 
-        // Auto-save user message
-        if self.auto_save {
-            // Placeholder: timestamp-based key
+        // QW-7: Cheap model routing for greetings/simple tasks
+        let model_to_use =
+            model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
+                .to_string();
+
+        // R-1 & QW-2: Memory optimizations
+        if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
             let key = format!(
                 "autosave_user_{}",
                 std::time::SystemTime::now()
@@ -165,18 +241,20 @@ impl Agent {
                 .store(&key, &user_message, self.memory_session_id.as_deref());
         }
 
-        // System Prompt Management
-        let workspace_fp = prompt::workspace_prompt_fingerprint(&self.workspace_dir);
-        if self.has_system_prompt && Some(workspace_fp) != self.workspace_prompt_fingerprint {
-            self.has_system_prompt = false;
-        }
-
-        if !self.has_system_prompt {
-            let system_prompt = self.build_system_prompt()?;
+        // R-3: System Prompt Management (Cached)
+        if !self.has_system_prompt || self.cached_system_prompt.get().is_none() {
+            let system_prompt = self.build_system_prompt_cached()?;
 
             // Insert or replace system prompt at index 0
             if !self.history.is_empty() && self.history[0].role == "system" {
-                self.history[0].content = system_prompt;
+                let mut new_content = system_prompt;
+                if let Some(pos) = self.history[0]
+                    .content
+                    .find("\n\n--- COMPACTED PAST CONTEXT ---\n")
+                {
+                    new_content.push_str(&self.history[0].content[pos..]);
+                }
+                self.history[0].content = new_content;
             } else {
                 self.history.insert(
                     0,
@@ -191,26 +269,32 @@ impl Agent {
                 );
             }
             self.has_system_prompt = true;
-            self.workspace_prompt_fingerprint = Some(workspace_fp);
         }
 
-        // Enrich user message with memory context
-        let enriched_msg = match memory_loader::enrich_message(
-            self.memory.as_ref(),
-            &user_message,
-            self.memory_session_id.as_deref(),
-        ) {
-            Ok(msg) => msg,
-            Err(e) => {
-                warn!("Memory enrichment failed: {}", e);
-                user_message.clone()
+        // R-6 & QW-2: Enrich user message with memory context (only if substantive)
+        let enriched_msg = if user_message.len() > 30
+            && !model_router::is_greeting(&user_message)
+            && self.memory.as_any().downcast_ref::<NoopMemory>().is_none()
+        {
+            match memory_loader::enrich_message(
+                self.memory.as_ref(),
+                &user_message,
+                self.memory_session_id.as_deref(),
+            ) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    warn!("Memory enrichment failed: {}", e);
+                    user_message.clone()
+                }
             }
+        } else {
+            user_message.clone()
         };
 
         // Append user message
         self.history.push(ChatMessage {
             role: "user".to_string(),
-            content: enriched_msg,
+            content: enriched_msg.clone(),
             name: None,
             tool_calls: None,
             tool_call_id: None,
@@ -231,7 +315,6 @@ impl Agent {
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
 
-            // We ignore the result (bool) as it just indicates if compaction happened
             let _ = auto_compact_history(
                 &mut self.history,
                 &self.provider,
@@ -240,33 +323,70 @@ impl Agent {
             );
         }
 
-        // ── Follow-through detection (mirrors Nullclaw) ────────────────────────
-        /// Returns true when the model promises action ("I'll try"/"Let me check")
-        /// but hasn't actually issued a tool call.
-        fn should_force_follow_through(text: &str) -> bool {
+        // B-1: Resolve adaptive max tokens
+        let current_max_tokens =
+            max_tokens_resolver::resolve_max_tokens(Some(self.history.len()), &model_to_use);
+
+        // QW-6: Conditional follow-through detection
+        fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
+            if available_tools.is_empty() {
+                return false;
+            }
             let lower = text.to_lowercase();
-            const PATTERNS: &[&str] = &[
-                "i'll try",
-                "i will try",
-                "let me try",
+            const ACTION_PATTERNS: &[&str] = &[
                 "i'll check",
                 "i will check",
                 "let me check",
-                "i'll retry",
-                "i will retry",
-                "let me retry",
-                "i'll attempt",
-                "i will attempt",
-                "i'll do that now",
-                "i will do that now",
-                "doing that now",
-                "let me do that",
                 "i'll look",
                 "i will look",
                 "let me look",
+                "i'll try",
+                "i will try",
+                "let me try",
             ];
-            PATTERNS.iter().any(|p| lower.contains(p))
+
+            if ACTION_PATTERNS.iter().any(|p| lower.contains(p)) {
+                // Only force if we have tools that can actually "check" or "look"
+                return available_tools.iter().any(|t| {
+                    let n = t.name().to_lowercase();
+                    n.contains("read")
+                        || n.contains("fetch")
+                        || n.contains("search")
+                        || n.contains("ls")
+                        || n.contains("get")
+                });
+            }
+            false
         }
+
+        // Prepare ToolSpecs once
+        let tool_specs: Vec<ToolSpec> = self
+            .tools
+            .iter()
+            .map(|t| {
+                let params: serde_json::Value =
+                    serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
+                ToolSpec {
+                    name: t.name().to_string(),
+                    description: t.description().to_string(),
+                    parameters: params,
+                }
+            })
+            .collect();
+
+        // B-3: Context window slicing
+        let history_slice = if enriched_msg.len() < 100 && !enriched_msg.contains("actually") {
+            // Short message, potentially a follow-up. Use last 10 + system.
+            if self.history.len() > 11 {
+                let mut slice = vec![self.history[0].clone()];
+                slice.extend(self.history[self.history.len() - 10..].iter().cloned());
+                slice
+            } else {
+                self.history.clone()
+            }
+        } else {
+            self.history.clone()
+        };
 
         // Loop for tools
         let mut iterations = 0;
@@ -276,26 +396,16 @@ impl Agent {
                 break;
             }
 
-            // Prepare ToolSpecs
-            let tool_specs: Vec<ToolSpec> = self
-                .tools
-                .iter()
-                .map(|t| {
-                    let params: serde_json::Value =
-                        serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
-                    ToolSpec {
-                        name: t.name().to_string(),
-                        description: t.description().to_string(),
-                        parameters: params,
-                    }
-                })
-                .collect();
+            // M-2: Check LLM response cache
+            if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
+                return Ok(strip_tool_call_markup(&cached));
+            }
 
             let request = ChatRequest {
-                messages: &self.history,
-                model: &self.model_name,
+                messages: &history_slice,
+                model: &model_to_use,
                 temperature: self.temperature,
-                max_tokens: Some(self.max_tokens),
+                max_tokens: Some(current_max_tokens),
                 tools: if tool_specs.is_empty() {
                     None
                 } else {
@@ -306,6 +416,24 @@ impl Agent {
             };
 
             let response = self.provider.chat(&request)?;
+
+            // M-2: Store in cache
+            if let Some(ref content) = response.content {
+                self.response_cache
+                    .insert(&self.history, &model_to_use, content.clone());
+            }
+
+            // B-6: Record cost usage
+            if let Some(tracker) = &mut self.cost_tracker {
+                let token_usage = crate::cost::TokenUsage::new(
+                    &model_to_use,
+                    response.usage.prompt_tokens as u64,
+                    response.usage.completion_tokens as u64,
+                    0.01, // Fallback prices if not in config
+                    0.03,
+                );
+                let _ = tracker.record_usage(token_usage);
+            }
 
             // Append assistant response
             let assistant_msg = ChatMessage {
@@ -322,9 +450,7 @@ impl Agent {
             };
             self.history.push(assistant_msg);
 
-            // Handle tool calls
-            // For providers with native tool support, use response.tool_calls
-            // For others, parse tool calls from the response content
+            // R-4: Handle tool calls (prioritize native, strip markup)
             let tool_calls_to_execute: Vec<ParsedToolCall> = if !response.tool_calls.is_empty() {
                 // Native tool format
                 response
@@ -342,26 +468,13 @@ impl Agent {
                 if parse_result.calls.is_empty() {
                     let display_text = response.content.clone().unwrap_or_default();
 
-                    // ── Action follow-through guardrail ──────────────────
-                    // If the model promised to act but issued no tool call,
-                    // inject a SYSTEM message and force another iteration.
+                    // QW-6: Conditional follow-through guardrail
                     if iterations < self.max_tool_iterations.saturating_sub(1)
-                        && should_force_follow_through(&display_text)
+                        && should_force_follow_through(&display_text, &self.tools)
                     {
                         self.history.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: display_text,
-                            name: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            content_parts: None,
-                        });
-                        self.history.push(ChatMessage {
                             role: "user".to_string(),
-                            content: "SYSTEM: You promised to take action now (e.g. \"I'll try/check now\"). \
-                                Issue the appropriate tool call(s) in this turn. \
-                                If no tool can do it, state the limitation clearly — do not defer again."
-                                .to_string(),
+                            content: "SYSTEM: You promised to take action now. Issue the appropriate tool call(s) now.".to_string(),
                             name: None,
                             tool_calls: None,
                             tool_call_id: None,
@@ -386,6 +499,7 @@ impl Agent {
                     .cloned();
                 let call = tool_call.clone();
                 let cache = self.tool_cache.clone();
+                let ctx_clone = context.clone();
                 let handle = tokio::task::spawn_blocking(move || {
                     if let Some(tool) = tool {
                         if tool.cacheable() {
@@ -398,7 +512,7 @@ impl Agent {
                         }
 
                         match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
-                            Ok(args) => match tool.execute(args) {
+                            Ok(args) => match tool.execute(args, &ctx_clone) {
                                 Ok(output) => {
                                     let res = ToolExecutionResult {
                                         name: call.name.clone(),
@@ -472,8 +586,10 @@ impl Agent {
     pub async fn turn_stream(
         &mut self,
         user_message: String,
+        context: &ToolContext,
         callback: crate::providers::StreamCallback,
     ) -> Result<String> {
+        use crate::model_router;
         use crate::providers::StreamChunk;
 
         let shared_callback = std::sync::Arc::new(std::sync::Mutex::new(callback));
@@ -488,21 +604,33 @@ impl Agent {
             return Ok(slash_response);
         }
 
-        // Enrich user message with memory context
-        let enriched_msg = match memory_loader::enrich_message(
-            self.memory.as_ref(),
-            &user_message,
-            self.memory_session_id.as_deref(),
-        ) {
-            Ok(msg) => msg,
-            Err(e) => {
-                warn!("Memory enrichment failed: {}", e);
-                user_message.clone()
+        // QW-7: Cheap model routing
+        let model_to_use =
+            model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
+                .to_string();
+
+        // R-6 & QW-2: Memory enrichment (only if substantive)
+        let enriched_msg = if user_message.len() > 30
+            && !model_router::is_greeting(&user_message)
+            && self.memory.as_any().downcast_ref::<NoopMemory>().is_none()
+        {
+            match memory_loader::enrich_message(
+                self.memory.as_ref(),
+                &user_message,
+                self.memory_session_id.as_deref(),
+            ) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    warn!("Memory enrichment failed: {}", e);
+                    user_message.clone()
+                }
             }
+        } else {
+            user_message.clone()
         };
 
-        // Auto-save user message (un-enriched original)
-        if self.auto_save {
+        // R-1 & QW-2: Auto-save user message (only if substantive)
+        if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
             let key = format!(
                 "autosave_user_{}",
                 std::time::SystemTime::now()
@@ -514,16 +642,20 @@ impl Agent {
                 .store(&key, &user_message, self.memory_session_id.as_deref());
         }
 
-        // System prompt management (same as turn())
-        let workspace_fp = prompt::workspace_prompt_fingerprint(&self.workspace_dir);
-        if self.has_system_prompt && Some(workspace_fp) != self.workspace_prompt_fingerprint {
-            self.has_system_prompt = false;
-        }
+        // R-3: System Prompt Management (Cached)
+        if !self.has_system_prompt || self.cached_system_prompt.get().is_none() {
+            let system_prompt = self.build_system_prompt_cached()?;
 
-        if !self.has_system_prompt {
-            let system_prompt = self.build_system_prompt()?;
+            // Insert or replace system prompt at index 0
             if !self.history.is_empty() && self.history[0].role == "system" {
-                self.history[0].content = system_prompt;
+                let mut new_content = system_prompt;
+                if let Some(pos) = self.history[0]
+                    .content
+                    .find("\n\n--- COMPACTED PAST CONTEXT ---\n")
+                {
+                    new_content.push_str(&self.history[0].content[pos..]);
+                }
+                self.history[0].content = new_content;
             } else {
                 self.history.insert(
                     0,
@@ -538,13 +670,12 @@ impl Agent {
                 );
             }
             self.has_system_prompt = true;
-            self.workspace_prompt_fingerprint = Some(workspace_fp);
         }
 
         // Append user message
         self.history.push(ChatMessage {
             role: "user".to_string(),
-            content: enriched_msg,
+            content: enriched_msg.clone(),
             name: None,
             tool_calls: None,
             tool_call_id: None,
@@ -572,6 +703,65 @@ impl Agent {
             );
         }
 
+        // B-1: Resolve adaptive max tokens
+        let current_max_tokens =
+            max_tokens_resolver::resolve_max_tokens(Some(self.history.len()), &model_to_use);
+
+        // QW-6: Conditional follow-through detection helper
+        fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
+            if available_tools.is_empty() {
+                return false;
+            }
+            let lower = text.to_lowercase();
+            const ACTION_PATTERNS: &[&str] = &[
+                "i'll check",
+                "i will check",
+                "let me check",
+                "i'll look",
+                "i will look",
+                "let me look",
+            ];
+            if ACTION_PATTERNS.iter().any(|p| lower.contains(p)) {
+                return available_tools.iter().any(|t| {
+                    let n = t.name().to_lowercase();
+                    n.contains("read")
+                        || n.contains("fetch")
+                        || n.contains("search")
+                        || n.contains("ls")
+                        || n.contains("get")
+                });
+            }
+            false
+        }
+
+        // Prepare ToolSpecs once
+        let tool_specs: Vec<ToolSpec> = self
+            .tools
+            .iter()
+            .map(|t| {
+                let params: serde_json::Value =
+                    serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
+                ToolSpec {
+                    name: t.name().to_string(),
+                    description: t.description().to_string(),
+                    parameters: params,
+                }
+            })
+            .collect();
+
+        // B-3: Context window slicing
+        let history_slice = if enriched_msg.len() < 100 && !enriched_msg.contains("actually") {
+            if self.history.len() > 11 {
+                let mut slice = vec![self.history[0].clone()];
+                slice.extend(self.history[self.history.len() - 10..].iter().cloned());
+                slice
+            } else {
+                self.history.clone()
+            }
+        } else {
+            self.history.clone()
+        };
+
         // Tool loop with streaming
         let mut iterations = 0;
         loop {
@@ -580,25 +770,16 @@ impl Agent {
                 break;
             }
 
-            let tool_specs: Vec<ToolSpec> = self
-                .tools
-                .iter()
-                .map(|t| {
-                    let params: serde_json::Value =
-                        serde_json::from_str(&t.parameters_json()).unwrap_or(serde_json::json!({}));
-                    ToolSpec {
-                        name: t.name().to_string(),
-                        description: t.description().to_string(),
-                        parameters: params,
-                    }
-                })
-                .collect();
+            // M-2: Check LLM response cache
+            if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
+                return Ok(strip_tool_call_markup(&cached));
+            }
 
             let request = ChatRequest {
-                messages: &self.history,
-                model: &self.model_name,
+                messages: &history_slice,
+                model: &model_to_use,
                 temperature: self.temperature,
-                max_tokens: Some(self.max_tokens),
+                max_tokens: Some(current_max_tokens),
                 tools: if tool_specs.is_empty() {
                     None
                 } else {
@@ -627,6 +808,24 @@ impl Agent {
                 });
 
             let response = self.provider.chat_stream(&request, stream_cb)?;
+
+            // M-2: Store in cache
+            if let Some(ref content) = response.content {
+                self.response_cache
+                    .insert(&self.history, &model_to_use, content.clone());
+            }
+
+            // B-6: Record cost usage
+            if let Some(tracker) = &mut self.cost_tracker {
+                let token_usage = crate::cost::TokenUsage::new(
+                    &model_to_use,
+                    response.usage.prompt_tokens as u64,
+                    response.usage.completion_tokens as u64,
+                    0.01,
+                    0.03,
+                );
+                let _ = tracker.record_usage(token_usage);
+            }
 
             // Append assistant response
             let assistant_msg = ChatMessage {
@@ -657,10 +856,26 @@ impl Agent {
             } else {
                 let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
                 if parse_result.calls.is_empty() {
+                    let display_text = response.content.clone().unwrap_or_default();
+
+                    // QW-6: Conditional follow-through guardrail
+                    if iterations < self.max_tool_iterations.saturating_sub(1)
+                        && should_force_follow_through(&display_text, &self.tools)
+                    {
+                        self.history.push(ChatMessage {
+                            role: "user".to_string(),
+                            content: "SYSTEM: You promised to take action now. Issue the appropriate tool call(s) now.".to_string(),
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            content_parts: None,
+                        });
+                        iterations += 1;
+                        continue;
+                    }
+
                     // No tool calls — return final text
-                    return Ok(strip_tool_call_markup(
-                        &response.content.unwrap_or_default(),
-                    ));
+                    return Ok(strip_tool_call_markup(&display_text));
                 }
                 parse_result.calls
             };
@@ -674,6 +889,7 @@ impl Agent {
                     .cloned();
                 let call = tool_call.clone();
                 let cache = self.tool_cache.clone();
+                let ctx_clone = context.clone();
                 let handle = tokio::task::spawn_blocking(move || {
                     if let Some(tool) = tool {
                         if tool.cacheable() {
@@ -686,7 +902,7 @@ impl Agent {
                         }
 
                         match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
-                            Ok(args) => match tool.execute(args) {
+                            Ok(args) => match tool.execute(args, &ctx_clone) {
                                 Ok(output) => {
                                     let res = ToolExecutionResult {
                                         name: call.name.clone(),

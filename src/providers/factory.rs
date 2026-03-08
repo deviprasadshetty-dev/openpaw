@@ -13,6 +13,7 @@ use crate::providers::fallback::FallbackProvider;
 use crate::providers::kilocode::{
     DEFAULT_FREE_MODELS, KiloCodeProvider, fetch_kilocode_free_models,
 };
+use crate::providers::ollama::OllamaProvider;
 use crate::providers::reliable::ReliableProvider;
 use crate::providers::{Provider, gemini::GeminiProvider, openai::OpenAiCompatibleProvider};
 
@@ -74,7 +75,12 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
             Arc::new(KiloCodeProvider::new(&api_key, fallback_models))
         }
 
-        // Covers: openai, openrouter, opencode, ollama, or any OpenAI-compatible base_url
+        "ollama" => {
+            let base_url = cfg.and_then(|c| c.base_url.as_deref());
+            Arc::new(OllamaProvider::new(base_url))
+        }
+
+        // Covers: openai, openrouter, opencode, or any OpenAI-compatible base_url
         _ => {
             let base_url = cfg
                 .and_then(|c| c.base_url.clone())
@@ -151,6 +157,7 @@ fn default_base_url(name: &str) -> &'static str {
         "opencode" => "https://opencode.ai/zen/v1",
         "kilocode" => "https://api.kilo.ai/api/gateway",
         "ollama" => "http://localhost:11434/v1",
+        "lmstudio" => "http://localhost:1234/v1",
         _ => "https://api.openai.com/v1",
     }
 }
@@ -161,7 +168,7 @@ fn resolve_env_key(name: &str) -> String {
         "openrouter" => "OPENROUTER_API_KEY",
         "opencode" => "OPENCODE_API_KEY",
         "kilocode" => "KILOCODE_API_KEY",
-        "ollama" => return String::new(), // no key needed
+        "ollama" | "lmstudio" => return String::new(), // no key needed
         _ => "OPENAI_API_KEY",
     };
     std::env::var(env_var).unwrap_or_default()

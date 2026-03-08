@@ -206,10 +206,12 @@ impl MemoryStore for SqliteMemory {
             params![id.clone(), key, content, cat_str, session_id, now, now, imp],
         )?;
 
-        // Auto-embed if provider is present
+        // Auto-embed if provider is present and not an ephemeral autosave
         if let Some(ref embedder) = self.embedder {
-            if let Ok(emb) = embedder.embed(content) {
-                let _ = self.store_embedding_internal(&id, &emb);
+            if !key.starts_with("autosave_") {
+                if let Ok(emb) = embedder.embed(content) {
+                    let _ = self.store_embedding_internal(&id, &emb);
+                }
             }
         }
 

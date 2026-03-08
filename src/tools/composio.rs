@@ -1,9 +1,9 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::{Context, Result};
-use reqwest::blocking::Client;
 use reqwest::Method;
 use reqwest::Url;
-use serde_json::{json, Value};
+use reqwest::blocking::Client;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 const COMPOSIO_API_BASE: &str = "https://backend.composio.dev/api/v3";
@@ -41,7 +41,7 @@ impl Tool for ComposioTool {
         r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","execute","connect"],"description":"Operation to perform"},"app":{"type":"string","description":"Toolkit/app name (e.g. 'gmail', 'github'). Alias of toolkit_slug."},"toolkit_slug":{"type":"string","description":"Composio toolkit slug (e.g. 'gmail')."},"search":{"type":"string","description":"Optional text filter when listing tools."},"query":{"type":"string","description":"Alias of search."},"tool_slug":{"type":"string","description":"Composio tool slug to execute (recommended)."},"action_name":{"type":"string","description":"Legacy alias of tool_slug."},"params":{"type":"object","description":"Arguments passed to the Composio tool execute call."},"entity_id":{"type":"string","description":"Optional user/entity override. Defaults to config.composio.entity_id."},"connected_account_id":{"type":"string","description":"Optional connected account id for execute."},"auth_config_id":{"type":"string","description":"Auth config id for connect flow (auto-discovered if app/toolkit_slug is provided)."},"callback_url":{"type":"string","description":"Optional OAuth callback URL for connect link session."}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return Ok(ToolResult::fail("Missing 'action' parameter")),
@@ -136,12 +136,14 @@ impl ComposioTool {
 
         // Fallback: if toolkit filter returns zero items, retry with search only.
         if let (Some(slug), Some(json_body)) = (toolkit_slug.as_deref(), resp.body_json.as_ref()) {
-            if extract_array_entries(json_body).map(|a| a.is_empty()).unwrap_or(false) {
-                let fallback_query = vec![
-                    ("limit", "100".to_string()),
-                    ("query", slug.to_string()),
-                ];
-                let fallback_resp = self.api_request(Method::GET, "/tools", &fallback_query, None)?;
+            if extract_array_entries(json_body)
+                .map(|a| a.is_empty())
+                .unwrap_or(false)
+            {
+                let fallback_query =
+                    vec![("limit", "100".to_string()), ("query", slug.to_string())];
+                let fallback_resp =
+                    self.api_request(Method::GET, "/tools", &fallback_query, None)?;
                 if is_success(fallback_resp.status) {
                     resp = fallback_resp;
                 }
@@ -184,7 +186,8 @@ impl ComposioTool {
             "user_id": user_id
         });
 
-        if let Some(connected_account_id) = args.get("connected_account_id").and_then(|v| v.as_str())
+        if let Some(connected_account_id) =
+            args.get("connected_account_id").and_then(|v| v.as_str())
         {
             payload["connected_account_id"] = json!(connected_account_id);
         }
@@ -207,7 +210,10 @@ impl ComposioTool {
             )));
         }
 
-        Ok(ToolResult::ok(pretty_json_or_text(resp.body_json, resp.body_text)))
+        Ok(ToolResult::ok(pretty_json_or_text(
+            resp.body_json,
+            resp.body_text,
+        )))
     }
 
     fn connect_account(&self, args: &Value) -> Result<ToolResult> {
@@ -233,7 +239,12 @@ impl ComposioTool {
                     render_auth_config_candidates(&candidates)
                 )));
             }
-            return self.create_link_session(&auth_config_id, user_id, args, toolkit_slug.as_deref());
+            return self.create_link_session(
+                &auth_config_id,
+                user_id,
+                args,
+                toolkit_slug.as_deref(),
+            );
         }
 
         let Some(toolkit_slug) = toolkit_slug else {
@@ -299,7 +310,10 @@ impl ComposioTool {
             }
         }
 
-        Ok(ToolResult::ok(pretty_json_or_text(resp.body_json, resp.body_text)))
+        Ok(ToolResult::ok(pretty_json_or_text(
+            resp.body_json,
+            resp.body_text,
+        )))
     }
 
     fn discover_auth_configs(&self, toolkit_slug: Option<&str>) -> Result<Vec<AuthConfigSummary>> {
@@ -321,7 +335,8 @@ impl ComposioTool {
             return Ok(Vec::new());
         };
 
-        let mut configs: Vec<AuthConfigSummary> = items.iter().filter_map(parse_auth_config).collect();
+        let mut configs: Vec<AuthConfigSummary> =
+            items.iter().filter_map(parse_auth_config).collect();
         if let Some(slug) = toolkit_slug {
             configs.retain(|c| c.toolkit_slug.as_deref() == Some(slug));
         }
@@ -355,9 +370,7 @@ fn toolkit_from_args(args: &Value) -> Option<String> {
 }
 
 fn normalize_toolkit_slug(raw: &str) -> String {
-    raw.trim()
-        .replace([' ', '_'], "-")
-        .to_ascii_lowercase()
+    raw.trim().replace([' ', '_'], "-").to_ascii_lowercase()
 }
 
 fn extract_array_entries(value: &Value) -> Option<&[Value]> {
@@ -403,7 +416,10 @@ fn parse_auth_config(value: &Value) -> Option<AuthConfigSummary> {
                 .map(normalize_toolkit_slug)
         });
 
-    let name = value.get("name").and_then(Value::as_str).map(str::to_string);
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let status = value
         .get("status")
         .and_then(Value::as_str)
@@ -428,7 +444,11 @@ fn auth_config_sort_key(cfg: &AuthConfigSummary) -> (u8, u8, String) {
         Some("active") | Some("ACTIVE") | Some("enabled") | Some("ENABLED") => 0,
         _ => 1,
     };
-    let managed_rank = if cfg.is_composio_managed == Some(true) { 0 } else { 1 };
+    let managed_rank = if cfg.is_composio_managed == Some(true) {
+        0
+    } else {
+        1
+    };
     (status_rank, managed_rank, cfg.id.clone())
 }
 
@@ -526,10 +546,7 @@ fn render_list_output(value: &Value, toolkit_filter: Option<&str>) -> String {
             })
             .unwrap_or("unknown_toolkit");
 
-        let display_name = item
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(slug);
+        let display_name = item.get("name").and_then(Value::as_str).unwrap_or(slug);
 
         lines.push(format!("- {} ({}) [{}]", slug, toolkit, display_name));
     }
@@ -541,11 +558,10 @@ fn render_list_output(value: &Value, toolkit_filter: Option<&str>) -> String {
         ));
     }
 
+    lines.push("Use action='execute' with 'tool_slug' exactly as listed above.".to_string());
     lines.push(
-        "Use action='execute' with 'tool_slug' exactly as listed above.".to_string(),
-    );
-    lines.push(
-        "If you need a specific app (e.g. Gmail), call list with app='gmail' or search='gmail'.".to_string(),
+        "If you need a specific app (e.g. Gmail), call list with app='gmail' or search='gmail'."
+            .to_string(),
     );
     lines.join("\n")
 }
@@ -584,5 +600,4 @@ mod tests {
         let nested = json!({"data":{"tools":[{"id":"a"}]}});
         assert_eq!(extract_array_entries(&nested).map(|a| a.len()), Some(1));
     }
-
 }

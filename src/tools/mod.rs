@@ -45,4 +45,5 @@ pub mod web_fetch;
 pub mod web_search;
 
 pub use root::Tool;
+pub use root::ToolContext;
 pub use root::ToolResult;

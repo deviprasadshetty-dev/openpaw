@@ -1,9 +1,9 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
+use reqwest::Url;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
-use reqwest::Url;
 
 pub struct HttpRequestTool {
     pub max_response_size: usize,
@@ -24,7 +24,7 @@ impl Tool for HttpRequestTool {
         r#"{"type":"object","properties":{"url":{"type":"string","description":"URL to request"},"method":{"type":"string","description":"HTTP method (GET, POST, etc.)","default":"GET"},"headers":{"type":"object","description":"HTTP headers"},"body":{"type":"string","description":"Request body"}},"required":["url"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => return Ok(ToolResult::fail("Missing 'url' parameter")),
@@ -35,11 +35,17 @@ impl Tool for HttpRequestTool {
                 Ok(u) => u.host_str().map(|h| h.to_string()),
                 Err(_) => return Ok(ToolResult::fail("Invalid URL")),
             };
-            
+
             if let Some(h) = host {
-                let allowed = self.allowed_domains.iter().any(|d| h == *d || h.ends_with(&format!(".{}", d)));
+                let allowed = self
+                    .allowed_domains
+                    .iter()
+                    .any(|d| h == *d || h.ends_with(&format!(".{}", d)));
                 if !allowed {
-                    return Ok(ToolResult::fail(format!("Domain {} not in allowed list", h)));
+                    return Ok(ToolResult::fail(format!(
+                        "Domain {} not in allowed list",
+                        h
+                    )));
                 }
             } else {
                 return Ok(ToolResult::fail("Could not parse host from URL"));
@@ -85,23 +91,31 @@ impl Tool for HttpRequestTool {
 
         let status = resp.status();
         let success = status.is_success();
-        
+
         // Read body with limit
         let text = match resp.text() {
-             Ok(t) => {
-                 if t.len() > self.max_response_size {
-                      format!("{}\n\n[Content truncated]", &t[..self.max_response_size])
-                 } else {
-                      t
-                 }
-             },
-             Err(e) => return Ok(ToolResult::fail(format!("Failed to read response body: {}", e))),
+            Ok(t) => {
+                if t.len() > self.max_response_size {
+                    format!("{}\n\n[Content truncated]", &t[..self.max_response_size])
+                } else {
+                    t
+                }
+            }
+            Err(e) => {
+                return Ok(ToolResult::fail(format!(
+                    "Failed to read response body: {}",
+                    e
+                )));
+            }
         };
 
         if success {
-             Ok(ToolResult::ok(format!("Status: {}\n\nResponse Body:\n{}", status, text)))
+            Ok(ToolResult::ok(format!(
+                "Status: {}\n\nResponse Body:\n{}",
+                status, text
+            )))
         } else {
-             Ok(ToolResult::fail(format!("HTTP {}: {}", status, text)))
+            Ok(ToolResult::fail(format!("HTTP {}: {}", status, text)))
         }
     }
 }

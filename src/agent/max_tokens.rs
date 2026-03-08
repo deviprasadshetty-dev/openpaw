@@ -43,6 +43,7 @@ const PROVIDER_MAX_TOKENS: &[MaxTokensEntry] = &[
     MaxTokensEntry { key: "qwen", tokens: 8192 },
     MaxTokensEntry { key: "qwen-portal", tokens: 8192 },
     MaxTokensEntry { key: "ollama", tokens: 8192 },
+    MaxTokensEntry { key: "lmstudio", tokens: 8192 },
     MaxTokensEntry { key: "vllm", tokens: 8192 },
     MaxTokensEntry { key: "github-copilot", tokens: 8192 },
     MaxTokensEntry { key: "qianfan", tokens: 32_768 },
@@ -203,8 +204,17 @@ pub fn lookup_model_max_tokens(model_ref_raw: &str) -> Option<u32> {
     None
 }
 
-pub fn resolve_max_tokens(max_tokens_override: Option<u32>, model_ref: &str) -> u32 {
-    max_tokens_override
-        .or_else(|| lookup_model_max_tokens(model_ref))
-        .unwrap_or(DEFAULT_MODEL_MAX_TOKENS)
+pub fn resolve_max_tokens(history_len: Option<usize>, model_ref: &str) -> u32 {
+    let base = lookup_model_max_tokens(model_ref).unwrap_or(DEFAULT_MODEL_MAX_TOKENS);
+    if let Some(len) = history_len {
+        // Simple adaptive heuristic: reduce output budget as history grows
+        // to leave more room for context and avoid hitting hard limits.
+        if len > 30 {
+            return (base / 2).max(1024);
+        }
+        if len > 15 {
+            return (base * 3 / 4).max(2048);
+        }
+    }
+    base
 }

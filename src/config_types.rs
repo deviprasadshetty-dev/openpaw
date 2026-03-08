@@ -397,3 +397,14 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub env: Vec<McpServerEnv>,
 }
+// ── Pushover config ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PushoverConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_key: Option<String>,
+}

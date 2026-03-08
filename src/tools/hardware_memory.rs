@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::tools::process_util::{self, RunOptions};
 use anyhow::Result;
 use serde_json::Value;
@@ -23,7 +23,7 @@ impl Tool for HardwareMemoryTool {
         r#"{"type":"object","properties":{"action":{"type":"string","enum":["read","write"],"description":"read or write memory"},"address":{"type":"string","description":"Memory address in hex (e.g. 0x20000000)"},"length":{"type":"integer","description":"Bytes to read (default 128, max 256)"},"value":{"type":"string","description":"Hex value to write (for write action)"},"board":{"type":"string","description":"Board name (optional if only one configured)"}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         if self.boards.is_empty() {
             return Ok(ToolResult::fail(
                 "No peripherals configured. Add boards to config.toml [peripherals.boards].",

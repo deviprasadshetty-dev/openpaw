@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use crate::tools::cron_utils::CronScheduler;
 use anyhow::Result;
 use serde_json::Value;
@@ -16,7 +16,7 @@ impl Tool for CronUpdateTool {
         r#"{"type":"object","properties":{"job_id":{"type":"string","description":"ID of the cron job to update"},"expression":{"type":"string","description":"New cron expression"},"command":{"type":"string","description":"New command to execute"},"enabled":{"type":"boolean","description":"Enable or disable the job"}},"required":["job_id"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
             Some(id) if !id.is_empty() => id,
             _ => return Ok(ToolResult::fail("Missing 'job_id' parameter")),

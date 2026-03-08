@@ -2,6 +2,11 @@ use super::Provider;
 use crate::providers::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static LAST_COMPACTION: AtomicU64 = AtomicU64::new(0);
+const COMPACTION_COOLDOWN_SECS: u64 = 300; // 5 minutes
 
 pub const DEFAULT_COMPACTION_KEEP_RECENT: u32 = 20;
 pub const DEFAULT_COMPACTION_MAX_SUMMARY_CHARS: u32 = 2_000;
@@ -33,12 +38,22 @@ impl Default for CompactionConfig {
     }
 }
 
-pub fn token_estimate(history: &[ChatMessage]) -> u64 {
-    let mut total_chars = 0;
+pub fn token_estimate(history: &[ChatMessage], model_name: &str) -> u64 {
+    let chars_per_token = match model_name.to_lowercase().as_str() {
+        s if s.contains("claude") => 3.5,
+        s if s.contains("gemini") => 4.5,
+        s if s.contains("gpt-4") => 4.0,
+        s if s.contains("gpt-3") => 4.0,
+        _ => 4.0,
+    };
+
+    let mut total_chars = 0u64;
     for msg in history {
         total_chars += msg.content.len() as u64;
+        total_chars += 10; // role/meta overhead
     }
-    total_chars.div_ceil(4)
+
+    (total_chars as f64 / chars_per_token).ceil() as u64
 }
 
 pub fn force_compress_history(history: &mut Vec<ChatMessage>) -> bool {
@@ -96,14 +111,33 @@ pub fn auto_compact_history(
     model_name: &str,
     config: &CompactionConfig,
 ) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let last = LAST_COMPACTION.load(Ordering::Relaxed);
+    if now - last < COMPACTION_COOLDOWN_SECS {
+        return false; // Cooldown active
+    }
+
     let has_system = !history.is_empty() && history[0].role == "system";
     let start = if has_system { 1 } else { 0 };
     let non_system_count = history.len() - start;
 
+    let is_small = crate::agent::context_tokens::is_small_model_context(config.token_limit);
     let count_trigger = non_system_count > config.max_history_messages as usize;
-    let token_threshold = (config.token_limit * 3) / 4;
-    let token_trigger = config.token_limit > 0 && token_estimate(history) > token_threshold;
 
+    // Add a 10% buffer to the token threshold to avoid edge-case "jitter" summarization
+    // For small models, trigger even earlier (at 50% instead of 75%)
+    let threshold_num = if is_small { 1 } else { 3 };
+    let threshold_den = if is_small { 2 } else { 4 };
+    let token_threshold = (config.token_limit * threshold_num) / threshold_den;
+
+    let token_trigger =
+        config.token_limit > 0 && token_estimate(history, model_name) > token_threshold;
+
+    // Only compact if we are significantly over the threshold or have many messages
     if !count_trigger && !token_trigger {
         return false;
     }
@@ -119,6 +153,8 @@ pub fn auto_compact_history(
     // TODO: Implement multi-part summarization for very large histories
     let summary = summarize_slice(provider, model_name, history, start, compact_end, config)
         .unwrap_or_else(|| "Context summarized due to length.".to_string());
+
+    LAST_COMPACTION.store(now, Ordering::Relaxed);
 
     // Construct the final summary message content
     // Potentially read workspace context here (AGENTS.md)
@@ -207,7 +243,7 @@ fn summarize_slice(
         messages: &messages,
         model: model_name,
         temperature: 0.2,
-        max_tokens: Some(1024),
+        max_tokens: Some(512),
         tools: None,
         timeout_secs: 60,
         reasoning_effort: None,

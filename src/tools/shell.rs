@@ -1,4 +1,4 @@
-use super::{path_security, process_util, Tool, ToolResult};
+use super::{Tool, ToolContext, ToolResult, path_security, process_util};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ impl Tool for ShellTool {
         r#"{"type":"object","properties":{"command":{"type":"string","description":"The shell command to execute"},"cwd":{"type":"string","description":"Working directory (absolute path within allowed paths; defaults to workspace)"}},"required":["command"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value) -> Result<ToolResult> {
+    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing 'command' parameter")),
@@ -40,7 +40,7 @@ impl Tool for ShellTool {
             if !cwd_path.is_absolute() {
                 return Ok(ToolResult::fail("cwd must be an absolute path"));
             }
-            
+
             // Resolve canonical path
             let resolved_cwd = match std::fs::canonicalize(cwd_path) {
                 Ok(p) => p,
@@ -49,8 +49,12 @@ impl Tool for ShellTool {
 
             // Resolve workspace path
             let ws_resolved = std::fs::canonicalize(&self.workspace_dir).unwrap_or_default();
-            
-            if !path_security::is_resolved_path_allowed(&resolved_cwd, &ws_resolved, &self.allowed_paths) {
+
+            if !path_security::is_resolved_path_allowed(
+                &resolved_cwd,
+                &ws_resolved,
+                &self.allowed_paths,
+            ) {
                 return Ok(ToolResult::fail("cwd is outside allowed areas"));
             }
             resolved_cwd.to_string_lossy().to_string()

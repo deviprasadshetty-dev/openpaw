@@ -30,6 +30,7 @@ pub mod main_wasi;
 pub mod mcp;
 pub mod memory;
 pub mod migration;
+pub mod model_router;
 pub mod multimodal;
 pub mod net_security;
 pub mod observability;
@@ -154,6 +155,7 @@ async fn main() -> Result<()> {
             browser: Default::default(),
             composio: Default::default(),
             hardware: Default::default(),
+            pushover: Default::default(),
             mcp_servers: Default::default(),
             agents: Vec::new(),
             config_path: String::new(),
@@ -213,15 +215,60 @@ async fn main() -> Result<()> {
             }
 
             if let Some(msg) = message {
-                // One-shot mode - just send a message and exit
+                // One-shot mode - send a message and get response
                 info!("One-shot message: {}", msg);
-                // TODO: Implement one-shot mode with agent.turn()
+                run_one_shot_message(config, msg.to_string()).await?;
             } else {
                 // Run the daemon with all configured channels
                 daemon::run_daemon(config).await?;
             }
         }
     }
+
+    Ok(())
+}
+
+async fn run_one_shot_message(config: crate::config::Config, message: String) -> Result<()> {
+    use crate::agent::Agent;
+    use crate::daemon::create_provider;
+    use crate::tools::root::ToolContext;
+
+    // Initialize provider
+    let provider = create_provider(&config);
+
+    // Get model name
+    let model_name =
+        config
+            .default_model
+            .clone()
+            .unwrap_or_else(|| match config.default_provider.as_str() {
+                "gemini" => "gemini-2.5-flash".to_string(),
+                "openai" => "gpt-4o".to_string(),
+                "anthropic" => "claude-3-5-sonnet-20241022".to_string(),
+                _ => "gpt-4o".to_string(),
+            });
+
+    // Create agent with empty tools (one-shot mode doesn't need tools for now)
+    let mut agent = Agent::new(
+        provider,
+        vec![], // Empty tools for one-shot
+        model_name,
+        config.workspace_dir,
+    );
+
+    // Create tool context (dummy values for CLI)
+    let context = ToolContext {
+        channel: "cli".to_string(),
+        sender_id: "cli_user".to_string(),
+        chat_id: "cli_chat".to_string(),
+        session_key: "cli_session".to_string(),
+    };
+
+    // Run the agent turn
+    println!("\n🤖 OpenPaw: Thinking...\n");
+    let response = agent.turn(message, &context).await?;
+
+    println!("\n🤖 OpenPaw: {}\n", response);
 
     Ok(())
 }

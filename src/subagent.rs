@@ -119,7 +119,13 @@ impl SubagentManager {
             };
 
             if let Some(sm) = sm {
-                let result = sm.process_message(&subagent_session_key, task_copy).await;
+                let context = crate::tools::root::ToolContext {
+                    channel: origin_channel_copy.clone(),
+                    sender_id: "subagent".to_string(),
+                    chat_id: origin_chat_copy.clone(),
+                    session_key: subagent_session_key.clone(),
+                };
+                let result = sm.process_message(&subagent_session_key, task_copy, context).await;
 
                 let mut tasks = tasks_clone.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(state) = tasks.get_mut(&task_id) {
