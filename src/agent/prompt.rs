@@ -304,7 +304,7 @@ fn append_skills_section(out: &mut String, workspace_dir: &str) {
             }
             out.push_str(&format!(
                 "    <location>{}/SKILL.md</location>\n",
-                skill.path.display()
+                skill.path
             ));
             out.push_str("  </skill>\n");
         }

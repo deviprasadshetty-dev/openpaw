@@ -1,4 +1,4 @@
-﻿use super::{Tool, ToolContext, ToolResult};
+use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
@@ -284,7 +284,8 @@ impl Tool for BrowserTool {
 
     fn description(&self) -> &str {
         "Advanced human-like browser automation. Supports multiple tabs, structured DOM extraction, and precision interactions. \
-         Actions: navigate, click, type, scroll, hover, screenshot, read_page, read_dom, new_tab, switch_tab, close_tab, get_url, eval, select_option, key_press, get_cookies, clear_cookies, close."
+         For interactive elements, use indices like '@e0', '@e1' etc. as provided by 'read_dom'. \
+         Actions: navigate, click, type, scroll, hover, screenshot, read_page, read_dom, extract, new_tab, switch_tab, close_tab, back, forward, refresh, get_url, eval, select_option, key_press, get_cookies, clear_cookies, wait, close, set_viewport."
     }
 
     fn parameters_json(&self) -> String {
@@ -293,7 +294,7 @@ impl Tool for BrowserTool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["navigate", "click", "type", "scroll", "hover", "screenshot", "read_page", "read_dom", "new_tab", "switch_tab", "close_tab", "get_url", "eval", "select_option", "key_press", "get_cookies", "clear_cookies", "wait", "close", "set_viewport", "alert_accept", "alert_dismiss", "drag"],
+              "enum": ["navigate", "click", "type", "scroll", "hover", "screenshot", "read_page", "read_dom", "extract", "new_tab", "switch_tab", "close_tab", "back", "forward", "refresh", "get_url", "eval", "select_option", "key_press", "get_cookies", "clear_cookies", "wait", "close", "set_viewport", "alert_accept", "alert_dismiss", "drag"],
               "description": "Action to perform"
             },
             "url":       { "type": "string",  "description": "URL for navigate/new_tab" },
@@ -420,6 +421,7 @@ impl Tool for BrowserTool {
             .session
             .lock()
             .map_err(|e| anyhow::anyhow!("Mutex error: {}", e))?;
+
         let mut browser_ctx = BrowserToolContext::new(&session_guard);
 
         match action {
@@ -433,6 +435,25 @@ impl Tool for BrowserTool {
                         .execute("navigate", json!({"url": url}), &mut browser_ctx),
                     "navigate",
                 )
+            }
+            "back" => self.map_result(
+                self.registry.execute("go_back", json!({}), &mut browser_ctx),
+                "back",
+            ),
+            "forward" => self.map_result(
+                self.registry
+                    .execute("go_forward", json!({}), &mut browser_ctx),
+                "forward",
+            ),
+            "refresh" => {
+                let res = self.registry.execute("reload", json!({}), &mut browser_ctx);
+                match res {
+                    Ok(_) => Ok(ToolResult::ok("Page reloaded")),
+                    Err(_) => {
+                        target_tab.reload(false, None)?;
+                        Ok(ToolResult::ok("Page reloaded (fallback)"))
+                    }
+                }
             }
             "click" => {
                 let sel = self.solve_selector(&args).unwrap_or(Value::Null);
@@ -569,6 +590,10 @@ impl Tool for BrowserTool {
                     .map_err(|e| anyhow::anyhow!("read_dom failed: {}", e))?;
                 Ok(ToolResult::ok(format!("{:?}", dom)))
             }
+            "extract" => self.map_result(
+                self.registry.execute("extract", json!({}), &mut browser_ctx),
+                "extract",
+            ),
             "get_url" => Ok(ToolResult::ok(target_tab.get_url())),
             "eval" => {
                 let script = args
