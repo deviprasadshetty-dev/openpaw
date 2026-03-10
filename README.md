@@ -24,7 +24,7 @@ Whether it's prowling through your file system, sniffing out data in technical d
 
 ### 🤖 AI Providers
 
-Connect to the best AI models through a unified interface. OpenPaw supports **7 providers out of the box**:
+Connect to the best AI models through a unified interface. OpenPaw supports **9 providers out of the box**:
 
 | Provider | Free Tier | Notes |
 |---|---|---|
@@ -56,7 +56,9 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 
 ---
 
-### 🧠 Sophisticated Orchestration
+### 🧠 Sophisticated Orchestration & Intelligence
+*   **Contextual Intelligence (New) 🧠**: OpenPaw is now aware of "now" with native UTC date and time injection, and features intelligent skill discovery for lazy-loading capabilities.
+*   **Social & Channel Awareness**: Specialized logic for Telegram group chats (using `[NO_REPLY]` markers) and strict guidance for scheduled tasks to minimize execution errors.
 *   **7-Tier Territory Routing:** Advanced logic that routes messages based on Peer, Guild, Team, Account, or Channel constraints. Your agent always knows its place.
 *   **The Whisker-Thin Bus:** A high-throughput internal message bus (via `crossbeam-channel`) that orchestrates silent, deadly-efficient communication between modules.
 *   **Persistent Memory:** SQLite-backed long-term memory with Full-Text Search (FTS5). OpenPaw remembers your preferences like a cat remembers its favorite sunny spot.
