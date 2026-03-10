@@ -1,32 +1,37 @@
 use super::{Tool, ToolContext, ToolResult};
-use crate::tools::cron_utils::CronScheduler;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
-pub struct CronRemoveTool {}
+pub struct CronRemoveTool {
+    pub cron: Arc<crate::cron::CronScheduler>,
+}
 
+#[async_trait]
 impl Tool for CronRemoveTool {
     fn name(&self) -> &str {
         "cron_remove"
     }
+
     fn description(&self) -> &str {
-        "Remove a scheduled cron job by its ID."
-    }
-    fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"job_id":{"type":"string","description":"ID of the cron job to remove"}},"required":["job_id"]}"#.to_string()
+        "Remove a cron job by ID"
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
-        let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) if !id.is_empty() => id,
-            _ => return Ok(ToolResult::fail("Missing required parameter: job_id")),
+    fn parameters_json(&self) -> String {
+        r#"{"type":"object","properties":{"id":{"type":"string","description":"ID of the job to remove"}},"required":["id"]}"#.to_string()
+    }
+
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+        let id = match args.get("id").and_then(|v| v.as_str()) {
+            Some(i) => i,
+            None => return Ok(ToolResult::fail("Missing required 'id' parameter")),
         };
 
-        let mut scheduler = CronScheduler::new();
-        if scheduler.remove_job(job_id) {
-            Ok(ToolResult::ok(format!("Removed cron job {}", job_id)))
+        if self.cron.remove_job(id).is_some() {
+            Ok(ToolResult::ok(format!("Removed cron job {}", id)))
         } else {
-            Ok(ToolResult::fail(format!("Job '{}' not found", job_id)))
+            Ok(ToolResult::fail(format!("Cron job {} not found", id)))
         }
     }
 }

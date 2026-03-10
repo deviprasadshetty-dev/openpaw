@@ -145,16 +145,14 @@ fn lookup_model_candidates(model_id_raw: &str) -> Option<u32> {
     if let Some(n) = lookup_table(MODEL_MAX_TOKENS, model_id_raw) {
         return Some(n);
     }
-    if no_latest != model_id_raw {
-        if let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_latest) {
+    if no_latest != model_id_raw
+        && let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_latest) {
             return Some(n);
         }
-    }
-    if no_date != no_latest {
-        if let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_date) {
+    if no_date != no_latest
+        && let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_date) {
             return Some(n);
         }
-    }
 
     infer_from_model_pattern(no_date)
         .or_else(|| infer_from_model_pattern(no_latest))
@@ -195,11 +193,10 @@ pub fn lookup_model_max_tokens(model_ref_raw: &str) -> Option<u32> {
         }
     }
 
-    if let Some(provider) = split.provider {
-        if let Some(n) = lookup_table(PROVIDER_MAX_TOKENS, provider) {
+    if let Some(provider) = split.provider
+        && let Some(n) = lookup_table(PROVIDER_MAX_TOKENS, provider) {
             return Some(n);
         }
-    }
 
     None
 }

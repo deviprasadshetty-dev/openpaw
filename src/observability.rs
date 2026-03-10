@@ -161,6 +161,12 @@ pub struct VerboseObserver {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
 }
 
+impl Default for VerboseObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VerboseObserver {
     pub fn new() -> Self {
         Self {

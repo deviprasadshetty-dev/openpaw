@@ -1,5 +1,8 @@
 use crate::bus::Bus;
+use crate::config::Config;
 use crate::session::SessionManager;
+use crate::agent::Agent;
+use crate::daemon::{create_provider, build_tools};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -42,16 +45,18 @@ pub struct SubagentManager {
     tasks: Arc<Mutex<HashMap<u64, TaskState>>>,
     next_id: Arc<Mutex<u64>>,
     config: SubagentConfig,
+    daemon_config: Config,
     bus: Arc<Bus>,
     session_manager: Arc<Mutex<Option<Arc<SessionManager>>>>,
 }
 
 impl SubagentManager {
-    pub fn new(bus: Arc<Bus>, subagent_config: SubagentConfig) -> Self {
+    pub fn new(bus: Arc<Bus>, subagent_config: SubagentConfig, daemon_config: Config) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(1)),
             config: subagent_config,
+            daemon_config,
             bus,
             session_manager: Arc::new(Mutex::new(None)),
         }
@@ -71,6 +76,17 @@ impl SubagentManager {
         label: &str,
         origin_channel: &str,
         origin_chat_id: &str,
+    ) -> Result<u64> {
+        self.spawn_with_agent(task, label, origin_channel, origin_chat_id, None)
+    }
+
+    pub fn spawn_with_agent(
+        &self,
+        task: &str,
+        label: &str,
+        origin_channel: &str,
+        origin_chat_id: &str,
+        agent_name: Option<&str>,
     ) -> Result<u64> {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let running_count = tasks
@@ -106,82 +122,124 @@ impl SubagentManager {
         let label_copy = label.to_string();
         let origin_channel_copy = origin_channel.to_string();
         let origin_chat_copy = origin_chat_id.to_string();
+        let agent_name_copy = agent_name.map(|s| s.to_string());
 
         let tasks_clone = self.tasks.clone();
-        let sm_opt_clone = self.session_manager.clone();
         let bus_clone = self.bus.clone();
+        
+        // Build subagent configuration based on daemon config + possible agent override
+        let mut sub_config = self.daemon_config.clone();
+        let mut custom_system_prompt = None;
+        if let Some(ref name) = agent_name_copy {
+            if let Some(agent_cfg) = sub_config.agents.iter().find(|a| &a.name == name) {
+                sub_config.default_provider = agent_cfg.provider.clone();
+                sub_config.default_model = Some(agent_cfg.model.clone());
+                if let Some(t) = agent_cfg.temperature {
+                    sub_config.default_temperature = Some(t as f32);
+                }
+                custom_system_prompt = agent_cfg.system_prompt.clone();
+            } else {
+                tasks.remove(&task_id);
+                return Err(anyhow!("Unknown agent profile: {}", name));
+            }
+        }
+
+        let max_iterations = self.config.max_iterations;
 
         // Spawn asynchronous task
         tokio::spawn(async move {
-            let sm = {
-                let guard = sm_opt_clone.lock().unwrap_or_else(|e| e.into_inner());
-                guard.clone()
+            let context = crate::tools::root::ToolContext {
+                channel: origin_channel_copy.clone(),
+                sender_id: "subagent".to_string(),
+                chat_id: origin_chat_copy.clone(),
+                session_key: subagent_session_key.clone(),
             };
 
-            if let Some(sm) = sm {
-                let context = crate::tools::root::ToolContext {
-                    channel: origin_channel_copy.clone(),
-                    sender_id: "subagent".to_string(),
-                    chat_id: origin_chat_copy.clone(),
-                    session_key: subagent_session_key.clone(),
-                };
-                let result = sm.process_message(&subagent_session_key, task_copy, context).await;
+            // Instantiate isolated tools and provider
+            let provider = create_provider(&sub_config);
+            let subagent_tools = build_tools(&sub_config, None, None, None).await; // None avoids adding 'spawn' tool again
 
-                let mut tasks = tasks_clone.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(state) = tasks.get_mut(&task_id) {
-                    match result {
-                        Ok(response) => {
-                            state.status = TaskStatus::Completed;
-                            state.result = Some(response.clone());
-                            state.completed_at = Some(
-                                SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs(),
-                            );
-
-                            // Report back to origin via Bus
-                            let report = format!(
-                                "✅ Subagent '{}' (ID {}) completed:\n\n{}",
-                                label_copy, task_id, response
-                            );
-                            let outbound = crate::bus::make_outbound(
-                                &origin_channel_copy,
-                                &origin_chat_copy,
-                                &report,
-                            );
-                            let _ = bus_clone.publish_outbound(outbound);
-                        }
-                        Err(e) => {
-                            state.status = TaskStatus::Failed;
-                            state.error_msg = Some(e.to_string());
-                            state.completed_at = Some(
-                                SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs(),
-                            );
-
-                            // Report error
-                            let report = format!(
-                                "❌ Subagent '{}' (ID {}) failed: {}",
-                                label_copy, task_id, e
-                            );
-                            let outbound = crate::bus::make_outbound(
-                                &origin_channel_copy,
-                                &origin_chat_copy,
-                                &report,
-                            );
-                            let _ = bus_clone.publish_outbound(outbound);
-                        }
-                    }
-                }
+            let mut agent = Agent::new(
+                provider,
+                subagent_tools,
+                sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
+                sub_config.workspace_dir.clone(),
+            );
+            agent.max_tool_iterations = max_iterations;
+            
+            if let Some(prompt) = custom_system_prompt {
+                // If a custom prompt is provided, we inject it directly
+                agent.has_system_prompt = true;
+                agent.history.push(crate::providers::ChatMessage {
+                    role: "system".to_string(),
+                    content: format!("{}\n\nYou are running as a background subagent.", prompt),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    content_parts: None,
+                });
             } else {
-                let mut tasks = tasks_clone.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(state) = tasks.get_mut(&task_id) {
-                    state.status = TaskStatus::Failed;
-                    state.error_msg =
-                        Some("Session manager not initialized in subagent manager".to_string());
+                // Default subagent prompt
+                agent.has_system_prompt = true;
+                agent.history.push(crate::providers::ChatMessage {
+                    role: "system".to_string(),
+                    content: "You are a background subagent. Complete the assigned task concisely and accurately. Use available tools when they materially improve correctness.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    content_parts: None,
+                });
+            }
+
+            let result = agent.turn(task_copy, &context).await;
+
+            let mut tasks = tasks_clone.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(state) = tasks.get_mut(&task_id) {
+                match result {
+                    Ok(response) => {
+                        state.status = TaskStatus::Completed;
+                        state.result = Some(response.clone());
+                        state.completed_at = Some(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                        );
+
+                        // Report back to origin via Bus
+                        let report = format!(
+                            "✅ Subagent '{}' (ID {}) completed:\n\n{}",
+                            label_copy, task_id, response
+                        );
+                        let outbound = crate::bus::make_outbound(
+                            &origin_channel_copy,
+                            &origin_chat_copy,
+                            &report,
+                        );
+                        let _ = bus_clone.publish_outbound(outbound);
+                    }
+                    Err(e) => {
+                        state.status = TaskStatus::Failed;
+                        state.error_msg = Some(e.to_string());
+                        state.completed_at = Some(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                        );
+
+                        // Report error
+                        let report = format!(
+                            "❌ Subagent '{}' (ID {}) failed: {}",
+                            label_copy, task_id, e
+                        );
+                        let outbound = crate::bus::make_outbound(
+                            &origin_channel_copy,
+                            &origin_chat_copy,
+                            &report,
+                        );
+                        let _ = bus_clone.publish_outbound(outbound);
+                    }
                 }
             }
         });

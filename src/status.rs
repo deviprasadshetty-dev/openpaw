@@ -75,7 +75,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         writeln!(handle, "  {}: {}", meta.label, status_text)?;
     }
 
-    writeln!(handle, "")?;
+    writeln!(handle)?;
     handle.flush()?;
 
     Ok(())

@@ -1,6 +1,5 @@
 use crate::bus::Bus;
 use crate::channel_loop::{ChannelRuntime, PollingState};
-use crate::channel_catalog;
 use crate::channels::dispatch::{ChannelRegistry, SupervisedChannel};
 use crate::channels::root::Channel;
 use crate::config::Config;
@@ -68,15 +67,7 @@ impl ChannelManager {
     //     // ...
     // }
 
-    fn listener_type_from_mode(mode: channel_catalog::ListenerMode) -> ListenerType {
-        match mode {
-            channel_catalog::ListenerMode::Polling => ListenerType::Polling,
-            channel_catalog::ListenerMode::GatewayLoop => ListenerType::GatewayLoop,
-            channel_catalog::ListenerMode::WebhookOnly => ListenerType::WebhookOnly,
-            channel_catalog::ListenerMode::SendOnly => ListenerType::SendOnly,
-            channel_catalog::ListenerMode::None => ListenerType::NotImplemented,
-        }
-    }
+
 
     // fn listener_type_for_field(field_name: &str) -> ListenerType {
     //     let meta = channel_catalog::find_by_key(field_name).expect("missing channel metadata");

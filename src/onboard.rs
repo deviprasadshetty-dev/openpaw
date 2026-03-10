@@ -52,9 +52,7 @@ fn magenta(s: &str) -> String {
 fn blue(s: &str) -> String {
     ansi!("1;34", s)
 }
-fn red(s: &str) -> String {
-    ansi!("1;31", s)
-}
+
 fn dim_cyan(s: &str) -> String {
     ansi!("2;36", s)
 }
@@ -97,6 +95,7 @@ pub struct ProviderConfig {
     pub name: String,
     pub default_model: String,
     pub base_url: Option<String>,
+    pub model: Option<String>,
 }
 
 // ── Main onboarding flow ──────────────────────────────────────────
@@ -213,41 +212,55 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
             name: "gemini".to_string(),
             default_model: "gemini-2.0-flash".to_string(),
             base_url: None,
+            model: None,
         },
         ProviderConfig {
             name: "openai".to_string(),
             default_model: "gpt-4o".to_string(),
             base_url: None,
+            model: None,
         },
         ProviderConfig {
             name: "anthropic".to_string(),
             default_model: "claude-3-5-sonnet-latest".to_string(),
             base_url: None,
+            model: None,
         },
         ProviderConfig {
             name: "openrouter".to_string(),
             default_model: "deepseek/deepseek-chat-v3-0324:free".to_string(),
             base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            model: None,
         },
         ProviderConfig {
             name: "opencode".to_string(),
             default_model: "minimax-m2.5-free".to_string(),
             base_url: Some("https://opencode.ai/zen/v1".to_string()),
+            model: None,
         },
         ProviderConfig {
             name: "kilocode".to_string(),
             default_model: "minimax/minimax-m2.1:free".to_string(),
             base_url: Some("https://api.kilo.ai/api/gateway".to_string()),
+            model: None,
         },
         ProviderConfig {
             name: "ollama".to_string(),
             default_model: "llama3.2".to_string(),
             base_url: Some("http://localhost:11434/v1".to_string()),
+            model: None,
         },
         ProviderConfig {
             name: "lmstudio".to_string(),
             default_model: "local-model".to_string(),
             base_url: Some("http://localhost:1234/v1".to_string()),
+            model: None,
+        },
+        ProviderConfig {
+            name: "openai-compatible".to_string(),
+            default_model: "gpt-4o".to_string(),
+            base_url: Some("http://localhost:8080/v1".to_string()),
+            model: None,
         },
     ];
 
@@ -286,6 +299,11 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         ),
         ("ollama", "None", "100% local, no key needed"),
         ("lmstudio", "None", "100% local, no key needed"),
+        (
+            "openai-compatible",
+            "Required",
+            "Custom base_url + model name",
+        ),
     ];
     for (i, p) in providers.iter().enumerate() {
         let (_, key_label, note) = badges[i];
@@ -310,7 +328,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     println!();
 
     // ── API Key ──────────────────────────────────────────────────────
-    let api_key = if provider.name == "ollama" || provider.name == "lmstudio" {
+    let mut api_key = if provider.name == "ollama" || provider.name == "lmstudio" {
         println!(
             "  {}  {} runs locally — {}",
             ok(),
@@ -363,19 +381,51 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         } else {
             prompt_secret(&format!("  {} API key", bold("Gemini")))?
         }
+    } else if provider.name == "openai-compatible" {
+        // We'll prompt for custom base URL, model, and API key later together
+        String::new()
     } else {
         println!(
             "  {}  Get your key at {}",
             info(),
-            cyan(&provider_docs_url(&provider.name))
+            cyan(provider_docs_url(&provider.name))
         );
         println!();
         prompt_secret(&format!("  {} API key", bold(&capitalize(&provider.name))))?
     };
     println!();
 
+    // ── Custom Provider Settings ─────────────────────────────────────
+    let mut custom_base_url = provider.base_url.clone();
+    let mut custom_model = provider.model.clone();
+
+    if provider.name == "openai-compatible" {
+        println!(
+            "  {}  Configure your custom OpenAI-compatible provider:",
+            info()
+        );
+        custom_base_url = Some(prompt_with_default(
+            "  Base URL",
+            provider
+                .base_url
+                .as_deref()
+                .unwrap_or("http://localhost:8080/v1"),
+        )?);
+        custom_model = Some(prompt_with_default(
+            "  Model Name",
+            &provider.default_model,
+        )?);
+        println!();
+        api_key = prompt_secret(&format!("  {} API key", bold("Custom Provider")))?;
+        println!();
+    }
+    println!();
+
     // ── Free model discovery ─────────────────────────────────────────
-    let mut selected_default_model = provider.default_model.clone();
+    let mut selected_default_model = custom_model
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| provider.default_model.clone());
     let mut kilocode_fallback_models: Vec<String> = Vec::new();
 
     if provider.name == "opencode" {
@@ -463,7 +513,9 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
                 selected_default_model = models[choice].clone();
             }
             _ => {
-                spin_warn("No local models found — you may need to run `ollama pull llama3.2` first");
+                spin_warn(
+                    "No local models found — you may need to run `ollama pull llama3.2` first",
+                );
             }
         }
     } else if provider.name == "lmstudio" {
@@ -866,6 +918,8 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         &kilocode_fallback_models,
         brave_api_key.as_deref(),
         pushover_config.as_ref(),
+        custom_base_url.as_deref(),
+        custom_model.as_deref(),
     );
     fs::write(dir.join("config.json"), config)?;
     scaffold_workspace(dir, &ProjectContext::default())?;
@@ -951,6 +1005,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
 
 // ── Config generation ─────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn generate_config(
     provider: &ProviderConfig,
     default_model: &str,
@@ -968,6 +1023,8 @@ fn generate_config(
     kilocode_fallback_models: &[String],
     brave_api_key: Option<&str>,
     pushover: Option<&(String, String)>,
+    custom_base_url: Option<&str>,
+    custom_model: Option<&str>,
 ) -> String {
     use serde_json::json;
 
@@ -977,7 +1034,11 @@ fn generate_config(
         }
     });
 
-    if let Some(url) = &provider.base_url {
+    if let Some(m) = custom_model {
+        providers[provider.name.clone()]["model"] = json!(m);
+    }
+
+    if let Some(url) = custom_base_url {
         providers[provider.name.clone()]["base_url"] = json!(url);
     }
 
@@ -985,11 +1046,10 @@ fn generate_config(
         providers[provider.name.clone()]["fallback_models"] = json!(kilocode_fallback_models);
     }
 
-    if let (Some(ep), Some(ek)) = (embed_provider, embed_key) {
-        if ep != provider.name {
+    if let (Some(ep), Some(ek)) = (embed_provider, embed_key)
+        && ep != provider.name {
             providers[ep] = json!({ "api_key": ek });
         }
-    }
 
     let telegram_vec = match telegram {
         Some((token, username)) => json!([{

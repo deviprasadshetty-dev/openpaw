@@ -184,6 +184,7 @@ impl Bus {
 
     // -- Inbound: channels/gateway -> agent --
 
+    #[allow(clippy::result_large_err)]
     pub fn publish_inbound(&self, msg: InboundMessage) -> Result<(), SendError<InboundMessage>> {
         self.inbound_tx.send(msg)
     }
@@ -198,6 +199,7 @@ impl Bus {
 
     // -- Outbound: agent/cron/heartbeat -> channels --
 
+    #[allow(clippy::result_large_err)]
     pub fn publish_outbound(&self, msg: OutboundMessage) -> Result<(), SendError<OutboundMessage>> {
         self.outbound_tx.send(msg)
     }

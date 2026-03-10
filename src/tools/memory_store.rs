@@ -1,58 +1,45 @@
 use super::{Tool, ToolContext, ToolResult};
-use crate::memory::{MemoryCategory, MemoryStore};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
+
 use std::sync::Arc;
 
 pub struct MemoryStoreTool {
-    pub memory: Arc<dyn MemoryStore>,
+    pub memory: Arc<dyn crate::agent::memory_loader::Memory>,
 }
 
+#[async_trait]
 impl Tool for MemoryStoreTool {
     fn name(&self) -> &str {
         "memory_store"
     }
 
     fn description(&self) -> &str {
-        "Store durable user facts, preferences, and decisions in long-term memory. Use category 'core' for stable facts, 'daily' for session notes, 'conversation' for important context only."
+        "Store a key-value pair in long-term memory"
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"key":{"type":"string","description":"Unique key for this memory"},"content":{"type":"string","description":"The information to remember"},"category":{"type":"string","enum":["core","daily","conversation"],"description":"Memory category"}},"required":["key","content"]}"#.to_string()
+        r#"{"type":"object","properties":{"key":{"type":"string","description":"The key to store"},"value":{"type":"string","description":"The value to associate with the key"}},"required":["key","value"]}"#.to_string()
     }
 
-    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
-        let key = match arguments.get("key").and_then(|v| v.as_str()) {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
+        let key = match args.get("key").and_then(|v| v.as_str()) {
             Some(k) => k,
             None => return Ok(ToolResult::fail("Missing 'key' parameter")),
         };
-        if key.is_empty() {
-            return Ok(ToolResult::fail("'key' must not be empty"));
-        }
-
-        let content = match arguments.get("content").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => return Ok(ToolResult::fail("Missing 'content' parameter")),
+        let value = match args.get("value").and_then(|v| v.as_str()) {
+            Some(v) => v,
+            None => return Ok(ToolResult::fail("Missing 'value' parameter")),
         };
-        if content.is_empty() {
-            return Ok(ToolResult::fail("'content' must not be empty"));
+
+        if let Err(e) = self.memory.store(key, value, Some(&context.session_key)) {
+            return Ok(ToolResult::fail(format!("Failed to store memory: {}", e)));
         }
 
-        let category_str = arguments
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("core");
-        let category = MemoryCategory::from_str(category_str);
-
-        match self.memory.store(key, content, category, None, None) {
-            Ok(_) => {
-                let msg = format!("Stored memory: {} ({})", key, category);
-                Ok(ToolResult::ok(msg))
-            }
-            Err(e) => {
-                let msg = format!("Failed to store memory '{}': {}", key, e);
-                Ok(ToolResult::fail(msg))
-            }
-        }
+        Ok(ToolResult::ok(format!(
+            "Successfully stored memory for key: {}",
+            key
+        )))
     }
 }

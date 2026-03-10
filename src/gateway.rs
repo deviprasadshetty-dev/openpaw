@@ -150,6 +150,7 @@ async fn save_config(
                     ProviderConfig {
                         api_key: provider.api_key,
                         base_url: provider.base_url,
+                        model: None,
                     },
                 );
             }
@@ -167,8 +168,8 @@ async fn save_config(
     }
 
     // Update channels
-    if let Some(channels) = req.channels {
-        if let Some(telegram_list) = channels.telegram {
+    if let Some(channels) = req.channels
+        && let Some(telegram_list) = channels.telegram {
             use crate::config_types::TelegramConfig;
             config.channels.telegram = telegram_list
                 .into_iter()
@@ -183,7 +184,6 @@ async fn save_config(
                 })
                 .collect();
         }
-    }
 
     // Update http_request
     if let Some(http_req) = req.http_request {
@@ -199,11 +199,10 @@ async fn save_config(
     }
 
     // Update browser
-    if let Some(browser) = req.browser {
-        if let Some(enabled) = browser.enabled {
+    if let Some(browser) = req.browser
+        && let Some(enabled) = browser.enabled {
             config.browser.enabled = enabled;
         }
-    }
 
     // Update composio
     if let Some(composio) = req.composio {

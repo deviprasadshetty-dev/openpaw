@@ -48,8 +48,8 @@ impl Provider for OllamaProvider {
                 obj.insert("max_tokens".to_string(), json!(mt));
             }
 
-            if let Some(tools) = request.tools {
-                if !tools.is_empty() {
+            if let Some(tools) = request.tools
+                && !tools.is_empty() {
                     let tool_defs: Vec<_> = tools
                         .iter()
                         .map(|t| {
@@ -65,7 +65,6 @@ impl Provider for OllamaProvider {
                         .collect();
                     obj.insert("tools".to_string(), json!(tool_defs));
                 }
-            }
         }
 
         let res = self
@@ -148,11 +147,10 @@ impl Provider for OllamaProvider {
             "stream": true,
         });
 
-        if let Some(obj) = body.as_object_mut() {
-            if let Some(mt) = request.max_tokens {
+        if let Some(obj) = body.as_object_mut()
+            && let Some(mt) = request.max_tokens {
                 obj.insert("max_tokens".to_string(), json!(mt));
             }
-        }
 
         let res = self
             .client
@@ -178,8 +176,8 @@ impl Provider for OllamaProvider {
                 break;
             }
 
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(delta) = parsed["choices"][0]["delta"].as_object() {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data)
+                && let Some(delta) = parsed["choices"][0]["delta"].as_object() {
                     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
                         full_content.push_str(text);
                         callback(StreamChunk::Delta(text.to_string()));
@@ -224,7 +222,6 @@ impl Provider for OllamaProvider {
                         }
                     }
                 }
-            }
         }
 
         for (i, buf) in tc_arg_bufs.into_iter().enumerate() {

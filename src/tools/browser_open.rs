@@ -1,11 +1,13 @@
 use super::{Tool, ToolContext, ToolResult, process_util};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
 pub struct BrowserOpenTool {
     pub allowed_domains: Vec<String>,
 }
 
+#[async_trait]
 impl Tool for BrowserOpenTool {
     fn name(&self) -> &str {
         "browser_open"
@@ -19,7 +21,7 @@ impl Tool for BrowserOpenTool {
         r#"{"type":"object","properties":{"url":{"type":"string","description":"HTTPS URL to open in browser"}},"required":["url"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => return Ok(ToolResult::fail("Missing 'url' parameter")),
@@ -29,7 +31,6 @@ impl Tool for BrowserOpenTool {
             return Ok(ToolResult::fail("Only https:// URLs are allowed"));
         }
 
-        // Basic domain extraction
         let host = url
             .split("://")
             .nth(1)
@@ -45,7 +46,6 @@ impl Tool for BrowserOpenTool {
             return Ok(ToolResult::fail("URL must include a host"));
         }
 
-        // Block local
         if is_local_or_private(host) {
             return Ok(ToolResult::fail("Blocked local/private host"));
         }
@@ -65,13 +65,13 @@ impl Tool for BrowserOpenTool {
         #[cfg(target_os = "linux")]
         let argv = vec!["xdg-open", url];
         #[cfg(windows)]
-        let argv = vec!["cmd.exe", "/c", "start", url]; // Needs sanitization like browser tool
+        let argv = vec!["cmd.exe", "/c", "start", url];
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         return Ok(ToolResult::fail(
             "browser_open not supported on this platform",
         ));
 
-        let result = process_util::run(&argv, process_util::RunOptions::default())?;
+        let result = process_util::run(&argv, process_util::RunOptions::default()).await?;
 
         if result.success {
             Ok(ToolResult::ok(format!("Opened in browser: {}", url)))

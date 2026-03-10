@@ -31,7 +31,8 @@ uuid = { version = "1.21.0", features = ["v4", "serde"] }
 regex = "1.12.3"
 toml = "1.0.3"
 which = "8.0.0"
-browser-use = "0.1"
+browser-use = "0.2"
 headless_chrome = "1.0.18"
 pulldown-cmark = "0.13.1"
+sysinfo = "0.33.1"
 

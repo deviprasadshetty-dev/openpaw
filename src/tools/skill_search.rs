@@ -1,14 +1,11 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
-/// Scout GitHub for openpaw/nullclaw/openclaw/picoclaw skills, evaluate them,
-/// and return a scored list — matching Nullclaw's Scout→Evaluate pipeline.
 pub struct SkillSearchTool {
     pub workspace_dir: String,
 }
-
-// ── Scoring ──────────────────────────────────────────────────────
 
 struct Scores {
     compatibility: f64,
@@ -17,7 +14,6 @@ struct Scores {
 }
 
 impl Scores {
-    /// Weighted total: compatibility 0.30, quality 0.35, security 0.35
     fn total(&self) -> f64 {
         self.compatibility * 0.30 + self.quality * 0.35 + self.security * 0.35
     }
@@ -87,8 +83,7 @@ fn recommendation(total: f64) -> &'static str {
     }
 }
 
-// ── Tool impl ────────────────────────────────────────────────────
-
+#[async_trait]
 impl Tool for SkillSearchTool {
     fn name(&self) -> &str {
         "skill_search"
@@ -102,13 +97,13 @@ impl Tool for SkillSearchTool {
         r#"{"type":"object","properties":{"query":{"type":"string","description":"What kind of skill to search for, e.g. 'git deployment' or 'telegram notifications'"}},"required":["query"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) if !q.trim().is_empty() => q.trim().to_string(),
             _ => return Ok(ToolResult::fail("Missing 'query' parameter")),
         };
 
-        let candidates = match crate::skillforge::SkillForge::scout(&query) {
+        let candidates = match crate::skillforge::SkillForge::scout(&query).await {
             Ok(c) => c,
             Err(e) => return Ok(ToolResult::fail(format!("Search failed: {}", e))),
         };

@@ -41,7 +41,7 @@ fn start_cloudflared(port: u16) -> Result<TunnelHandle> {
     info!("Starting cloudflared tunnel on port {}", port);
 
     let mut child = Command::new("cloudflared")
-        .args(&["tunnel", "--url", &format!("http://localhost:{}", port)])
+        .args(["tunnel", "--url", &format!("http://localhost:{}", port)])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped()) // cloudflared often outputs to stderr
         .spawn()
@@ -58,7 +58,7 @@ fn start_cloudflared(port: u16) -> Result<TunnelHandle> {
     let re = Regex::new(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
         .expect("Invalid regex for cloudflare tunnel");
     thread::spawn(move || {
-        for l in reader.lines().flatten() {
+        for l in reader.lines().map_while(Result::ok) {
             if let Some(mat) = re.find(&l) {
                 let _ = tx.send(mat.as_str().to_string());
                 break;
@@ -91,7 +91,7 @@ fn start_ngrok(port: u16) -> Result<TunnelHandle> {
 
     // ngrok http 8080 --log=stdout --log-format=json
     let mut child = Command::new("ngrok")
-        .args(&[
+        .args([
             "http",
             &port.to_string(),
             "--log=stdout",
@@ -112,13 +112,12 @@ fn start_ngrok(port: u16) -> Result<TunnelHandle> {
 
     thread::spawn(move || {
         // Look for JSON with "url" field
-        for l in reader.lines().flatten() {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l) {
-                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+        for l in reader.lines().map_while(Result::ok) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l)
+                && let Some(url) = json.get("url").and_then(|v| v.as_str()) {
                     let _ = tx.send(url.to_string());
                     break;
                 }
-            }
         }
     });
 

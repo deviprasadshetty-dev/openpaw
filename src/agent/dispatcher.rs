@@ -21,13 +21,11 @@ pub struct ToolExecutionResult {
 }
 
 pub fn parse_tool_calls(response: &str) -> ParseResult {
-    if is_native_json_format(response) {
-        if let Some(result) = parse_native_tool_calls(response) {
-            if !result.calls.is_empty() {
+    if is_native_json_format(response)
+        && let Some(result) = parse_native_tool_calls(response)
+            && !result.calls.is_empty() {
                 return result;
             }
-        }
-    }
 
     parse_xml_tool_calls(response)
 }
@@ -94,9 +92,7 @@ fn parse_native_tool_calls(response: &str) -> Option<ParseResult> {
     Some(ParseResult { text, calls })
 }
 
-fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
-    haystack.to_lowercase().contains(&needle.to_lowercase())
-}
+
 
 use regex::Regex;
 
@@ -123,11 +119,11 @@ fn parse_xml_tool_calls(response: &str) -> ParseResult {
             if let Some(json_start) = inner_str.find('{').or_else(|| inner_str.find('[')) {
                 let json_end = inner_str.rfind('}').or_else(|| inner_str.rfind(']'));
                 
-                if let Some(end) = json_end {
-                    if end >= json_start {
+                if let Some(end) = json_end
+                    && end >= json_start {
                         let json_slice = &inner_str[json_start..=end];
-                        if let Ok(Value::Object(obj)) = serde_json::from_str(json_slice) {
-                             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                        if let Ok(Value::Object(obj)) = serde_json::from_str(json_slice)
+                             && let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                                 let args = obj
                                     .get("arguments")
                                     .map(|v| {
@@ -145,9 +141,7 @@ fn parse_xml_tool_calls(response: &str) -> ParseResult {
                                     tool_call_id: None,
                                 });
                             }
-                        }
                     }
-                }
             }
         }
     }

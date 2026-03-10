@@ -157,33 +157,30 @@ impl GeminiProvider {
         }
 
         // 2. Environment API keys (only if no explicit key and not forced CLI OAuth mode)
-        if auth.is_none() && !force_cli_oauth {
-            if let Ok(value) = std::env::var("GEMINI_API_KEY") {
+        if auth.is_none() && !force_cli_oauth
+            && let Ok(value) = std::env::var("GEMINI_API_KEY") {
                 let trimmed = value.trim();
                 if !trimmed.is_empty() {
                     auth = Some(GeminiAuth::EnvGeminiKey(trimmed.to_string()));
                 }
             }
-        }
 
-        if auth.is_none() && !force_cli_oauth {
-            if let Ok(value) = std::env::var("GOOGLE_API_KEY") {
+        if auth.is_none() && !force_cli_oauth
+            && let Ok(value) = std::env::var("GOOGLE_API_KEY") {
                 let trimmed = value.trim();
                 if !trimmed.is_empty() {
                     auth = Some(GeminiAuth::EnvGoogleKey(trimmed.to_string()));
                 }
             }
-        }
 
         // 2b. GEMINI_OAUTH_TOKEN env var (explicit OAuth token)
-        if auth.is_none() {
-            if let Ok(value) = std::env::var("GEMINI_OAUTH_TOKEN") {
+        if auth.is_none()
+            && let Ok(value) = std::env::var("GEMINI_OAUTH_TOKEN") {
                 let trimmed = value.trim();
                 if !trimmed.is_empty() {
                     auth = Some(GeminiAuth::EnvOAuthToken(trimmed.to_string()));
                 }
             }
-        }
 
         // 3. Gemini CLI OAuth token (~/.gemini/oauth_creds.json) as final fallback
         if auth.is_none() {
@@ -222,8 +219,8 @@ impl GeminiProvider {
         let mut creds: GeminiCliCredentials = serde_json::from_str(json_str).ok()?;
 
         if creds.is_expired() {
-            if let Some(refresh_token) = &creds.refresh_token {
-                if let Some(refreshed) = Self::refresh_oauth_token(refresh_token) {
+            if let Some(refresh_token) = &creds.refresh_token
+                && let Some(refreshed) = Self::refresh_oauth_token(refresh_token) {
                     // Update credentials with new access token and expiry
                     creds.access_token = refreshed.access_token;
                     let now = std::time::SystemTime::now()
@@ -256,7 +253,6 @@ impl GeminiProvider {
 
                     return Some(creds);
                 }
-            }
             // Refresh failed or unavailable
             return None;
         }
@@ -289,8 +285,8 @@ impl GeminiProvider {
             });
         }
 
-        if let Some((client_id, client_secret)) = Self::extract_gemini_cli_credentials() {
-            if !out
+        if let Some((client_id, client_secret)) = Self::extract_gemini_cli_credentials()
+            && !out
                 .iter()
                 .any(|c| c.client_id == client_id && c.client_secret == client_secret)
             {
@@ -299,7 +295,6 @@ impl GeminiProvider {
                     client_secret,
                 });
             }
-        }
 
         out
     }
@@ -360,11 +355,10 @@ impl GeminiProvider {
                     continue;
                 }
                 if file_type.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|v| v.to_str()) {
-                        if name.starts_with('.') {
+                    if let Some(name) = path.file_name().and_then(|v| v.to_str())
+                        && name.starts_with('.') {
                             continue;
                         }
-                    }
                     queue.push_back((path, depth + 1));
                 }
             }
@@ -428,22 +422,18 @@ impl GeminiProvider {
                 if !path.exists() {
                     continue;
                 }
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Some(parsed) = Self::parse_oauth_client_from_js(&content) {
+                if let Ok(content) = std::fs::read_to_string(&path)
+                    && let Some(parsed) = Self::parse_oauth_client_from_js(&content) {
                         return Some(parsed);
                     }
-                }
             }
 
             if let Some(found) =
                 Self::find_file_recursive(&cli_dir, "oauth2.js", GEMINI_CLI_OAUTH_SEARCH_DEPTH)
-            {
-                if let Ok(content) = std::fs::read_to_string(found) {
-                    if let Some(parsed) = Self::parse_oauth_client_from_js(&content) {
+                && let Ok(content) = std::fs::read_to_string(found)
+                    && let Some(parsed) = Self::parse_oauth_client_from_js(&content) {
                         return Some(parsed);
                     }
-                }
-            }
         }
         None
     }
@@ -677,7 +667,7 @@ impl GeminiProvider {
         let model = request
             .model
             .strip_prefix("models/")
-            .unwrap_or(&request.model);
+            .unwrap_or(request.model);
 
         Ok(json!({
             "model": model,
@@ -743,23 +733,54 @@ impl GeminiProvider {
         let mut contents = Vec::new();
         let mut system_prompt: Option<String> = None;
 
+        // Group consecutive messages by role for Gemini's strict alternation
+        let mut grouped_messages: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+
         for msg in request.messages {
             if msg.role == "system" {
                 system_prompt = Some(msg.content.clone());
                 continue;
             }
 
-            // Gemini uses "user" and "model" (not "assistant")
+            // Map roles: Gemini uses "user" and "model"
             let role = match msg.role.as_str() {
                 "user" | "tool" => "user",
                 "assistant" => "model",
-                _ => "user", // Default to user for unknown roles
+                _ => "user",
             };
 
             let mut parts = Vec::new();
 
-            // Handle content_parts for multimodal content
-            if let Some(content_parts) = msg.content_parts.as_ref() {
+            // Handle native tool results (functionResponse)
+            if msg.role == "tool" {
+                if let Some(_tool_call_id) = &msg.tool_call_id {
+                    parts.push(json!({
+                        "functionResponse": {
+                            "name": msg.name.as_deref().unwrap_or("unknown"),
+                            "response": {
+                                "content": msg.content
+                            }
+                        }
+                    }));
+                } else {
+                    // Fallback for non-native tool results
+                    parts.push(json!({"text": format!("[Tool Result]:\n{}", msg.content)}));
+                }
+            } else if let Some(tool_calls) = &msg.tool_calls {
+                // Handle assistant native tool calls (functionCall)
+                if !msg.content.is_empty() {
+                    parts.push(json!({"text": msg.content}));
+                }
+                for tc in tool_calls {
+                    parts.push(json!({
+                        "functionCall": {
+                            "name": tc.function.name,
+                            "args": serde_json::from_str::<serde_json::Value>(&tc.function.arguments).unwrap_or(json!({}))
+                        }
+                    }));
+                }
+            } else if let Some(content_parts) = msg.content_parts.as_ref() {
+                // Multimodal support
                 for part in content_parts {
                     match part {
                         ContentPart::Text(text) => {
@@ -774,7 +795,6 @@ impl GeminiProvider {
                             }));
                         }
                         ContentPart::ImageUrl { url } => {
-                            // Gemini doesn't support direct URLs; include as text reference
                             parts.push(json!({"text": format!("[Image: {}]", url)}));
                         }
                     }
@@ -783,18 +803,51 @@ impl GeminiProvider {
                 parts.push(json!({"text": msg.content}));
             }
 
+            if let Some(last) = grouped_messages.last_mut() {
+                if last.0 == role {
+                    last.1.extend(parts);
+                } else {
+                    grouped_messages.push((role.to_string(), parts));
+                }
+            } else {
+                grouped_messages.push((role.to_string(), parts));
+            }
+        }
+
+        for (role, parts) in grouped_messages {
             contents.push(json!({
                 "role": role,
                 "parts": parts
             }));
         }
 
+        let mut generation_config = json!({
+            "temperature": request.temperature,
+            "maxOutputTokens": request.max_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+        });
+
+        // Handle reasoning/thinking models
+        if let Some(effort) = request.reasoning_effort
+            && effort != "none" {
+                let model_lower = request.model.to_lowercase();
+                if model_lower.contains("gemini-2.0") || model_lower.contains("flash-thinking") {
+                    // Newer Gemini models use thinkingConfig
+                    generation_config["thinkingConfig"] = json!({
+                        "includeThoughts": true,
+                        // Mapping "low/medium/high" to budget tokens
+                        "thinkingBudget": match effort {
+                            "low" => 4096,
+                            "medium" => 12288,
+                            "high" => 32768,
+                            _ => 16384,
+                        }
+                    });
+                }
+            }
+
         let mut body = json!({
             "contents": contents,
-            "generationConfig": {
-                "temperature": request.temperature,
-                "maxOutputTokens": request.max_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
-            }
+            "generationConfig": generation_config
         });
 
         if let Some(sys) = system_prompt {
@@ -803,15 +856,65 @@ impl GeminiProvider {
             });
         }
 
+        // Add native tools if provided
+        if let Some(tools) = request.tools {
+            let gemini_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "function_declarations": [{
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters
+                        }]
+                    })
+                })
+                .collect();
+            body["tools"] = json!(gemini_tools);
+        }
+
         Ok(body.to_string())
     }
 
-    /// Parse text content from a Gemini generateContent response.
-    fn parse_response(&self, body: &str) -> Result<String> {
+    fn normalize_token_usage(usage: &mut TokenUsage) {
+        if usage.total_tokens == 0 && (usage.prompt_tokens > 0 || usage.completion_tokens > 0) {
+            usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+        }
+        if usage.completion_tokens == 0 && usage.total_tokens > usage.prompt_tokens {
+            usage.completion_tokens = usage.total_tokens - usage.prompt_tokens;
+        }
+    }
+
+    fn parse_usage_metadata(v: &serde_json::Value) -> Option<TokenUsage> {
+        let obj = v.as_object()?;
+        let mut usage = TokenUsage::default();
+        let mut found = false;
+
+        if let Some(count) = obj.get("promptTokenCount").and_then(|c| c.as_u64()) {
+            usage.prompt_tokens = count as u32;
+            found = true;
+        }
+        if let Some(count) = obj.get("candidatesTokenCount").and_then(|c| c.as_u64()) {
+            usage.completion_tokens = count as u32;
+            found = true;
+        }
+        if let Some(count) = obj.get("totalTokenCount").and_then(|c| c.as_u64()) {
+            usage.total_tokens = count as u32;
+            found = true;
+        }
+
+        if !found {
+            return None;
+        }
+        Self::normalize_token_usage(&mut usage);
+        Some(usage)
+    }
+
+    /// Parse text content and tool calls from a Gemini generateContent response.
+    fn parse_response(&self, body: &str) -> Result<ChatResponse> {
         let parsed: serde_json::Value =
             serde_json::from_str(body).context("Failed to parse Gemini response")?;
 
-        // Check for error first
         if let Some(error) = parsed.get("error") {
             let msg = error
                 .get("message")
@@ -821,85 +924,94 @@ impl GeminiProvider {
             anyhow::bail!("Gemini API error (code {}): {}", code, msg);
         }
 
-        // Code Assist responses wrap the model payload in `response`.
         let response_root = parsed.get("response").unwrap_or(&parsed);
 
-        // Check for promptFeedback (blocked content)
-        if let Some(feedback) = response_root.get("promptFeedback") {
-            if let Some(block_reason) = feedback.get("blockReason") {
+        if let Some(feedback) = response_root.get("promptFeedback")
+            && let Some(block_reason) = feedback.get("blockReason") {
                 let reason = block_reason.as_str().unwrap_or("unknown");
                 anyhow::bail!("Gemini blocked the prompt: {}", reason);
             }
-        }
 
-        // Extract text from candidates
-        if let Some(candidates) = response_root.get("candidates") {
-            if let Some(candidate) = candidates.get(0) {
-                // Check for finishReason
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+        let mut tool_calls = Vec::new();
+
+        if let Some(candidates) = response_root.get("candidates")
+            && let Some(candidate) = candidates.get(0) {
                 if let Some(finish_reason) = candidate.get("finishReason") {
                     let reason = finish_reason.as_str().unwrap_or("unknown");
-                    // STOP and MAX_TOKENS are normal finish reasons
                     if reason != "STOP" && reason != "MAX_TOKENS" {
                         tracing::warn!("Gemini finish reason: {}", reason);
                     }
                 }
 
-                if let Some(content) = candidate.get("content") {
-                    if let Some(parts) = content.get("parts") {
-                        // Concatenate all text parts
-                        let mut text_parts = Vec::new();
-                        let mut function_calls = Vec::new();
+                if let Some(cand_content) = candidate.get("content")
+                    && let Some(parts) = cand_content.get("parts") {
                         for part in parts.as_array().unwrap_or(&vec![]) {
-                            if let Some(text) = part.get("text") {
-                                if let Some(s) = text.as_str() {
-                                    text_parts.push(s.to_string());
+                            // Support for "thought" (reasoning) parts in newer Gemini models
+                            let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+
+                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                if is_thought {
+                                    reasoning_content.push_str(text);
+                                } else {
+                                    content.push_str(text);
                                 }
                             }
-                            // Handle native function calls (when model outputs them despite not being requested)
-                            if let Some(fc) = part.get("functionCall") {
-                                if let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
+                            if let Some(fc) = part.get("functionCall")
+                                && let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
                                     let args = fc.get("args").cloned().unwrap_or(json!({}));
-                                    let args_str = args.to_string();
-                                    // Convert to XML format that our dispatcher can parse
-                                    function_calls.push(format!(
-                                        "<tool_call>{{\"name\": \"{}\", \"arguments\": {}}}</tool_call>",
-                                        name,
-                                        args_str
-                                    ));
+                                    let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                                    tool_calls.push(crate::providers::ToolCall {
+                                        id: call_id,
+                                        kind: "function".to_string(),
+                                        function: crate::providers::FunctionCall {
+                                            name: name.to_string(),
+                                            arguments: args.to_string(),
+                                        },
+                                    });
                                 }
-                            }
-                        }
-                        // If we have function calls, append them to the text
-                        if !function_calls.is_empty() {
-                            text_parts.extend(function_calls);
-                        }
-                        if !text_parts.is_empty() {
-                            return Ok(text_parts.join(""));
                         }
                     }
-                }
             }
+
+        let mut usage = response_root
+            .get("usageMetadata")
+            .and_then(Self::parse_usage_metadata)
+            .unwrap_or_default();
+
+        if usage.total_tokens == 0 {
+            usage.prompt_tokens = 0; // Estimation fallback
+            usage.completion_tokens = (content.len() as u32).div_ceil(4);
+            usage.total_tokens = usage.completion_tokens;
         }
 
-        // Debug: log the response structure
-        tracing::debug!(
-            "Gemini response structure: {}",
-            serde_json::to_string_pretty(&parsed).unwrap_or_default()
-        );
-        anyhow::bail!("No response content from Gemini")
+        Ok(ChatResponse {
+            content: if content.is_empty() && tool_calls.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
+            tool_calls,
+            usage,
+            model: "gemini".to_string(),
+            reasoning_content: if reasoning_content.is_empty() {
+                None
+            } else {
+                Some(reasoning_content)
+            },
+        })
     }
 }
+
 
 impl Provider for GeminiProvider {
     fn chat(&self, request: &ChatRequest) -> Result<ChatResponse> {
         let mut auth = self.auth.clone().ok_or_else(|| {
-            anyhow::anyhow!("No Gemini credentials configured. Set GEMINI_API_KEY, GOOGLE_API_KEY, GEMINI_OAUTH_TOKEN env var, or configure an API key in settings.")
+            anyhow::anyhow!("No Gemini credentials configured.")
         })?;
 
         let (url, body) = self.build_request_target(request, &auth, false)?;
-
-        tracing::debug!("Gemini request URL: {}", url);
-        tracing::debug!("Gemini request body: {}", body);
 
         let mut req_builder = self
             .client
@@ -907,7 +1019,6 @@ impl Provider for GeminiProvider {
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
 
-        // Add Authorization header for OAuth tokens
         if !auth.is_api_key() {
             req_builder =
                 req_builder.header("Authorization", format!("Bearer {}", auth.credential()));
@@ -915,11 +1026,9 @@ impl Provider for GeminiProvider {
 
         let res = req_builder.body(body).send()?;
 
-        // Handle 401 Unauthorized for OAuth tokens - try one refresh
         if res.status() == reqwest::StatusCode::UNAUTHORIZED
             && matches!(auth, GeminiAuth::OAuthToken(_))
-        {
-            if let Some(creds) = Self::try_load_gemini_cli_token() {
+            && let Some(creds) = Self::try_load_gemini_cli_token() {
                 auth = GeminiAuth::OAuthToken(creds.access_token);
                 let (retry_url, body_retry) = self.build_request_target(request, &auth, false)?;
 
@@ -931,7 +1040,6 @@ impl Provider for GeminiProvider {
                     .header("Authorization", format!("Bearer {}", auth.credential()));
 
                 let res_retry = retry_builder.body(body_retry).send()?;
-
                 if !res_retry.status().is_success() {
                     let status = res_retry.status();
                     let text = res_retry.text().unwrap_or_default();
@@ -939,28 +1047,8 @@ impl Provider for GeminiProvider {
                 }
 
                 let resp_text = res_retry.text()?;
-                let content = self.parse_response(&resp_text)?;
-
-                let prompt_tokens: u32 = request
-                    .messages
-                    .iter()
-                    .map(|m| m.content.len() as u32 / 4)
-                    .sum();
-                let completion_tokens = (content.len() as u32).div_ceil(4);
-
-                return Ok(ChatResponse {
-                    content: Some(content),
-                    tool_calls: Vec::new(),
-                    usage: TokenUsage {
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens: prompt_tokens + completion_tokens,
-                    },
-                    model: request.model.to_string(),
-                    reasoning_content: None,
-                });
+                return self.parse_response(&resp_text);
             }
-        }
 
         if !res.status().is_success() {
             let status = res.status();
@@ -969,33 +1057,13 @@ impl Provider for GeminiProvider {
         }
 
         let resp_text = res.text()?;
-        tracing::debug!("Gemini response: {}", resp_text);
-        let content = self.parse_response(&resp_text)?;
-
-        // Estimate token usage (Gemini doesn't always return usage)
-        let prompt_tokens: u32 = request
-            .messages
-            .iter()
-            .map(|m| m.content.len() as u32 / 4)
-            .sum();
-        let completion_tokens = (content.len() as u32).div_ceil(4);
-
-        Ok(ChatResponse {
-            content: Some(content),
-            tool_calls: Vec::new(),
-            usage: TokenUsage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
-            },
-            model: request.model.to_string(),
-            reasoning_content: None,
-        })
+        let mut response = self.parse_response(&resp_text)?;
+        response.model = request.model.to_string();
+        Ok(response)
     }
 
     fn supports_native_tools(&self) -> bool {
-        // Gemini supports tools but we'll implement basic support first
-        false
+        true
     }
 
     fn get_name(&self) -> &str {
@@ -1035,83 +1103,68 @@ impl Provider for GeminiProvider {
             anyhow::bail!("Gemini streaming API error {}: {}", status, text);
         }
 
-        // Parse SSE stream
         let mut sse_reader = SseReader::new(res);
-        let mut full_text = String::new();
-        let mut function_calls: Vec<String> = Vec::new();
+        let mut full_content = String::new();
+        let mut tool_calls = Vec::new();
 
         while let Some(data) = sse_reader.next_data() {
             if data == "[DONE]" {
                 break;
             }
 
-            // Each SSE data line is a JSON object with candidates
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
                 let response_root = parsed.get("response").unwrap_or(&parsed);
-                if let Some(candidates) = response_root.get("candidates") {
-                    if let Some(candidate) = candidates.get(0) {
-                        if let Some(content) = candidate.get("content") {
-                            if let Some(parts) = content.get("parts") {
+                if let Some(candidates) = response_root.get("candidates")
+                    && let Some(candidate) = candidates.get(0)
+                        && let Some(cand_content) = candidate.get("content")
+                            && let Some(parts) = cand_content.get("parts") {
                                 for part in parts.as_array().unwrap_or(&vec![]) {
                                     if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                        full_text.push_str(text);
+                                        full_content.push_str(text);
                                         callback(StreamChunk::Delta(text.to_string()));
                                     }
-                                    if let Some(fc) = part.get("functionCall") {
-                                        if let Some(name) = fc.get("name").and_then(|n| n.as_str())
-                                        {
-                                            let args = fc
-                                                .get("args")
-                                                .cloned()
-                                                .unwrap_or(serde_json::json!({}));
-                                            let fc_str = format!(
-                                                "<tool_call>{{\"name\": \"{}\", \"arguments\": {}}}</tool_call>",
-                                                name, args
-                                            );
-                                            function_calls.push(fc_str.clone());
-                                            callback(StreamChunk::Delta(fc_str));
+                                    if let Some(fc) = part.get("functionCall")
+                                        && let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
+                                            let args = fc.get("args").cloned().unwrap_or(json!({}));
+                                            let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                                            let tc = crate::providers::ToolCall {
+                                                id: call_id,
+                                                kind: "function".to_string(),
+                                                function: crate::providers::FunctionCall {
+                                                    name: name.to_string(),
+                                                    arguments: args.to_string(),
+                                                },
+                                            };
+                                            tool_calls.push(tc);
+                                            // For streaming, we don't delta tool calls in the same way, but we could
                                         }
-                                    }
                                 }
                             }
-                        }
-                    }
-                }
             }
         }
 
-        // Combine text and function calls
-        if !function_calls.is_empty() {
-            full_text.push_str(&function_calls.join(""));
-        }
-
-        let prompt_tokens: u32 = request
-            .messages
-            .iter()
-            .map(|m| m.content.len() as u32 / 4)
-            .sum();
-        let completion_tokens = (full_text.len() as u32).div_ceil(4);
         let usage = TokenUsage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
+            prompt_tokens: 0,
+            completion_tokens: (full_content.len() as u32).div_ceil(4),
+            total_tokens: (full_content.len() as u32).div_ceil(4),
         };
 
         callback(StreamChunk::Done(usage.clone()));
 
         Ok(ChatResponse {
-            content: if full_text.is_empty() {
+            content: if full_content.is_empty() && tool_calls.is_empty() {
                 None
             } else {
-                Some(full_text)
+                Some(full_content)
             },
-            tool_calls: Vec::new(),
+            tool_calls,
             usage,
             model: request.model.to_string(),
             reasoning_content: None,
         })
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1213,6 +1266,6 @@ mod tests {
         }"#;
 
         let parsed = provider.parse_response(body).unwrap();
-        assert_eq!(parsed, "hello");
+        assert_eq!(parsed.content, Some("hello".to_string()));
     }
 }

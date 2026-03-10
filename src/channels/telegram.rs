@@ -36,6 +36,93 @@ struct OutboundAttachment {
     path: PathBuf,
 }
 
+// ── Streaming / Draft Types ────────────────────────────────────────────────
+
+pub const DRAFT_FLUSH_MIN_DELTA_BYTES: usize = 32;
+pub const DRAFT_FLUSH_MIN_INTERVAL_MS: u64 = 500;
+
+#[derive(Debug)]
+struct DraftState {
+    buffer: String,
+    last_flush_len: usize,
+    last_flush_time: std::time::Instant,
+}
+
+impl DraftState {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            last_flush_len: 0,
+            last_flush_time: std::time::Instant::now(),
+        }
+    }
+
+    fn should_flush(&self) -> bool {
+        let delta = self.buffer.len().saturating_sub(self.last_flush_len);
+        let elapsed = self.last_flush_time.elapsed().as_millis() as u64;
+        delta >= DRAFT_FLUSH_MIN_DELTA_BYTES || elapsed >= DRAFT_FLUSH_MIN_INTERVAL_MS
+    }
+}
+
+/// TagFilter - strips tool-control blocks from a stream of chunks.
+struct TagFilter {
+    buffer: String,
+    inside_tag: bool,
+}
+
+impl TagFilter {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            inside_tag: false,
+        }
+    }
+
+    fn process(&mut self, chunk: &str) -> String {
+        let mut out = String::new();
+        self.buffer.push_str(chunk);
+
+        while !self.buffer.is_empty() {
+            if self.inside_tag {
+                if let Some(pos) = self.buffer.find('>') {
+                    self.buffer.drain(..pos + 1);
+                    self.inside_tag = false;
+                } else {
+                    self.buffer.clear(); // Wait for more
+                }
+            } else if let Some(pos) = self.buffer.find('<') {
+                out.push_str(&self.buffer[..pos]);
+                let rest = &self.buffer[pos..];
+                if rest.starts_with("<tool_call") || rest.starts_with("<tool_result") || rest.starts_with("<|") {
+                    self.inside_tag = true;
+                    if let Some(end_pos) = rest.find('>') {
+                        self.buffer.drain(..pos + end_pos + 1);
+                        self.inside_tag = false;
+                    } else {
+                        self.buffer.drain(..pos);
+                        break; // Wait for '>'
+                    }
+                } else {
+                    out.push('<');
+                    self.buffer.drain(..pos + 1);
+                }
+            } else {
+                out.push_str(&self.buffer);
+                self.buffer.clear();
+            }
+        }
+        out
+    }
+}
+
+// ── Inbound Debounce Types ──────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct PendingInbound {
+    message: ParsedMessage,
+    received_at: std::time::Instant,
+}
+
 // ── TelegramChannel ─────────────────────────────────────────────────────────
 
 pub struct TelegramChannel {
@@ -46,8 +133,16 @@ pub struct TelegramChannel {
     last_update_id: AtomicI64,
     /// Maps chat_id -> message_id of the in-progress streaming message.
     active_streams: Mutex<HashMap<String, i64>>,
+    /// Maps chat_id -> draft state for streaming.
+    draft_buffers: Mutex<HashMap<String, DraftState>>,
+    /// Maps chat_id -> tag filter for streaming.
+    tag_filters: Mutex<HashMap<String, TagFilter>>,
     /// Maps chat_id -> stop flag for the typing heartbeat thread.
     typing_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Pending media group messages (media_group_id -> messages)
+    pending_media: Mutex<HashMap<String, Vec<PendingInbound>>>,
+    /// Pending text chunks for debouncing (chat_id -> chunks)
+    pending_text: Mutex<HashMap<String, Vec<PendingInbound>>>,
 }
 
 impl TelegramChannel {
@@ -57,7 +152,11 @@ impl TelegramChannel {
             config,
             last_update_id: AtomicI64::new(0),
             active_streams: Mutex::new(HashMap::new()),
+            draft_buffers: Mutex::new(HashMap::new()),
+            tag_filters: Mutex::new(HashMap::new()),
             typing_stops: Mutex::new(HashMap::new()),
+            pending_media: Mutex::new(HashMap::new()),
+            pending_text: Mutex::new(HashMap::new()),
         }
     }
 
@@ -91,10 +190,10 @@ impl TelegramChannel {
             if allowed == "*" {
                 return true;
             }
-            let check = if allowed.starts_with('@') {
-                &allowed[1..]
+            let check = if let Some(stripped) = allowed.strip_prefix('@') {
+                stripped
             } else {
-                allowed.as_str()
+                allowed
             };
             if check.eq_ignore_ascii_case(username) || check == user_id {
                 return true;
@@ -121,10 +220,10 @@ impl TelegramChannel {
             if allowed == "*" {
                 return true;
             }
-            let check = if allowed.starts_with('@') {
-                &allowed[1..]
+            let check = if let Some(stripped) = allowed.strip_prefix('@') {
+                stripped
             } else {
-                allowed.as_str()
+                allowed
             };
             if check.eq_ignore_ascii_case(username) || check == user_id {
                 return true;
@@ -181,11 +280,10 @@ impl TelegramChannel {
 
     /// Stop the typing heartbeat for a chat (if one is running).
     fn stop_typing_heartbeat(&self, chat_id: &str) {
-        if let Ok(mut map) = self.typing_stops.lock() {
-            if let Some(flag) = map.remove(chat_id) {
+        if let Ok(mut map) = self.typing_stops.lock()
+            && let Some(flag) = map.remove(chat_id) {
                 flag.store(true, Ordering::Relaxed);
             }
-        }
     }
 
     // ── inbound file download ───────────────────────────────────────────────
@@ -245,8 +343,8 @@ impl TelegramChannel {
             .to_string();
 
         // Photo — pick highest-res photo (last in array)
-        if let Some(photos) = message.get("photo").and_then(|v| v.as_array()) {
-            if let Some(last_photo) = photos.last() {
+        if let Some(photos) = message.get("photo").and_then(|v| v.as_array())
+            && let Some(last_photo) = photos.last() {
                 let file_id = last_photo
                     .get("file_id")
                     .and_then(|v| v.as_str())
@@ -269,7 +367,6 @@ impl TelegramChannel {
                     }
                 );
             }
-        }
 
         // Document
         if let Some(doc) = message.get("document") {
@@ -408,6 +505,7 @@ impl TelegramChannel {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let message_id = message.get("message_id").and_then(|v| v.as_i64());
+        let media_group_id = message.get("media_group_id").and_then(|v| v.as_str());
         let content = self.extract_message_content(message);
 
         if content.is_empty() {
@@ -420,9 +518,9 @@ impl TelegramChannel {
             user_id.clone()
         };
 
-        messages.push(ParsedMessage {
+        let parsed = ParsedMessage {
             sender_id: sender_identity,
-            chat_id: format!("telegram:{}", chat_id),
+            chat_id: chat_id.clone(),
             content,
             session_key: format!("telegram:{}", chat_id),
             is_group,
@@ -434,12 +532,76 @@ impl TelegramChannel {
                 None
             },
             first_name,
-        });
+        };
 
-        // ── Note: chat_id in ParsedMessage.chat_id is "telegram:<id>" ──
-        // For the raw numeric chat_id we re-derive it from session_key downstream.
-        // Actually we must store the raw numeric chat_id in ParsedMessage.chat_id
-        // for send_message to work — restore that below:
+        // ── Inbound Buffering / Debouncing ──
+        if let Some(mgid) = media_group_id {
+            let mut map = self.pending_media.lock().unwrap();
+            map.entry(mgid.to_string())
+                .or_default()
+                .push(PendingInbound {
+                    message: parsed,
+                    received_at: std::time::Instant::now(),
+                });
+        } else if parsed.content.len() > 500 {
+            // Likely a split text chunk
+            let mut map = self.pending_text.lock().unwrap();
+            map.entry(chat_id).or_default().push(PendingInbound {
+                message: parsed,
+                received_at: std::time::Instant::now(),
+            });
+        } else {
+            messages.push(parsed);
+        }
+    }
+
+    /// Flushes matured pending inbound messages.
+    fn flush_pending_inbound(&self, messages: &mut Vec<ParsedMessage>) {
+        // Media Groups: flush after 3 seconds of inactivity
+        {
+            let mut map = self.pending_media.lock().unwrap();
+            let mut to_remove = Vec::new();
+            for (mgid, pending) in map.iter() {
+                if let Some(last) = pending.last()
+                    && last.received_at.elapsed().as_secs() >= 3 {
+                        to_remove.push(mgid.clone());
+                    }
+            }
+            for mgid in to_remove {
+                if let Some(mut pending) = map.remove(&mgid)
+                    && !pending.is_empty() {
+                        let mut first = pending.remove(0).message;
+                        for extra in pending {
+                            first.content.push('\n');
+                            first.content.push_str(&extra.message.content);
+                        }
+                        messages.push(first);
+                    }
+            }
+        }
+
+        // Text chunks: flush after 2 seconds of inactivity
+        {
+            let mut map = self.pending_text.lock().unwrap();
+            let mut to_remove = Vec::new();
+            for (chat_id, pending) in map.iter() {
+                if let Some(last) = pending.last()
+                    && last.received_at.elapsed().as_secs() >= 2 {
+                        to_remove.push(chat_id.clone());
+                    }
+            }
+            for chat_id in to_remove {
+                if let Some(mut pending) = map.remove(&chat_id)
+                    && !pending.is_empty() {
+                        let mut first = pending.remove(0).message;
+                        for extra in pending {
+                            first.content.push('\n');
+                            first.content.push_str(&extra.message.content);
+                        }
+                        messages.push(first);
+                    }
+            }
+        }
     }
 
     fn process_callback_query(
@@ -703,14 +865,13 @@ impl TelegramChannel {
         if line.starts_with("data:image/") {
             return Some(line);
         }
-        if line.starts_with("![") && line.ends_with(')') {
-            if let Some(paren_idx) = line.rfind('(') {
+        if line.starts_with("![") && line.ends_with(')')
+            && let Some(paren_idx) = line.rfind('(') {
                 let uri = &line[paren_idx + 1..line.len().saturating_sub(1)];
                 if uri.starts_with("data:image/") {
                     return Some(uri);
                 }
             }
-        }
         None
     }
 
@@ -995,55 +1156,33 @@ impl Channel for TelegramChannel {
 
     fn send_message(&self, chat_id: &str, text: &str) -> Result<()> {
         // chat_id arriving from the bus may have a "telegram:" routing prefix
-        // (stored as "telegram:<numeric_id>" in ParsedMessage). Strip it so the
-        // Telegram API receives only the raw numeric chat id.
         let chat_id = chat_id.strip_prefix("telegram:").unwrap_or(chat_id);
 
-        // Stop the typing heartbeat for this chat before sending the answer
+        // Stop typing heartbeat
         self.stop_typing_heartbeat(chat_id);
 
-        let edit_id = {
+        // Clean up streaming state
+        {
             let mut streams = self.active_streams.lock().unwrap();
-            streams.remove(chat_id)
-        };
+            streams.remove(chat_id);
+            let mut drafts = self.draft_buffers.lock().unwrap();
+            drafts.remove(chat_id);
+            let mut filters = self.tag_filters.lock().unwrap();
+            filters.remove(chat_id);
+        }
 
         let (cleaned_text, attachments) = self.parse_outbound_attachments(text);
         let text_to_send = cleaned_text.trim();
-        let mut delivered_via_edit = false;
 
-        if let Some(msg_id) = edit_id {
-            if !text_to_send.is_empty() && text_to_send.len() <= MAX_MESSAGE_LEN {
-                match self.send_single_message_internal(chat_id, text_to_send, None, Some(msg_id)) {
-                    Ok(_) => delivered_via_edit = true,
-                    Err(e) => warn!(
-                        "Failed to finalize streamed Telegram message via edit: {}",
-                        e
-                    ),
-                }
-            } else if text_to_send.is_empty() && !attachments.is_empty() {
-                match self.send_single_message_internal(
-                    chat_id,
-                    "Sent attachment.",
-                    None,
-                    Some(msg_id),
-                ) {
-                    Ok(_) => delivered_via_edit = true,
-                    Err(e) => warn!(
-                        "Failed to finalize attachment stream marker via edit: {}",
-                        e
-                    ),
-                }
-            }
-        }
-
-        if !delivered_via_edit && !text_to_send.is_empty() {
+        if !text_to_send.is_empty() {
             self.send_message_with_splitting(chat_id, text_to_send, None)?;
-        } else if !delivered_via_edit && attachments.is_empty() {
-            self.send_message_with_splitting(chat_id, "...", None)?;
+        } else if attachments.is_empty() {
+            // Fallback for empty messages
+            self.send_message_with_splitting(chat_id, "✅ Done.", None)?;
         }
 
         for attachment in &attachments {
-            self.send_attachment(chat_id, attachment)?;
+            let _ = self.send_attachment(chat_id, attachment);
         }
 
         Ok(())
@@ -1051,33 +1190,55 @@ impl Channel for TelegramChannel {
 
     fn send_stream_chunk(&self, chat_id: &str, text: &str) -> Result<()> {
         let chat_id = chat_id.strip_prefix("telegram:").unwrap_or(chat_id);
-        let text_to_send = if text.is_empty() { "..." } else { text };
-
-        let safe_text = if text_to_send.len() > MAX_MESSAGE_LEN {
-            let mut boundary = MAX_MESSAGE_LEN - 3;
-            while !text_to_send.is_char_boundary(boundary) && boundary > 0 {
-                boundary -= 1;
-            }
-            format!("{}...", &text_to_send[..boundary])
-        } else {
-            text_to_send.to_string()
-        };
-
-        let msg_id_opt = {
-            let streams = self.active_streams.lock().unwrap();
-            streams.get(chat_id).copied()
-        };
-
-        if let Some(msg_id) = msg_id_opt {
-            let _ = self.send_single_message_internal(chat_id, &safe_text, None, Some(msg_id));
-        } else {
-            if let Ok(new_id) = self.send_single_message_internal(chat_id, &safe_text, None, None) {
-                if new_id != 0 {
-                    let mut streams = self.active_streams.lock().unwrap();
-                    streams.insert(chat_id.to_string(), new_id);
-                }
-            }
+        if text.is_empty() {
+            return Ok(());
         }
+
+        // 1. Filter tool markup
+        let filtered_chunk = {
+            let mut filters = self.tag_filters.lock().unwrap();
+            let filter = filters.entry(chat_id.to_string()).or_insert_with(TagFilter::new);
+            filter.process(text)
+        };
+
+        if filtered_chunk.is_empty() {
+            return Ok(());
+        }
+
+        // 2. Accumulate in draft
+        let mut drafts = self.draft_buffers.lock().unwrap();
+        let draft = drafts.entry(chat_id.to_string()).or_insert_with(DraftState::new);
+        draft.buffer.push_str(&filtered_chunk);
+
+        // 3. Flush if needed
+        if draft.should_flush() {
+            let text_to_send = &draft.buffer;
+            let safe_text = if text_to_send.len() > MAX_MESSAGE_LEN {
+                let mut boundary = MAX_MESSAGE_LEN - 3;
+                while !text_to_send.is_char_boundary(boundary) && boundary > 0 {
+                    boundary -= 1;
+                }
+                format!("{}...", &text_to_send[..boundary])
+            } else {
+                text_to_send.clone()
+            };
+
+            let msg_id_opt = {
+                let streams = self.active_streams.lock().unwrap();
+                streams.get(chat_id).copied()
+            };
+
+            if let Some(msg_id) = msg_id_opt {
+                let _ = self.send_single_message_internal(chat_id, &safe_text, None, Some(msg_id));
+            } else if let Ok(new_id) = self.send_single_message_internal(chat_id, &safe_text, None, None)
+            && new_id != 0 {
+                let mut streams = self.active_streams.lock().unwrap();
+                streams.insert(chat_id.to_string(), new_id);
+            }
+            draft.last_flush_len = draft.buffer.len();
+            draft.last_flush_time = std::time::Instant::now();
+        }
+
         Ok(())
     }
 
@@ -1098,9 +1259,6 @@ impl Channel for TelegramChannel {
         }
     }
 
-    /// Poll for updates using teloxide's Bot::get_updates via a block_on call.
-    /// The Channel trait requires a sync return so we run the async call
-    /// synchronously using the current tokio runtime handle.
     fn poll_updates(&self) -> Result<Vec<ParsedMessage>> {
         let offset = self.last_update_id.load(Ordering::Relaxed);
 
@@ -1137,6 +1295,8 @@ impl Channel for TelegramChannel {
             self.process_update(update, &mut messages);
         }
 
+        self.flush_pending_inbound(&mut messages);
+
         Ok(messages)
     }
 
@@ -1169,15 +1329,25 @@ mod tests {
     use super::*;
 
     fn make_channel() -> TelegramChannel {
-        TelegramChannel::new(TelegramConfig {
-            account_id: "test".to_string(),
-            bot_token: "test_token".to_string(),
-            allow_from: vec!["*".to_string()],
-            group_allow_from: vec![],
-            group_policy: "allowlist".to_string(),
-            reply_in_private: true,
-            proxy: None,
-        })
+        TelegramChannel {
+            config: TelegramConfig {
+                account_id: "test".to_string(),
+                bot_token: "test_token".to_string(),
+                allow_from: vec!["*".to_string()],
+                group_allow_from: vec![],
+                group_policy: "allowlist".to_string(),
+                reply_in_private: true,
+                proxy: None,
+            },
+            client: Client::new(),
+            last_update_id: AtomicI64::new(0),
+            active_streams: Mutex::new(HashMap::new()),
+            draft_buffers: Mutex::new(HashMap::new()),
+            tag_filters: Mutex::new(HashMap::new()),
+            typing_stops: Mutex::new(HashMap::new()),
+            pending_media: Mutex::new(HashMap::new()),
+            pending_text: Mutex::new(HashMap::new()),
+        }
     }
 
     #[test]

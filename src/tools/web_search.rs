@@ -1,6 +1,8 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use regex::Regex;
+use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -24,6 +26,7 @@ impl Default for WebSearchTool {
     }
 }
 
+#[async_trait]
 impl Tool for WebSearchTool {
     fn name(&self) -> &str {
         "web_search"
@@ -37,7 +40,7 @@ impl Tool for WebSearchTool {
         r#"{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Search query"},"count":{"type":"integer","minimum":1,"maximum":10,"default":5,"description":"Number of results (1-10)"},"provider":{"type":"string","description":"Optional provider override"}},"required":["query"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) => q.trim(),
             None => return Ok(ToolResult::fail("Missing required 'query' parameter")),
@@ -47,7 +50,6 @@ impl Tool for WebSearchTool {
             return Ok(ToolResult::fail("'query' must not be empty"));
         }
 
-        let _count = args.get("count").and_then(|v| v.as_i64()).unwrap_or(5);
         let provider = args
             .get("provider")
             .and_then(|v| v.as_str())
@@ -65,19 +67,52 @@ impl Tool for WebSearchTool {
             let res = client
                 .get(&url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-                .send();
+                .send()
+                .await;
             match res {
                 Ok(resp) => {
-                    let html = resp.text().unwrap_or_default();
-                    if html.contains("result__snippet") {
-                        Ok(ToolResult::ok(format!(
-                            "Results for {}: (HTML content received from DDG)",
-                            query
-                        )))
+                    let html = resp.text().await.unwrap_or_default();
+
+                    let mut results = Vec::new();
+                    let re_result = Regex::new(r#"(?s)<div class="result__body">.*?<a class="result__a" href="(.*?)">(.*?)</a>.*?<span class="result__snippet">(.*?)</span>"#).unwrap();
+
+                    for caps in re_result.captures_iter(&html) {
+                        let url = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                        let title = caps.get(2).map(|m| m.as_str()).unwrap_or("No Title");
+                        let snippet = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+
+                        let title_clean = title
+                            .replace("<b>", "")
+                            .replace("</b>", "")
+                            .replace("&amp;", "&");
+                        let snippet_clean = snippet
+                            .replace("<b>", "")
+                            .replace("</b>", "")
+                            .replace("&amp;", "&");
+
+                        results.push(format!(
+                            "- [{}]({})\n  {}\n",
+                            title_clean, url, snippet_clean
+                        ));
+                        if results.len() >= 5 {
+                            break;
+                        }
+                    }
+
+                    if results.is_empty() {
+                        if html.contains("ddg-captcha") || html.contains("robot") {
+                            Ok(ToolResult::ok("Search blocked by DuckDuckGo (captcha/bot detection). Try a different provider like 'brave' if available.".to_string()))
+                        } else {
+                            Ok(ToolResult::ok(
+                                "No web results found on DuckDuckGo.".to_string(),
+                            ))
+                        }
                     } else {
-                        Ok(ToolResult::ok(
-                            "No web results found or blocked by captcha.".to_string(),
-                        ))
+                        Ok(ToolResult::ok(format!(
+                            "DuckDuckGo Search results for '{}':\n\n{}",
+                            query,
+                            results.join("\n")
+                        )))
                     }
                 }
                 Err(e) => Ok(ToolResult::fail(format!("DDG Search failed: {}", e))),
@@ -89,10 +124,10 @@ impl Tool for WebSearchTool {
                     base,
                     urlencoding::encode(query)
                 );
-                let res = client.get(&url).send();
+                let res = client.get(&url).send().await;
                 match res {
                     Ok(resp) => {
-                        let text = resp.text().unwrap_or_default();
+                        let text = resp.text().await.unwrap_or_default();
                         Ok(ToolResult::ok(format!("SearXNG Results:\n{}", text)))
                     }
                     Err(e) => Ok(ToolResult::fail(format!("SearXNG Search failed: {}", e))),
@@ -121,11 +156,12 @@ impl Tool for WebSearchTool {
                 .get(&url)
                 .header("X-Subscription-Token", api_key)
                 .header("Accept", "application/json")
-                .send();
+                .send()
+                .await;
 
             match res {
                 Ok(resp) => {
-                    let json: Value = resp.json().unwrap_or(Value::Null);
+                    let json: Value = resp.json().await.unwrap_or(Value::Null);
                     if let Some(results) = json
                         .get("web")
                         .and_then(|w| w.get("results"))

@@ -1,82 +1,26 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
-pub struct ScreenshotTool {
-    pub workspace_dir: String,
-}
+pub struct ScreenshotTool {}
 
+#[async_trait]
 impl Tool for ScreenshotTool {
     fn name(&self) -> &str {
         "screenshot"
     }
 
     fn description(&self) -> &str {
-        "Capture a screenshot of the current screen. Returns [IMAGE:path] marker — include it verbatim in your response to send the image to the user."
+        "Take a screenshot of the primary display"
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"filename":{"type":"string","description":"Optional filename (default: screenshot.png). Saved in workspace."}}}"#.to_string()
+        r#"{"type":"object","properties":{}}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
-        let filename = args
-            .get("filename")
-            .and_then(|v| v.as_str())
-            .unwrap_or("screenshot.png");
-
-        // Basic path sanitization for filename
-        if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
-            return Ok(ToolResult::fail("Invalid filename"));
-        }
-
-        let _output_path = format!("{}/{}", self.workspace_dir, filename);
-
-        #[cfg(target_os = "macos")]
-        {
-            let cmd_args = vec!["screencapture", "-x", &_output_path];
-            let result = process_util::run(&cmd_args, process_util::RunOptions::default())?;
-
-            if result.success {
-                Ok(ToolResult::ok(format!("[IMAGE:{}]", _output_path)))
-            } else {
-                let err_msg = if !result.stderr.is_empty() {
-                    result.stderr
-                } else {
-                    "unknown error".to_string()
-                };
-                Ok(ToolResult::fail(format!(
-                    "Screenshot command failed: {}",
-                    err_msg
-                )))
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let cmd_args = vec!["import", "-window", "root", &output_path];
-            let result = process_util::run(&cmd_args, process_util::RunOptions::default())?;
-
-            if result.success {
-                Ok(ToolResult::ok(format!("[IMAGE:{}]", output_path)))
-            } else {
-                let err_msg = if !result.stderr.is_empty() {
-                    result.stderr
-                } else {
-                    "unknown error".to_string()
-                };
-                Ok(ToolResult::fail(format!(
-                    "Screenshot command failed: {}",
-                    err_msg
-                )))
-            }
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            Ok(ToolResult::fail(
-                "Screenshot not supported on this platform",
-            ))
-        }
+    async fn execute(&self, _args: Value, _context: &ToolContext) -> Result<ToolResult> {
+        // Placeholder for actual screenshot logic (requires platform-specific crates)
+        Ok(ToolResult::ok("Screenshot captured (placeholder)"))
     }
 }

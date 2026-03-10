@@ -51,16 +51,7 @@ pub enum OptionalToolMode {
     Disabled,
 }
 
-fn runtime_has_tool(runtime_tools: Option<&[Box<dyn Tool>]>, name: &str) -> bool {
-    if let Some(tools) = runtime_tools {
-        for t in tools {
-            if t.name() == name {
-                return true;
-            }
-        }
-    }
-    false
-}
+
 
 fn optional_tool_enabled_by_config(cfg: &Config, name: &str) -> bool {
     match name {

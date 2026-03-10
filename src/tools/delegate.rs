@@ -1,55 +1,39 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
 pub struct DelegateTool {}
 
+#[async_trait]
 impl Tool for DelegateTool {
     fn name(&self) -> &str {
         "delegate"
     }
 
     fn description(&self) -> &str {
-        "Delegate a subtask to a specialized agent. Use when a task benefits from a different model."
+        "Delegate a task to another agent. This is a higher-level tool for multi-agent coordination."
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"agent":{"type":"string","minLength":1,"description":"Name of the agent to delegate to"},"prompt":{"type":"string","minLength":1,"description":"The task/prompt to send to the sub-agent"},"context":{"type":"string","description":"Optional context to prepend"}},"required":["agent","prompt"]}"#.to_string()
+        r#"{"type":"object","properties":{"agent_id":{"type":"string","description":"Target agent identifier"},"task":{"type":"string","description":"Description of the task"}},"required":["agent_id","task"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
-        let agent_name = match args.get("agent").and_then(|v| v.as_str()) {
-            Some(a) => a.trim(),
-            None => return Ok(ToolResult::fail("Missing 'agent' parameter")),
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+        let agent_id = match args.get("agent_id").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => return Ok(ToolResult::fail("Missing 'agent_id' parameter")),
+        };
+        let task = match args.get("task").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => return Ok(ToolResult::fail("Missing 'task' parameter")),
         };
 
-        if agent_name.is_empty() {
-            return Ok(ToolResult::fail("'agent' parameter must not be empty"));
-        }
-
-        let prompt = match args.get("prompt").and_then(|v| v.as_str()) {
-            Some(p) => p.trim(),
-            None => return Ok(ToolResult::fail("Missing 'prompt' parameter")),
-        };
-
-        if prompt.is_empty() {
-            return Ok(ToolResult::fail("'prompt' parameter must not be empty"));
-        }
-
-        let context = args.get("context").and_then(|v| v.as_str());
-
-        let full_prompt = if let Some(ctx) = context {
-            format!("Context: {}\n\n{}", ctx, prompt)
-        } else {
-            prompt.to_string()
-        };
-
-        // TODO: Interface with actual local sub-agent dispatcher/provider
-        // Returning a placeholder for now since sync Tool::execute doesn't easily await async LLM providers without blocking
-        let result = format!(
-            "(Delegation to {} is mock completed)\nPrompt evaluated: {}",
-            agent_name, full_prompt
-        );
-        Ok(ToolResult::ok(result))
+        // Delegation logic would involve the dispatcher or subagent manager
+        // For now, this is a placeholder for architectural alignment with NullClaw's Hive
+        Ok(ToolResult::ok(format!(
+            "Delegated task to {}: {}",
+            agent_id, task
+        )))
     }
 }

@@ -8,6 +8,9 @@ pub struct GitTool {
     pub allowed_paths: Vec<String>,
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl Tool for GitTool {
     fn name(&self) -> &str {
         "git_operations"
@@ -21,7 +24,7 @@ impl Tool for GitTool {
         r#"{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message"},"paths":{"type":"string","description":"File paths"},"branch":{"type":"string","description":"Branch name"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes"},"limit":{"type":"integer","description":"Log entry count"},"cwd":{"type":"string","description":"Repository directory"}},"required":["operation"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let operation = match args.get("operation").and_then(|v| v.as_str()) {
             Some(op) => op,
             None => return Ok(ToolResult::fail("Missing 'operation' parameter")),
@@ -29,11 +32,10 @@ impl Tool for GitTool {
 
         // Sanitize string args
         for field in &["message", "paths", "branch", "files", "action"] {
-            if let Some(val) = args.get(field).and_then(|v| v.as_str()) {
-                if !Self::sanitize_git_args(val) {
+            if let Some(val) = args.get(field).and_then(|v| v.as_str())
+                && !Self::sanitize_git_args(val) {
                     return Ok(ToolResult::fail("Unsafe git arguments detected"));
                 }
-            }
         }
 
         // Resolve cwd
@@ -61,7 +63,10 @@ impl Tool for GitTool {
         };
 
         match operation {
-            "status" => self.run_git(&effective_cwd, &["status", "--porcelain=2", "--branch"]),
+            "status" => {
+                self.run_git(&effective_cwd, &["status", "--porcelain=2", "--branch"])
+                    .await
+            }
             "diff" => {
                 let cached = args
                     .get("cached")
@@ -74,7 +79,7 @@ impl Tool for GitTool {
                 }
                 args.push("--");
                 args.push(files);
-                self.run_git(&effective_cwd, &args)
+                self.run_git(&effective_cwd, &args).await
             }
             "log" => {
                 let limit = args
@@ -92,11 +97,15 @@ impl Tool for GitTool {
                         "--date=iso",
                     ],
                 )
+                .await
             }
-            "branch" => self.run_git(
-                &effective_cwd,
-                &["branch", "--format=%(refname:short)|%(HEAD)"],
-            ),
+            "branch" => {
+                self.run_git(
+                    &effective_cwd,
+                    &["branch", "--format=%(refname:short)|%(HEAD)"],
+                )
+                .await
+            }
             "commit" => {
                 let msg = args
                     .get("message")
@@ -105,25 +114,25 @@ impl Tool for GitTool {
                 if msg.is_empty() {
                     return Ok(ToolResult::fail("Commit message cannot be empty"));
                 }
-                self.run_git(&effective_cwd, &["commit", "-m", msg])
+                self.run_git(&effective_cwd, &["commit", "-m", msg]).await
             }
             "add" => {
                 let paths = args
                     .get("paths")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing paths"))?;
-                self.run_git(&effective_cwd, &["add", "--", paths])
+                self.run_git(&effective_cwd, &["add", "--", paths]).await
             }
             "checkout" => {
                 let branch = args
                     .get("branch")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing branch"))?;
-                self.run_git(&effective_cwd, &["checkout", branch])
+                self.run_git(&effective_cwd, &["checkout", branch]).await
             }
             "stash" => {
                 // stash push/pop/list
-                self.run_git(&effective_cwd, &["stash", "list"]) // Simplified for now
+                self.run_git(&effective_cwd, &["stash", "list"]).await // Simplified for now
             }
             _ => Ok(ToolResult::fail(format!(
                 "Unknown operation: {}",
@@ -177,21 +186,20 @@ impl GitTool {
         true
     }
 
-    fn run_git(&self, cwd: &str, args: &[&str]) -> Result<ToolResult> {
+    async fn run_git(&self, cwd: &str, args: &[&str]) -> Result<ToolResult> {
         let mut cmd_args = vec!["git"];
         cmd_args.extend_from_slice(args);
-
-        // Remove "git" from args passed to process_util::run because it expects the command as first arg
-        // Wait, process_util::run expects full argv including command?
-        // My implementation: `let mut cmd = Command::new(args[0]);`
-        // So yes.
 
         let opts = process_util::RunOptions {
             cwd: Some(Path::new(cwd)),
             ..Default::default()
         };
 
-        let result = process_util::run(&cmd_args, opts)?;
+        let result = process_util::run(&cmd_args, opts).await?;
+
+        if result.timed_out {
+            return Ok(ToolResult::fail("Git operation timed out"));
+        }
 
         if result.success {
             Ok(ToolResult::ok(result.stdout))

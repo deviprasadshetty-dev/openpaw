@@ -152,7 +152,7 @@ impl MemoryStore for PostgresMemory {
             return Ok(Vec::new());
         }
 
-        // Using ILIKE scoring similar to nullclaw implementation
+        // Using ILIKE scoring similar to openpaw implementation
         // score = (key ILIKE %q% ? 2.0 : 0.0) + (content ILIKE %q% ? 1.0 : 0.0)
         // We use parameters to prevent injection, but for the pattern we need to wrap input in %
         let pattern = format!("%{}%", trimmed.replace("%", "\\%").replace("_", "\\_"));
@@ -285,10 +285,7 @@ impl MemoryStore for PostgresMemory {
 
     fn health_check(&self) -> bool {
         let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
-        match client.query_one("SELECT 1", &[]) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        client.query_one("SELECT 1", &[]).is_ok()
     }
 }
 

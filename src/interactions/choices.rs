@@ -74,11 +74,10 @@ pub fn parse_assistant_choices(text: &str) -> ParsedAssistantChoices {
         }
     };
 
-    if let Some(ref c) = choices {
-        if visible.trim().is_empty() {
+    if let Some(ref c) = choices
+        && visible.trim().is_empty() {
             visible = synthesize_fallback_text(&c.options);
         }
-    }
 
     ParsedAssistantChoices {
         visible_text: visible,

@@ -1,6 +1,7 @@
 use super::{Tool, ToolContext, ToolResult};
 use crate::tools::process_util::{self, RunOptions};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
 const NUCLEO_RAM_BASE: u64 = 0x2000_0000;
@@ -10,6 +11,7 @@ pub struct HardwareMemoryTool {
     pub boards: Vec<String>,
 }
 
+#[async_trait]
 impl Tool for HardwareMemoryTool {
     fn name(&self) -> &str {
         "hardware_memory"
@@ -23,7 +25,7 @@ impl Tool for HardwareMemoryTool {
         r#"{"type":"object","properties":{"action":{"type":"string","enum":["read","write"],"description":"read or write memory"},"address":{"type":"string","description":"Memory address in hex (e.g. 0x20000000)"},"length":{"type":"integer","description":"Bytes to read (default 128, max 256)"},"value":{"type":"string","description":"Hex value to write (for write action)"},"board":{"type":"string","description":"Board name (optional if only one configured)"}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         if self.boards.is_empty() {
             return Ok(ToolResult::fail(
                 "No peripherals configured. Add boards to config.toml [peripherals.boards].",
@@ -66,8 +68,8 @@ impl Tool for HardwareMemoryTool {
 
         if action == "read" {
             let length_raw = args.get("length").and_then(|v| v.as_i64()).unwrap_or(128);
-            let length = length_raw.max(1).min(256) as usize;
-            return probe_read(chip, address, length);
+            let length = length_raw.clamp(1, 256) as usize;
+            return probe_read(chip, address, length).await;
         } else if action == "write" {
             let value = match args.get("value").and_then(|v| v.as_str()) {
                 Some(v) => v,
@@ -77,7 +79,7 @@ impl Tool for HardwareMemoryTool {
                     ));
                 }
             };
-            return probe_write(chip, address, value);
+            return probe_write(chip, address, value).await;
         } else {
             return Ok(ToolResult::fail(format!(
                 "Unknown action '{}'. Use 'read' or 'write'.",
@@ -87,20 +89,20 @@ impl Tool for HardwareMemoryTool {
     }
 }
 
-fn probe_rs_available() -> bool {
+async fn probe_rs_available() -> bool {
     let opts = RunOptions {
         max_output_bytes: 4096,
         ..Default::default()
     };
-    if let Ok(result) = process_util::run(&["probe-rs", "--version"], opts) {
+    if let Ok(result) = process_util::run(&["probe-rs", "--version"], opts).await {
         result.success
     } else {
         false
     }
 }
 
-fn probe_read(chip: &str, address: u64, length: usize) -> Result<ToolResult> {
-    if !probe_rs_available() {
+async fn probe_read(chip: &str, address: u64, length: usize) -> Result<ToolResult> {
+    if !probe_rs_available().await {
         return Ok(ToolResult::fail(
             "probe-rs not found. Install with: cargo install probe-rs-tools",
         ));
@@ -117,7 +119,9 @@ fn probe_read(chip: &str, address: u64, length: usize) -> Result<ToolResult> {
     let result = match process_util::run(
         &["probe-rs", "read", "--chip", chip, &addr_str, &len_str],
         opts,
-    ) {
+    )
+    .await
+    {
         Ok(res) => res,
         Err(_) => return Ok(ToolResult::fail("Failed to spawn probe-rs read command")),
     };
@@ -144,8 +148,8 @@ fn probe_read(chip: &str, address: u64, length: usize) -> Result<ToolResult> {
     Ok(ToolResult::fail("probe-rs read terminated by signal"))
 }
 
-fn probe_write(chip: &str, address: u64, value: &str) -> Result<ToolResult> {
-    if !probe_rs_available() {
+async fn probe_write(chip: &str, address: u64, value: &str) -> Result<ToolResult> {
+    if !probe_rs_available().await {
         return Ok(ToolResult::fail(
             "probe-rs not found. Install with: cargo install probe-rs-tools",
         ));
@@ -161,7 +165,9 @@ fn probe_write(chip: &str, address: u64, value: &str) -> Result<ToolResult> {
     let result = match process_util::run(
         &["probe-rs", "write", "--chip", chip, &addr_str, value],
         opts,
-    ) {
+    )
+    .await
+    {
         Ok(res) => res,
         Err(_) => return Ok(ToolResult::fail("Failed to spawn probe-rs write command")),
     };

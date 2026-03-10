@@ -15,22 +15,20 @@ pub fn route_to_appropriate_model<'a>(query: &str, config: &'a ModelRoutingConfi
     }
 
     // Simple factual questions or short requests → cheap model
-    if query.len() < 100 {
-        if lower.starts_with("what is ")
+    if query.len() < 100
+        && (lower.starts_with("what is ")
             || lower.starts_with("who is ")
             || lower.starts_with("when is ")
-            || lower.starts_with("where is ")
+            || lower.starts_with("where is "))
         {
             return &config.cheap_model;
         }
-    }
 
     // Yes/no questions → cheap model
-    if lower.starts_with("is ") || lower.starts_with("does ") || lower.starts_with("can ") {
-        if !lower.contains(" how ") && query.len() < 150 {
+    if (lower.starts_with("is ") || lower.starts_with("does ") || lower.starts_with("can "))
+        && !lower.contains(" how ") && query.len() < 150 {
             return &config.cheap_model;
         }
-    }
 
     &config.default_model
 }

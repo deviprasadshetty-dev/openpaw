@@ -39,7 +39,7 @@ fn is_workspace_bootstrap_filename_safe(filename: &str) -> bool {
     if filename.contains('\0') {
         return false;
     }
-    for part in filename.split(|c| c == '/' || c == '\\') {
+    for part in filename.split(['/', '\\']) {
         if part == ".." {
             return false;
         }
@@ -156,13 +156,17 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         out.push_str(caps);
     }
 
+    // Current Date & Time
+    append_date_time_section(&mut out);
+
     if is_lean {
         out.push_str("## Reasoning & Action\n\n- Think simply. Be concise.\n- If a task requires multiple steps, take as many turns as needed to complete it.\n- Use tools directly to gather information or perform actions.\n\n");
     } else {
         // Reasoning and Execution section
         out.push_str("## Reasoning and Execution\n\n");
         out.push_str("- Think step-by-step before acting. Formulate a clear plan, break it down into steps, and reflect on the results of each step.\n");
-        out.push_str("- **Efficiency & Batching**: Aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources. Avoid taking small, sequential steps if they can be done in parallel.\n");
+        out.push_str("- **Efficiency & Batching**: Aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources.\n");
+        out.push_str("- **Final Synthesis**: Once you have gathered all necessary information or completed the requested actions via tools, you MUST provide a comprehensive final response to the user summarizing your findings or confirming the task completion. Never end a turn with only tool results.\n");
         out.push_str("- Use `<thought>` tags or general text to explain your reasoning before executing any tools.\n");
         out.push_str("- If a task is complex, outline an explicit multi-step plan first, then execute the steps sequentially, reviewing the outcomes along the way.\n\n");
 
@@ -225,6 +229,9 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         out.push_str("### Never:\n");
         out.push_str("- Exfiltrate private data (API keys, credentials, personal info).\n");
         out.push_str("- Bypass established oversight or approval mechanisms.\n\n");
+
+        // Safety & Group logic
+        append_safety_and_group_logic(&mut out, ctx.conversation_context);
     }
 
     // Skills section
@@ -274,11 +281,77 @@ fn append_skills_section(out: &mut String, workspace_dir: &str) {
         out.push_str(&skill.instructions);
         out.push_str("\n\n");
     }
+
+    let available: Vec<_> = skills
+        .iter()
+        .filter(|s| !s.always && s.enabled && !s.instructions.is_empty())
+        .collect();
+
+    if !available.is_empty() {
+        out.push_str("### Available Skills\n\n");
+        out.push_str("These skills are installed but not preloaded. Use the `read_file` tool on a skill's location to load its full instructions.\n\n");
+        out.push_str("1. Do NOT load a skill until the task matches its name or description.\n");
+        out.push_str("2. When multiple skills could match, load the most specific one first.\n\n");
+        out.push_str("<available_skills>\n");
+        for skill in &available {
+            out.push_str("  <skill>\n");
+            out.push_str(&format!("    <name>{}</name>\n", skill.name));
+            if !skill.description.is_empty() {
+                out.push_str(&format!(
+                    "    <description>{}</description>\n",
+                    skill.description
+                ));
+            }
+            out.push_str(&format!(
+                "    <location>{}/SKILL.md</location>\n",
+                skill.path.display()
+            ));
+            out.push_str("  </skill>\n");
+        }
+        out.push_str("</available_skills>\n\n");
+    }
+}
+
+fn append_date_time_section(out: &mut String) {
+    let now = chrono::Utc::now();
+    out.push_str("## Current Date & Time\n\n");
+    out.push_str(&format!("{} UTC\n\n", now.format("%Y-%m-%d %H:%M")));
+}
+
+fn append_safety_and_group_logic(out: &mut String, conversation_context: Option<&ConversationContext>) {
+    // Safety additions
+    out.push_str("## Safety\n\n- Prefer `trash` over `rm` when deleting files.\n- When in doubt, ask before acting externally.\n\n");
+
+    // Group chat behavior
+    if let Some(cc) = conversation_context {
+        let is_telegram = if let Some(ch) = &cc.channel {
+            ch.to_lowercase() == "telegram"
+        } else {
+            false
+        };
+
+        if is_telegram && cc.is_group.unwrap_or(false) {
+            out.push_str("## Group Chat Behavior\n\n");
+            out.push_str("You are in a group chat. Not every message requires a response.\n\n");
+            out.push_str("Use the `[NO_REPLY]` marker when:\n");
+            out.push_str("- The message is casual chat between other members\n");
+            out.push_str("- The message is not directed at you (no question, no @mention)\n");
+            out.push_str("- The message is a simple acknowledgment (ok, thanks, haha, etc.)\n\n");
+            out.push_str("When you choose NOT to reply, include `[NO_REPLY]` anywhere in your response.\n\n");
+        }
+    }
+
+    // Scheduled tasks guidance
+    out.push_str("## Scheduled Tasks\n\n");
+    out.push_str("When using the `schedule` tool to create reminders:\n");
+    out.push_str("- ALWAYS use double quotes (\") for the command string\n");
+    out.push_str("- Example: `echo \"Time is up!\"`\n");
+    out.push_str("- For Telegram chats, results can be auto-delivered when chat context is available\n\n");
 }
 
 fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) {
-    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename) {
-        if let Ok(content) = fs::read_to_string(path) {
+    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename)
+        && let Ok(content) = fs::read_to_string(path) {
             if content.trim().is_empty() {
                 return;
             }
@@ -291,12 +364,15 @@ fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) 
             }
             out.push_str("\n\n");
         }
-    }
 }
 
 fn build_identity_section(out: &mut String, workspace_dir: &str, is_lean: bool) {
-    // Inject workspace context files silently — the agent absorbs them as its
-    // own identity without exposing the filenames to users.
+    out.push_str("## Project Context\n\n");
+    out.push_str("The following workspace files define your identity, behavior, and context.\n\n");
+    out.push_str("- **AGENTS.md**: Follow its operational guidance (startup routines, red-line constraints).\n");
+    out.push_str("- **SOUL.md**: Embody its persona and tone. Avoid stiff, generic replies.\n");
+    out.push_str("- **TOOLS.md**: User guidance for how to use external tools.\n\n");
+
     let identity_files = [
         "AGENTS.md",
         "SOUL.md",
@@ -342,8 +418,8 @@ fn inject_workspace_file_limited(
     filename: &str,
     limit: usize,
 ) {
-    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename) {
-        if let Ok(content) = fs::read_to_string(path) {
+    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename)
+        && let Ok(content) = fs::read_to_string(path) {
             if content.trim().is_empty() {
                 return;
             }
@@ -355,7 +431,6 @@ fn inject_workspace_file_limited(
             }
             out.push_str("\n\n");
         }
-    }
 }
 
 fn build_tools_section(

@@ -1,6 +1,7 @@
 use crate::config_types::{
-    BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
-    McpServerConfig, MemoryConfig, PushoverConfig,
+    AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
+    McpServerConfig, MemoryConfig, NamedAgentConfig, PushoverConfig, ReliabilityConfig,
+    SchedulerConfig, SessionConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,14 @@ pub struct Config {
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
     pub agents: Vec<NamedAgentConfig>,
+    #[serde(default)]
+    pub reliability: ReliabilityConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default)]
+    pub bindings: Vec<AgentBinding>,
 
     #[serde(skip)]
     pub config_path: String,
@@ -47,6 +56,15 @@ impl Config {
             .map(|p| p.api_key.clone())
     }
 
+    pub fn get_model_for_provider(&self, name: &str) -> Option<String> {
+        if let Some(models) = &self.models
+            && let Some(p_cfg) = models.providers.get(name)
+                && let Some(m) = &p_cfg.model {
+                    return Some(m.clone());
+                }
+        self.default_model.clone()
+    }
+
     pub fn save(&self) -> anyhow::Result<()> {
         if self.config_path.is_empty() {
             return Err(anyhow::anyhow!("No config path set, cannot save"));
@@ -58,12 +76,6 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct NamedAgentConfig {
-    pub name: String,
-    // Add other fields as needed
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelsConfig {
     pub providers: std::collections::HashMap<String, ProviderConfig>,
 }
@@ -72,6 +84,7 @@ pub struct ModelsConfig {
 pub struct ProviderConfig {
     pub api_key: String,
     pub base_url: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

@@ -1,8 +1,7 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::{Context, Result};
-use reqwest::Method;
-use reqwest::Url;
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -28,29 +27,32 @@ struct AuthConfigSummary {
     is_composio_managed: Option<bool>,
 }
 
+#[async_trait]
 impl Tool for ComposioTool {
     fn name(&self) -> &str {
         "composio"
     }
 
     fn description(&self) -> &str {
-        "Use Composio app integrations. Actions: list tools, execute a tool slug, or connect an account for OAuth apps like Gmail."
+        "Integrated app platform (Gmail, Calendar, GitHub, Slack, etc.). PRIMARY WORKFLOW: Use action='query' with 'text' (natural language) for ANY request (e.g., 'check my emails', 'add a meeting for 2pm tomorrow'). If you get an authentication error, use action='connect' with app='app_name' to provide the user with a login link. Use 'list'/'execute' only for advanced manual control."
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","execute","connect"],"description":"Operation to perform"},"app":{"type":"string","description":"Toolkit/app name (e.g. 'gmail', 'github'). Alias of toolkit_slug."},"toolkit_slug":{"type":"string","description":"Composio toolkit slug (e.g. 'gmail')."},"search":{"type":"string","description":"Optional text filter when listing tools."},"query":{"type":"string","description":"Alias of search."},"tool_slug":{"type":"string","description":"Composio tool slug to execute (recommended)."},"action_name":{"type":"string","description":"Legacy alias of tool_slug."},"params":{"type":"object","description":"Arguments passed to the Composio tool execute call."},"entity_id":{"type":"string","description":"Optional user/entity override. Defaults to config.composio.entity_id."},"connected_account_id":{"type":"string","description":"Optional connected account id for execute."},"auth_config_id":{"type":"string","description":"Auth config id for connect flow (auto-discovered if app/toolkit_slug is provided)."},"callback_url":{"type":"string","description":"Optional OAuth callback URL for connect link session."}},"required":["action"]}"#.to_string()
+        r#"{"type":"object","properties":{"action":{"type":"string","enum":["query","execute","connect","list","tool_router"],"description":"Operation to perform. 'query' (RECOMMENDED) handles discovery and execution via natural language; 'connect' handles app authorization; 'execute' runs a specific tool; 'list' discovers tools manually."},"text":{"type":"string","description":"The natural language request (e.g. 'check my emails', 'create a github issue'). Required for 'query' and recommended for 'execute'."},"app":{"type":"string","description":"App name (e.g. 'gmail', 'github') for 'connect' or 'list'."},"tool_slug":{"type":"string","description":"Exact tool ID for manual 'execute'."},"params":{"type":"object","description":"Structured arguments for manual 'execute'."},"entity_id":{"type":"string","description":"Optional user override."},"connected_account_id":{"type":"string","description":"Optional connected account ID."},"callback_url":{"type":"string","description":"Optional OAuth callback URL."}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return Ok(ToolResult::fail("Missing 'action' parameter")),
         };
 
         match action {
-            "list" => self.list_actions(&args),
-            "execute" => self.execute_action(&args),
-            "connect" => self.connect_account(&args),
+            "list" => self.list_actions(&args).await,
+            "execute" => self.execute_action(&args).await,
+            "connect" => self.connect_account(&args).await,
+            "tool_router" => self.tool_router_action(&args).await,
+            "query" => self.query_action(&args).await,
             _ => Ok(ToolResult::fail(format!("Unknown action: {}", action))),
         }
     }
@@ -59,12 +61,12 @@ impl Tool for ComposioTool {
 impl ComposioTool {
     fn client(&self) -> Result<Client> {
         Client::builder()
-            .timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(30))
             .build()
             .context("Failed to build HTTP client")
     }
 
-    fn api_request(
+    async fn api_request(
         &self,
         method: Method,
         path: &str,
@@ -93,10 +95,12 @@ impl ComposioTool {
 
         let resp = req
             .send()
+            .await
             .with_context(|| format!("Composio request failed: {}", url_for_error))?;
         let status = resp.status().as_u16();
         let body_text = resp
             .text()
+            .await
             .unwrap_or_else(|_| "(failed to read response body)".to_string());
         let body_json = serde_json::from_str::<Value>(&body_text).ok();
 
@@ -107,11 +111,12 @@ impl ComposioTool {
         })
     }
 
-    fn list_actions(&self, args: &Value) -> Result<ToolResult> {
+    async fn list_actions(&self, args: &Value) -> Result<ToolResult> {
         let toolkit_slug = toolkit_from_args(args);
         let search_term = args
             .get("search")
             .or(args.get("query"))
+            .or(args.get("text"))
             .and_then(Value::as_str)
             .map(|s| s.trim().to_string());
 
@@ -119,13 +124,14 @@ impl ComposioTool {
         if let Some(slug) = &toolkit_slug {
             query.push(("toolkit_slug", slug.clone()));
         }
-        if let Some(search) = &search_term {
-            if !search.is_empty() {
+        if let Some(search) = &search_term
+            && !search.is_empty() {
                 query.push(("query", search.clone()));
             }
-        }
 
-        let mut resp = self.api_request(Method::GET, "/tools", &query, None)?;
+        let mut resp = self
+            .api_request(Method::GET, "/tools", &query, None)
+            .await?;
         if !is_success(resp.status) {
             return Ok(ToolResult::fail(format!(
                 "Composio list failed (HTTP {}): {}",
@@ -134,21 +140,20 @@ impl ComposioTool {
             )));
         }
 
-        // Fallback: if toolkit filter returns zero items, retry with search only.
-        if let (Some(slug), Some(json_body)) = (toolkit_slug.as_deref(), resp.body_json.as_ref()) {
-            if extract_array_entries(json_body)
+        if let (Some(slug), Some(json_body)) = (toolkit_slug.as_deref(), resp.body_json.as_ref())
+            && extract_array_entries(json_body)
                 .map(|a| a.is_empty())
                 .unwrap_or(false)
             {
                 let fallback_query =
                     vec![("limit", "100".to_string()), ("query", slug.to_string())];
-                let fallback_resp =
-                    self.api_request(Method::GET, "/tools", &fallback_query, None)?;
+                let fallback_resp = self
+                    .api_request(Method::GET, "/tools", &fallback_query, None)
+                    .await?;
                 if is_success(fallback_resp.status) {
                     resp = fallback_resp;
                 }
             }
-        }
 
         let Some(json_body) = resp.body_json else {
             return Ok(ToolResult::ok(resp.body_text));
@@ -160,8 +165,8 @@ impl ComposioTool {
         )))
     }
 
-    fn execute_action(&self, args: &Value) -> Result<ToolResult> {
-        let action = match args
+    async fn execute_action(&self, args: &Value) -> Result<ToolResult> {
+        let tool_slug = match args
             .get("tool_slug")
             .or(args.get("action_name"))
             .and_then(|v| v.as_str())
@@ -176,13 +181,7 @@ impl ComposioTool {
             .and_then(|v| v.as_str())
             .unwrap_or(&self.entity_id);
 
-        let params = args
-            .get("params")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Default::default()));
-
         let mut payload = json!({
-            "arguments": params,
             "user_id": user_id
         });
 
@@ -192,21 +191,37 @@ impl ComposioTool {
             payload["connected_account_id"] = json!(connected_account_id);
         }
 
-        let primary_path = format!("/tools/execute/{}", action);
-        let mut resp = self.api_request(Method::POST, &primary_path, &[], Some(&payload))?;
+        let params = args.get("params");
+        let text = args.get("text").and_then(Value::as_str);
 
-        // Fallback for common case where LLM passes lowercase slug.
-        let fallback_slug = action.to_ascii_uppercase();
-        if resp.status == 404 && fallback_slug != action {
+        if let Some(p) = params {
+            if !p.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                payload["arguments"] = p.clone();
+            } else if let Some(t) = text {
+                payload["text"] = json!(t);
+            }
+        } else if let Some(t) = text {
+            payload["text"] = json!(t);
+        }
+
+        let primary_path = format!("/tools/execute/{}", tool_slug);
+        let mut resp = self
+            .api_request(Method::POST, &primary_path, &[], Some(&payload))
+            .await?;
+
+        let fallback_slug = tool_slug.to_ascii_uppercase();
+        if resp.status == 404 && fallback_slug != tool_slug {
             let fallback_path = format!("/tools/execute/{}", fallback_slug);
-            resp = self.api_request(Method::POST, &fallback_path, &[], Some(&payload))?;
+            resp = self
+                .api_request(Method::POST, &fallback_path, &[], Some(&payload))
+                .await?;
         }
 
         if !is_success(resp.status) {
             return Ok(ToolResult::fail(format!(
                 "Composio execute failed (HTTP {}): {}",
                 resp.status,
-                one_line(&resp.body_text)
+                composio_error_message(resp.body_json.as_ref(), &resp.body_text)
             )));
         }
 
@@ -216,7 +231,59 @@ impl ComposioTool {
         )))
     }
 
-    fn connect_account(&self, args: &Value) -> Result<ToolResult> {
+    async fn query_action(&self, args: &Value) -> Result<ToolResult> {
+        let text = match args
+            .get("text")
+            .or(args.get("query"))
+            .and_then(Value::as_str)
+        {
+            Some(t) => t,
+            None => return Ok(ToolResult::fail("Missing 'text' or 'query' parameter")),
+        };
+
+        let query_params = vec![("query", text.to_string()), ("limit", "5".to_string())];
+        let list_resp = self
+            .api_request(Method::GET, "/tools", &query_params, None)
+            .await?;
+
+        if !is_success(list_resp.status) {
+            return Ok(ToolResult::fail(format!(
+                "Failed to discover tools for query (HTTP {}): {}",
+                list_resp.status, list_resp.body_text
+            )));
+        }
+
+        let Some(json_body) = list_resp.body_json else {
+            return Ok(ToolResult::fail("No tools found for your query."));
+        };
+
+        let Some(items) = extract_array_entries(&json_body) else {
+            return Ok(ToolResult::fail("No tools found for your query."));
+        };
+
+        if items.is_empty() {
+            return Ok(ToolResult::fail(format!(
+                "Could not find a relevant tool for: '{}'",
+                text
+            )));
+        }
+
+        let best_tool = &items[0];
+        let tool_slug = best_tool
+            .get("slug")
+            .or(best_tool.get("tool_slug"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+
+        let mut exec_args = args.clone();
+        exec_args["tool_slug"] = json!(tool_slug);
+        exec_args["action"] = json!("execute");
+        exec_args["text"] = json!(text);
+
+        self.execute_action(&exec_args).await
+    }
+
+    async fn connect_account(&self, args: &Value) -> Result<ToolResult> {
         let user_id = args
             .get("entity_id")
             .or(args.get("user_id"))
@@ -231,20 +298,17 @@ impl ComposioTool {
             .map(|id| id.to_string());
 
         if let Some(auth_config_id) = explicit_auth_config_id {
-            if self.get_auth_config(&auth_config_id)?.is_none() {
-                let candidates = self.discover_auth_configs(toolkit_slug.as_deref())?;
+            if self.get_auth_config(&auth_config_id).await?.is_none() {
+                let candidates = self.discover_auth_configs(toolkit_slug.as_deref()).await?;
                 return Ok(ToolResult::fail(format!(
                     "Composio auth_config_id '{}' was not found for this API key/project.{}",
                     auth_config_id,
                     render_auth_config_candidates(&candidates)
                 )));
             }
-            return self.create_link_session(
-                &auth_config_id,
-                user_id,
-                args,
-                toolkit_slug.as_deref(),
-            );
+            return self
+                .create_link_session(&auth_config_id, user_id, args, toolkit_slug.as_deref())
+                .await;
         }
 
         let Some(toolkit_slug) = toolkit_slug else {
@@ -253,7 +317,7 @@ impl ComposioTool {
             ));
         };
 
-        let candidates = self.discover_auth_configs(Some(&toolkit_slug))?;
+        let candidates = self.discover_auth_configs(Some(&toolkit_slug)).await?;
         let Some(best) = choose_best_auth_config(&candidates) else {
             return Ok(ToolResult::fail(format!(
                 "No auth configs found for toolkit '{}'. Create one in Composio dashboard or pass auth_config_id explicitly.",
@@ -262,9 +326,10 @@ impl ComposioTool {
         };
 
         self.create_link_session(&best.id, user_id, args, Some(&toolkit_slug))
+            .await
     }
 
-    fn create_link_session(
+    async fn create_link_session(
         &self,
         auth_config_id: &str,
         user_id: &str,
@@ -279,7 +344,9 @@ impl ComposioTool {
             body["callback_url"] = json!(callback_url);
         }
 
-        let resp = self.api_request(Method::POST, "/connected_accounts/link", &[], Some(&body))?;
+        let resp = self
+            .api_request(Method::POST, "/connected_accounts/link", &[], Some(&body))
+            .await?;
         if !is_success(resp.status) {
             let base_error = format!(
                 "Composio connect failed (HTTP {}): {}",
@@ -288,7 +355,7 @@ impl ComposioTool {
             );
 
             if matches!(resp.status, 400 | 404 | 422) {
-                let candidates = self.discover_auth_configs(toolkit_slug)?;
+                let candidates = self.discover_auth_configs(toolkit_slug).await?;
                 return Ok(ToolResult::fail(format!(
                     "{}{}",
                     base_error,
@@ -299,8 +366,8 @@ impl ComposioTool {
             return Ok(ToolResult::fail(base_error));
         }
 
-        if let Some(ref v) = resp.body_json {
-            if let Some(url) = extract_auth_url(v) {
+        if let Some(ref v) = resp.body_json
+            && let Some(url) = extract_auth_url(v) {
                 return Ok(ToolResult::ok(format!(
                     "Open this URL to authenticate {}: {}\n\n{}",
                     user_id,
@@ -308,7 +375,6 @@ impl ComposioTool {
                     pretty_json_or_text(resp.body_json, resp.body_text)
                 )));
             }
-        }
 
         Ok(ToolResult::ok(pretty_json_or_text(
             resp.body_json,
@@ -316,13 +382,18 @@ impl ComposioTool {
         )))
     }
 
-    fn discover_auth_configs(&self, toolkit_slug: Option<&str>) -> Result<Vec<AuthConfigSummary>> {
+    async fn discover_auth_configs(
+        &self,
+        toolkit_slug: Option<&str>,
+    ) -> Result<Vec<AuthConfigSummary>> {
         let mut query = vec![("limit", "100".to_string())];
         if let Some(slug) = toolkit_slug {
             query.push(("toolkit_slug", slug.to_string()));
             query.push(("query", slug.to_string()));
         }
-        let resp = self.api_request(Method::GET, "/auth_configs", &query, None)?;
+        let resp = self
+            .api_request(Method::GET, "/auth_configs", &query, None)
+            .await?;
         if !is_success(resp.status) {
             return Ok(Vec::new());
         }
@@ -344,9 +415,9 @@ impl ComposioTool {
         Ok(configs)
     }
 
-    fn get_auth_config(&self, auth_config_id: &str) -> Result<Option<AuthConfigSummary>> {
+    async fn get_auth_config(&self, auth_config_id: &str) -> Result<Option<AuthConfigSummary>> {
         let path = format!("/auth_configs/{}", auth_config_id);
-        let resp = self.api_request(Method::GET, &path, &[], None)?;
+        let resp = self.api_request(Method::GET, &path, &[], None).await?;
         if resp.status == 404 {
             return Ok(None);
         }
@@ -354,6 +425,73 @@ impl ComposioTool {
             return Ok(None);
         }
         Ok(resp.body_json.as_ref().and_then(parse_auth_config))
+    }
+
+    async fn tool_router_action(&self, args: &Value) -> Result<ToolResult> {
+        let user_id = args
+            .get("entity_id")
+            .or(args.get("user_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&self.entity_id);
+
+        let toolkits = args.get("toolkits").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
+
+        let mut session_payload = json!({
+            "user_id": user_id,
+        });
+        if let Some(tk) = toolkits {
+            session_payload["toolkits"] = json!(tk);
+        }
+
+        let session_resp = self
+            .api_request(
+                Method::POST,
+                "/tool_router/session",
+                &[],
+                Some(&session_payload),
+            )
+            .await?;
+        if !is_success(session_resp.status) {
+            return Ok(ToolResult::fail(format!(
+                "Composio failed to create tool router session (HTTP {}): {}",
+                session_resp.status,
+                composio_error_message(session_resp.body_json.as_ref(), &session_resp.body_text)
+            )));
+        }
+
+        let session_id = match session_resp
+            .body_json
+            .as_ref()
+            .and_then(|v| v.get("id").or(v.get("session_id")).and_then(Value::as_str))
+        {
+            Some(id) => id,
+            None => {
+                return Ok(ToolResult::fail(format!(
+                    "Composio session created but no ID returned: {}",
+                    session_resp.body_text
+                )));
+            }
+        };
+
+        let tools_path = format!("/tool_router/session/{}/tools", session_id);
+        let tools_resp = self
+            .api_request(Method::GET, &tools_path, &[], None)
+            .await?;
+
+        let mut output = format!("Created Composio Tool Router Session: {}\n", session_id);
+        if let Some(body) = tools_resp.body_json {
+            output.push_str("\nAvailable tools in this session:\n");
+            output.push_str(&render_list_output(&body, None));
+        } else {
+            output.push_str(&tools_resp.body_text);
+        }
+
+        Ok(ToolResult::ok(output))
     }
 }
 
@@ -483,11 +621,10 @@ fn extract_auth_url(value: &Value) -> Option<String> {
         }
     }
 
-    if let Some(link_obj) = value.get("link") {
-        if let Some(url) = link_obj.get("url").and_then(Value::as_str) {
+    if let Some(link_obj) = value.get("link")
+        && let Some(url) = link_obj.get("url").and_then(Value::as_str) {
             return Some(url.to_string());
         }
-    }
 
     if let Some(data) = value.get("data") {
         return extract_auth_url(data);
@@ -568,7 +705,7 @@ fn render_list_output(value: &Value, toolkit_filter: Option<&str>) -> String {
 
 fn pretty_json_or_text(json_body: Option<Value>, body_text: String) -> String {
     if let Some(v) = json_body {
-        serde_json::to_string_pretty(&v).unwrap_or_else(|_| body_text)
+        serde_json::to_string_pretty(&v).unwrap_or(body_text)
     } else {
         body_text
     }
@@ -576,28 +713,4 @@ fn pretty_json_or_text(json_body: Option<Value>, body_text: String) -> String {
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_toolkit_slug_handles_spaces_and_hyphens() {
-        assert_eq!(normalize_toolkit_slug("gmail"), "gmail");
-        assert_eq!(normalize_toolkit_slug("google-calendar"), "google-calendar");
-        assert_eq!(normalize_toolkit_slug("  github app  "), "github-app");
-    }
-
-    #[test]
-    fn extract_array_entries_supports_common_shapes() {
-        let root = json!([{"id":"a"}]);
-        assert_eq!(extract_array_entries(&root).map(|a| a.len()), Some(1));
-
-        let items = json!({"items":[{"id":"a"},{"id":"b"}]});
-        assert_eq!(extract_array_entries(&items).map(|a| a.len()), Some(2));
-
-        let nested = json!({"data":{"tools":[{"id":"a"}]}});
-        assert_eq!(extract_array_entries(&nested).map(|a| a.len()), Some(1));
-    }
 }

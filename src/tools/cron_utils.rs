@@ -23,6 +23,12 @@ pub struct CronScheduler {
     file_path: PathBuf,
 }
 
+impl Default for CronScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CronScheduler {
     pub fn new() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -40,11 +46,10 @@ impl CronScheduler {
     }
 
     pub fn load(&mut self) {
-        if let Ok(data) = fs::read_to_string(&self.file_path) {
-            if let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data) {
+        if let Ok(data) = fs::read_to_string(&self.file_path)
+            && let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data) {
                 self.jobs = jobs;
             }
-        }
     }
 
     pub fn save(&self) {

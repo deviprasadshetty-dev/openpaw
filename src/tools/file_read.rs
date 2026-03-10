@@ -10,6 +10,9 @@ pub struct FileReadTool {
     pub max_file_size: u64,
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl Tool for FileReadTool {
     fn name(&self) -> &str {
         "file_read"
@@ -23,7 +26,7 @@ impl Tool for FileReadTool {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path to the file within the workspace"}},"required":["path"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolResult::fail("Missing 'path' parameter")),

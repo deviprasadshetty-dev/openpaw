@@ -127,13 +127,11 @@ pub fn infer_board_from_path(path_str: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(parent) = path.parent() {
-        if let Some(parent_name) = parent.file_name() {
-            if parent_name == "_generic" {
+    if let Some(parent) = path.parent()
+        && let Some(parent_name) = parent.file_name()
+            && parent_name == "_generic" {
                 return None;
             }
-        }
-    }
 
     Some(stem.to_string())
 }
@@ -203,11 +201,10 @@ impl HardwareRag {
             }
 
             if score > 0.0 {
-                if let Some(board) = &chunk.board {
-                    if boards.contains(&board.as_str()) {
+                if let Some(board) = &chunk.board
+                    && boards.contains(&board.as_str()) {
                         score += 2.0;
                     }
-                }
                 scored.push((chunk, score));
             }
         }

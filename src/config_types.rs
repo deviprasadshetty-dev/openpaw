@@ -4,18 +4,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AutonomyLevel {
     NoAutonomy,
     Steerable,
+    #[default]
     Supervised,
     Autonomous,
 }
 
-impl Default for AutonomyLevel {
-    fn default() -> Self {
-        Self::Supervised
-    }
-}
 
 // ── Named agent config (for agents map in JSON) ────────────────
 
@@ -42,21 +39,92 @@ fn default_max_depth() -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ChatType {
+    Direct,
+    Group,
+    Channel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PeerRef {
+    pub kind: ChatType,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BindingMatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<PeerRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guild_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AgentBinding {
+    pub agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub r#match: BindingMatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DmScope {
     /// Single shared session for all DMs.
     Main,
     /// One session per peer across all channels.
     PerPeer,
     /// One session per (channel, peer) pair (default).
+    #[default]
     PerChannelPeer,
     /// One session per (account, channel, peer) triple.
     PerAccountChannelPeer,
 }
 
-impl Default for DmScope {
-    fn default() -> Self {
-        Self::PerChannelPeer
-    }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchedBy {
+    Peer,
+    ParentPeer,
+    GuildRoles,
+    Guild,
+    Team,
+    Account,
+    ChannelOnly,
+    Default,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResolvedRoute {
+    pub agent_id: String,
+    pub channel: String,
+    pub account_id: String,
+    pub session_key: String,
+    pub main_session_key: String,
+    pub matched_by: MatchedBy,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RouteInput {
+    pub channel: String,
+    pub account_id: String,
+    pub peer: Option<PeerRef>,
+    pub parent_peer: Option<PeerRef>,
+    pub guild_id: Option<String>,
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub member_role_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -76,6 +144,17 @@ pub struct SessionConfig {
     pub identity_links: Vec<IdentityLink>,
     #[serde(default = "default_typing_interval_secs")]
     pub typing_interval_secs: u32,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            dm_scope: DmScope::default(),
+            idle_minutes: default_idle_minutes(),
+            identity_links: Vec::new(),
+            typing_interval_secs: default_typing_interval_secs(),
+        }
+    }
 }
 
 fn default_idle_minutes() -> u32 {
@@ -251,18 +330,15 @@ fn default_composio_entity_id() -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum HardwareTransport {
+    #[default]
     None,
     Native,
     Serial,
     Probe,
 }
 
-impl Default for HardwareTransport {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HardwareConfig {
@@ -396,6 +472,10 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: Vec<McpServerEnv>,
+    #[serde(default = "default_true")]
+    pub always_inherit: bool,
+    #[serde(default)]
+    pub inherit: Vec<String>,
 }
 // ── Pushover config ─────────────────────────────────────────────
 
@@ -407,4 +487,60 @@ pub struct PushoverConfig {
     pub token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_key: Option<String>,
+}
+// ── Reliability config ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReliabilityConfig {
+    #[serde(default = "default_scheduler_poll_secs")]
+    pub scheduler_poll_secs: u64,
+    #[serde(default = "default_heartbeat_interval_minutes")]
+    pub heartbeat_interval_minutes: u64,
+}
+
+impl Default for ReliabilityConfig {
+    fn default() -> Self {
+        Self {
+            scheduler_poll_secs: 60,
+            heartbeat_interval_minutes: 30,
+        }
+    }
+}
+
+fn default_scheduler_poll_secs() -> u64 {
+    60
+}
+
+fn default_heartbeat_interval_minutes() -> u64 {
+    30
+}
+
+// ── Scheduler config ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SchedulerConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_max_tasks")]
+    pub max_tasks: usize,
+    #[serde(default = "default_agent_timeout_secs")]
+    pub agent_timeout_secs: u64,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_tasks: 1000,
+            agent_timeout_secs: 300,
+        }
+    }
+}
+
+fn default_max_tasks() -> usize {
+    1000
+}
+
+fn default_agent_timeout_secs() -> u64 {
+    300
 }

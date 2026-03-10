@@ -74,11 +74,10 @@ impl MemoryStore for LruMemory {
             Self::touch(&mut g, key);
         } else {
             // Evict if at capacity
-            if g.map.len() >= self.capacity {
-                if let Some(old) = g.order.pop_back() {
+            if g.map.len() >= self.capacity
+                && let Some(old) = g.order.pop_back() {
                     g.map.remove(&old);
                 }
-            }
             g.map.insert(
                 key.to_string(),
                 Entry {
@@ -108,7 +107,7 @@ impl MemoryStore for LruMemory {
             .values()
             .filter(|e| {
                 let session_ok =
-                    session_id.map_or(true, |sid| e.session_id.as_deref() == Some(sid));
+                    session_id.is_none_or(|sid| e.session_id.as_deref() == Some(sid));
                 session_ok && e.content.to_lowercase().contains(&q)
             })
             .map(to_entry)
@@ -132,8 +131,8 @@ impl MemoryStore for LruMemory {
         Ok(g.map
             .values()
             .filter(|e| {
-                let cat_ok = category.map_or(true, |c| e.category == c);
-                let sid_ok = session_id.map_or(true, |sid| e.session_id.as_deref() == Some(sid));
+                let cat_ok = category.is_none_or(|c| e.category == c);
+                let sid_ok = session_id.is_none_or(|sid| e.session_id.as_deref() == Some(sid));
                 cat_ok && sid_ok
             })
             .map(to_entry)

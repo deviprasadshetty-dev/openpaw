@@ -11,6 +11,9 @@ pub struct FileWriteTool {
     pub allowed_paths: Vec<String>,
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl Tool for FileWriteTool {
     fn name(&self) -> &str {
         "file_write"
@@ -24,7 +27,7 @@ impl Tool for FileWriteTool {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path to the file within the workspace"},"content":{"type":"string","description":"Content to write to the file"}},"required":["path","content"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolResult::fail("Missing 'path' parameter")),
@@ -89,7 +92,7 @@ impl Tool for FileWriteTool {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let tmp_name = format!(".nullclaw-write-{}.tmp", timestamp);
+        let tmp_name = format!(".openpaw-write-{}.tmp", timestamp);
         let tmp_path = resolved_parent.join(&tmp_name);
 
         let mut file = match fs::File::create(&tmp_path) {

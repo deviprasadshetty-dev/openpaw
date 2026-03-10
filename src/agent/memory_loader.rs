@@ -11,12 +11,15 @@ pub struct MemoryEntry {
 pub trait Memory: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
     fn store(&self, key: &str, content: &str, session_id: Option<&str>) -> Result<()>;
+    fn get(&self, key: &str) -> Result<Option<MemoryEntry>>;
     fn recall(
         &self,
         query: &str,
         limit: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>>;
+    fn list(&self, session_id: Option<&str>) -> Result<Vec<MemoryEntry>>;
+    fn forget(&self, key: &str) -> Result<bool>;
     fn semantic_recall(
         &self,
         _query: &str,
@@ -33,6 +36,9 @@ impl Memory for NoopMemory {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn get(&self, _key: &str) -> Result<Option<MemoryEntry>> {
+        Ok(None)
+    }
     fn store(&self, _key: &str, _content: &str, _session_id: Option<&str>) -> Result<()> {
         Ok(())
     }
@@ -43,6 +49,12 @@ impl Memory for NoopMemory {
         _session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
         Ok(vec![])
+    }
+    fn list(&self, _session_id: Option<&str>) -> Result<Vec<MemoryEntry>> {
+        Ok(vec![])
+    }
+    fn forget(&self, _key: &str) -> Result<bool> {
+        Ok(false)
     }
 }
 
@@ -66,6 +78,19 @@ impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAda
         )
     }
 
+    fn get(&self, key: &str) -> Result<Option<MemoryEntry>> {
+        let entry = self.inner.get(key)?;
+        Ok(entry.map(|e| MemoryEntry {
+            key: e.key,
+            content: e.content,
+            session_id: e.session_id,
+        }))
+    }
+
+    fn forget(&self, key: &str) -> Result<bool> {
+        self.inner.forget(key)
+    }
+
     fn recall(
         &self,
         query: &str,
@@ -73,6 +98,18 @@ impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAda
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
         let entries = self.inner.recall(query, limit, session_id)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| MemoryEntry {
+                key: e.key,
+                content: e.content,
+                session_id: e.session_id,
+            })
+            .collect())
+    }
+
+    fn list(&self, session_id: Option<&str>) -> Result<Vec<MemoryEntry>> {
+        let entries = self.inner.recall("", 1000, session_id)?;
         Ok(entries
             .into_iter()
             .map(|e| MemoryEntry {

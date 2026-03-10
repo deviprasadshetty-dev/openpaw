@@ -15,11 +15,10 @@ impl SchemaCleanr {
     }
 
     pub fn validate(schema_json: &str) -> bool {
-        if let Ok(val) = serde_json::from_str::<Value>(schema_json) {
-            if let Some(obj) = val.as_object() {
+        if let Ok(val) = serde_json::from_str::<Value>(schema_json)
+            && let Some(obj) = val.as_object() {
                 return obj.contains_key("type");
             }
-        }
         false
     }
 

@@ -22,6 +22,7 @@ use crate::providers::{Provider, gemini::GeminiProvider, openai::OpenAiCompatibl
 pub struct ProviderConfig {
     pub api_key: String,
     pub base_url: Option<String>,
+    pub model: Option<String>,
     pub max_retries: Option<u32>,
 }
 
@@ -115,6 +116,7 @@ pub fn create_with_fallbacks(
             Some(&ProviderConfig {
                 api_key: cfg.api_key.clone(),
                 base_url: cfg.base_url.clone(),
+                model: cfg.model.clone(),
                 max_retries: None,
             }),
         ));
@@ -134,6 +136,7 @@ pub fn create_with_fallbacks(
                 Some(&ProviderConfig {
                     api_key: cfg.api_key.clone(),
                     base_url: cfg.base_url.clone(),
+                    model: cfg.model.clone(),
                     max_retries: None,
                 }),
             ));
@@ -158,6 +161,7 @@ fn default_base_url(name: &str) -> &'static str {
         "kilocode" => "https://api.kilo.ai/api/gateway",
         "ollama" => "http://localhost:11434/v1",
         "lmstudio" => "http://localhost:1234/v1",
+        "openai-compatible" => "http://localhost:8080/v1",
         _ => "https://api.openai.com/v1",
     }
 }
@@ -168,7 +172,7 @@ fn resolve_env_key(name: &str) -> String {
         "openrouter" => "OPENROUTER_API_KEY",
         "opencode" => "OPENCODE_API_KEY",
         "kilocode" => "KILOCODE_API_KEY",
-        "ollama" | "lmstudio" => return String::new(), // no key needed
+        "ollama" | "lmstudio" | "openai-compatible" => return String::new(), // no key needed or custom
         _ => "OPENAI_API_KEY",
     };
     std::env::var(env_var).unwrap_or_default()

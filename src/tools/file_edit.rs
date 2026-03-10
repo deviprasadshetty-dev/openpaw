@@ -1,5 +1,6 @@
 use super::{Tool, ToolContext, ToolResult, path_security};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
@@ -11,35 +12,36 @@ pub struct FileEditTool {
     pub max_file_size: usize,
 }
 
+#[async_trait]
 impl Tool for FileEditTool {
     fn name(&self) -> &str {
         "file_edit"
     }
 
     fn description(&self) -> &str {
-        "Find and replace text in a file"
+        "Edit a file using search and replace"
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path to the file within the workspace"},"old_text":{"type":"string","description":"Text to find in the file"},"new_text":{"type":"string","description":"Replacement text"}},"required":["path","old_text","new_text"]}"#.to_string()
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path to the file"},"search":{"type":"string","description":"String to find"},"replace":{"type":"string","description":"String to replace with"}},"required":["path","search","replace"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolResult::fail("Missing 'path' parameter")),
         };
-        let old_text = match args.get("old_text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => return Ok(ToolResult::fail("Missing 'old_text' parameter")),
+        let search = match args.get("search").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return Ok(ToolResult::fail("Missing 'search' parameter")),
         };
-        let new_text = match args.get("new_text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => return Ok(ToolResult::fail("Missing 'new_text' parameter")),
+        let replace = match args.get("replace").and_then(|v| v.as_str()) {
+            Some(r) => r,
+            None => return Ok(ToolResult::fail("Missing 'replace' parameter")),
         };
 
-        if old_text.is_empty() {
-            return Ok(ToolResult::fail("old_text must not be empty"));
+        if search.is_empty() {
+            return Ok(ToolResult::fail("search must not be empty"));
         }
 
         let full_path = if Path::new(path_str).is_absolute() {
@@ -95,14 +97,13 @@ impl Tool for FileEditTool {
             Err(e) => return Ok(ToolResult::fail(format!("Failed to read file: {}", e))),
         };
 
-        if !content.contains(old_text) {
-            return Ok(ToolResult::fail("old_text not found in file"));
+        if !content.contains(search) {
+            return Ok(ToolResult::fail("search string not found in file"));
         }
 
-        let new_content = content.replacen(old_text, new_text, 1);
+        let new_content = content.replacen(search, replace, 1);
 
-        // Write back directly (atomicity handled by file_write but here we simplify for edit)
-        // Ideally should use temp file pattern like file_write
+        // Write back directly
         let mut file = match fs::File::create(&resolved) {
             Ok(f) => f,
             Err(e) => {
@@ -118,10 +119,8 @@ impl Tool for FileEditTool {
         }
 
         Ok(ToolResult::ok(format!(
-            "Replaced {} bytes with {} bytes in {}",
-            old_text.len(),
-            new_text.len(),
-            path_str
+            "Replaced '{}' with '{}' in {}",
+            search, replace, path_str
         )))
     }
 }

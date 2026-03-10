@@ -23,9 +23,8 @@ pub fn is_path_safe(path: &str) -> bool {
     // Here we just check for basic syntax safety
     
     for component in p.components() {
-        match component {
-            Component::ParentDir => return false, // ".." is strictly forbidden in input
-            _ => {}
+        if component == Component::ParentDir {
+            return false; // ".." is strictly forbidden in input
         }
     }
     
@@ -83,11 +82,10 @@ pub fn is_resolved_path_allowed(
 
     // 4. Check Allowed External Paths
     for allowed in additional_allowed_paths {
-        if let Ok(allowed_canon) = std::fs::canonicalize(allowed) {
-            if canonical_target.starts_with(&allowed_canon) {
+        if let Ok(allowed_canon) = std::fs::canonicalize(allowed)
+            && canonical_target.starts_with(&allowed_canon) {
                 return true;
             }
-        }
     }
 
     false

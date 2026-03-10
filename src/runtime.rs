@@ -23,7 +23,7 @@ impl RuntimeAdapter for NativeRuntime {
     }
 
     fn storage_path(&self) -> &str {
-        ".nullclaw"
+        ".openpaw"
     }
 
     fn supports_long_running(&self) -> bool {

@@ -15,6 +15,9 @@ pub struct ShellTool {
     pub max_output_bytes: usize,
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl Tool for ShellTool {
     fn name(&self) -> &str {
         "shell"
@@ -28,7 +31,7 @@ impl Tool for ShellTool {
         r#"{"type":"object","properties":{"command":{"type":"string","description":"The shell command to execute"},"cwd":{"type":"string","description":"Working directory (absolute path within allowed paths; defaults to workspace)"}},"required":["command"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing 'command' parameter")),
@@ -81,9 +84,14 @@ impl Tool for ShellTool {
             env_clear: true,
             env_vars: Some(&env_map),
             max_output_bytes: self.max_output_bytes,
+            timeout_ms: self.timeout_ns / 1_000_000, // Convert ns to ms
         };
 
-        let result = process_util::run(&argv, opts)?;
+        let result = process_util::run(&argv, opts).await?;
+
+        if result.timed_out {
+            return Ok(ToolResult::fail("Command timed out"));
+        }
 
         if result.success {
             let output = if !result.stdout.is_empty() {

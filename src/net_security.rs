@@ -37,12 +37,10 @@ pub fn extract_host(url: &str) -> Option<String> {
         } else {
             return None; // Invalid IPv6
         }
+    } else if let Some(colon_idx) = host_port.find(':') {
+        &host_port[..colon_idx]
     } else {
-        if let Some(colon_idx) = host_port.find(':') {
-            &host_port[..colon_idx]
-        } else {
-            host_port
-        }
+        host_port
     };
 
     if host.is_empty() {
@@ -64,15 +62,13 @@ pub fn host_matches_allowlist(host: &str, allowed: &[String]) -> bool {
             return true;
         }
         // Wildcard subdomain: "*.example.com" matches "api.example.com"
-        if pattern.starts_with("*.") {
-            let domain = &pattern[2..];
-            if host.ends_with(domain) {
+        if let Some(domain) = pattern.strip_prefix("*.")
+            && host.ends_with(domain) {
                 let prefix_len = host.len().saturating_sub(domain.len());
                 if prefix_len > 0 && host.as_bytes()[prefix_len - 1] == b'.' {
                     return true;
                 }
             }
-        }
         // Implicit subdomain match (like browser_open does)
         if host.len() > pattern.len() {
             let offset = host.len() - pattern.len();

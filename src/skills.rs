@@ -113,7 +113,7 @@ pub fn load_skill(skill_dir: &Path) -> Result<Skill> {
     skill.path = skill_dir.to_string_lossy().into_owned();
 
     // Normalize sibling-agent names so imported skills don't confuse OpenPaw
-    // about its own identity (e.g. a Nullclaw skill saying "you are Nullclaw").
+    // about its own identity (e.g. an OpenPaw skill saying "you are OpenPaw").
     skill.name = normalize_agent_name(&skill.name);
     skill.instructions = normalize_agent_name(&skill.instructions);
 

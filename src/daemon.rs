@@ -30,6 +30,8 @@ pub struct ComponentStatus {
     pub running: bool,
     pub restart_count: u64,
     pub last_error: Option<String>,
+    pub backoff_secs: u64,
+    pub last_restart_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +61,8 @@ impl DaemonState {
                 running: true,
                 restart_count: 0,
                 last_error: None,
+                backoff_secs: 1,
+                last_restart_at: None,
             });
         }
     }
@@ -68,6 +72,7 @@ impl DaemonState {
             comp.running = false;
             comp.last_error = Some(err_msg.to_string());
             comp.restart_count += 1;
+            comp.backoff_secs = compute_backoff(comp.backoff_secs, 60);
         }
     }
 
@@ -75,6 +80,13 @@ impl DaemonState {
         if let Some(comp) = self.components.iter_mut().find(|c| c.name == name) {
             comp.running = true;
             comp.last_error = None;
+            comp.backoff_secs = 1; // Reset backoff on success
+            comp.last_restart_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            );
         }
     }
 }
@@ -109,9 +121,41 @@ pub fn is_shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Acquire)
 }
 
-pub async fn gateway_thread(config: Config) {
-    if let Err(e) = gateway::serve(config).await {
-        eprintln!("Gateway error: {}", e);
+pub async fn gateway_thread(config: Arc<Config>, state: Arc<std::sync::Mutex<DaemonState>>) {
+    let name = "gateway";
+    loop {
+        if is_shutdown_requested() {
+            break;
+        }
+
+        {
+            let mut guard = state.lock().unwrap();
+            guard.mark_running(name);
+        }
+
+        info!("Starting gateway...");
+        let cfg = (*config).clone();
+        if let Err(e) = gateway::serve(cfg).await {
+            error!("Gateway failed: {}", e);
+            let backoff;
+            {
+                let mut guard = state.lock().unwrap();
+                guard.mark_error(name, &e.to_string());
+                backoff = guard
+                    .components
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map(|c| c.backoff_secs)
+                    .unwrap_or(1);
+            }
+            tokio::time::sleep(Duration::from_secs(backoff)).await;
+        } else {
+            if is_shutdown_requested() {
+                break;
+            }
+            warn!("Gateway exited normally, restarting in 1s...");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 }
 
@@ -176,26 +220,56 @@ fn print_startup_info(config: &Config) {
 }
 
 pub fn heartbeat_thread(
-    _config: Config,
-    _state: Arc<std::sync::Mutex<DaemonState>>,
+    config: Arc<Config>,
+    state: Arc<std::sync::Mutex<DaemonState>>,
     engine: HeartbeatEngine,
 ) {
+    let state_path = state_file_path(&config.config_path);
+
     while !is_shutdown_requested() {
+        // Write state file
+        {
+            let guard = state.lock().unwrap();
+            if let Err(e) = write_state_file(&state_path, &guard) {
+                warn!("Failed to write state file: {}", e);
+            }
+        }
+
         if let Err(e) = engine.tick(()) {
             warn!("Heartbeat tick failed: {}", e);
         }
+
         thread::sleep(Duration::from_secs(STATUS_FLUSH_SECONDS));
     }
 }
 
-pub fn scheduler_thread(_config: Config, scheduler: Arc<CronScheduler>) {
+pub fn scheduler_thread(
+    config: Arc<Config>,
+    state: Arc<std::sync::Mutex<DaemonState>>,
+    scheduler: Arc<CronScheduler>,
+) {
+    let name = "scheduler";
+    let poll_secs = config.reliability.scheduler_poll_secs; // Assuming this exists or using default
+
     while !is_shutdown_requested() {
+        {
+            let mut guard = state.lock().unwrap();
+            guard.mark_running(name);
+        }
+
         scheduler.tick();
-        thread::sleep(Duration::from_secs(60));
+
+        // Dynamic sleep to honor poll_secs
+        thread::sleep(Duration::from_secs(poll_secs));
     }
 }
 
-pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionManager>) {
+pub fn inbound_dispatcher_thread(
+    bus: Arc<Bus>,
+    session_manager: Arc<SessionManager>,
+    state: Arc<std::sync::Mutex<DaemonState>>,
+) {
+    let name = "inbound_dispatcher";
     info!("Inbound dispatcher thread started");
 
     // Create a multi-threaded Tokio runtime for concurrent processing
@@ -209,14 +283,57 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
             break;
         }
 
+        {
+            let mut guard = state.lock().unwrap();
+            guard.mark_running(name);
+        }
+
         if let Some(msg) = bus.consume_inbound_timeout(Duration::from_millis(100)) {
+            // Integrate Routing
+            let mut input = crate::config_types::RouteInput {
+                channel: msg.channel.clone(),
+                account_id: String::new(), // To be resolved
+                peer: None,
+                parent_peer: None,
+                guild_id: None,
+                team_id: None,
+                member_role_ids: Vec::new(),
+            };
+
+            // Parse metadata if available
+            if let Some(meta_json) = &msg.metadata_json
+                && let Ok(meta) =
+                    serde_json::from_str::<crate::channel_adapters::InboundMetadata>(meta_json)
+                {
+                    input.account_id = meta.account_id.unwrap_or_default();
+                    input.guild_id = meta.guild_id;
+                    input.team_id = meta.team_id;
+                    if let (Some(kind), Some(id)) = (meta.peer_kind, meta.peer_id) {
+                        input.peer = Some(crate::config_types::PeerRef { kind, id });
+                    }
+                }
+
+            if input.account_id.is_empty() {
+                // Determine account_id from session_key if not in metadata (legacy logic)
+                if let Some(idx) = msg.session_key.find(':') {
+                    input.account_id = msg.session_key[0..idx].to_string();
+                }
+            }
+
+            let route = crate::agent_routing::resolve_route_with_session(
+                &input,
+                &session_manager.get_config().bindings,
+                &session_manager.get_config().agents,
+                &session_manager.get_config().session,
+            );
+
             // Process message in the local runtime
-            let session_key = msg.session_key.clone();
+            let session_key = route.session_key.clone();
+            let agent_id = route.agent_id.clone();
             let content = msg.content.clone();
             let channel = msg.channel.clone();
             let chat_id = msg.chat_id.clone();
             let sender_id = msg.sender_id.clone();
-            let session_key_inner = msg.session_key.clone();
             let sm = session_manager.clone();
             let bus_clone = bus.clone();
 
@@ -251,11 +368,11 @@ pub fn inbound_dispatcher_thread(bus: Arc<Bus>, session_manager: Arc<SessionMana
                     channel: channel.clone(),
                     chat_id: chat_id.clone(),
                     sender_id: sender_id.clone(),
-                    session_key: session_key_inner.clone(),
+                    session_key: session_key.clone(),
                 };
 
                 match sm
-                    .process_message_stream(&session_key, content, context, stream_cb)
+                    .process_message_stream(&session_key, &agent_id, content, context, stream_cb)
                     .await
                 {
                     Ok(response_text) => {
@@ -370,11 +487,205 @@ pub fn init_channels(
 pub fn start_outbound_dispatcher(
     bus: Arc<Bus>,
     registry: Arc<ChannelRegistry>,
+    state: Arc<std::sync::Mutex<DaemonState>>,
 ) -> thread::JoinHandle<()> {
-    run_outbound_dispatcher(bus, registry)
+    let name = "outbound_dispatcher";
+    thread::spawn(move || {
+        {
+            let mut guard = state.lock().unwrap();
+            guard.mark_running(name);
+        }
+        run_outbound_dispatcher(bus, registry);
+    })
 }
 
 /// Create the appropriate provider based on config, wrapped in ReliableProvider.
+pub async fn build_tools(
+    config: &Config,
+    subagent_manager: Option<Arc<crate::subagent::SubagentManager>>,
+    memory: Option<Arc<dyn crate::agent::memory_loader::Memory>>,
+    cron: Option<Arc<crate::cron::CronScheduler>>,
+) -> Vec<Arc<dyn crate::tools::Tool>> {
+    let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+
+    let _raw_memory_store: Option<Arc<dyn crate::memory::MemoryStore>> =
+        match config.memory.backend.as_str() {
+            "markdown" => Some(Arc::new(
+                crate::memory::engines::markdown::MarkdownMemory::from_workspace(
+                    &config.workspace_dir,
+                ),
+            )),
+            "none" => None,
+            _ => {
+                let db_path = format!("{}/memory.db", config.workspace_dir);
+                match crate::memory::sqlite::SqliteMemory::new(&db_path) {
+                    Ok(m) => Some(Arc::new(m)),
+                    Err(_) => None,
+                }
+            }
+        };
+
+    if let Some(mem) = memory {
+        tools.push(Arc::new(crate::tools::memory_store::MemoryStoreTool {
+            memory: mem.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::memory_recall::MemoryRecallTool {
+            memory: mem.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::memory_forget::MemoryForgetTool {
+            memory: mem.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::memory_list::MemoryListTool {
+            memory: mem.clone(),
+        }));
+    }
+
+    tools.push(Arc::new(crate::tools::file_read::FileReadTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+        max_file_size: 10 * 1024 * 1024,
+    }));
+    tools.push(Arc::new(crate::tools::file_write::FileWriteTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+    }));
+    tools.push(Arc::new(crate::tools::file_edit::FileEditTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+        max_file_size: 10 * 1024 * 1024,
+    }));
+    tools.push(Arc::new(crate::tools::file_append::FileAppendTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+        max_file_size: 10 * 1024 * 1024,
+    }));
+
+    tools.push(Arc::new(crate::tools::shell::ShellTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+        timeout_ns: 30_000_000_000,
+        max_output_bytes: 1024 * 1024,
+    }));
+
+    tools.push(Arc::new(crate::tools::git::GitTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+    }));
+
+    tools.push(Arc::new(crate::tools::http_request::HttpRequestTool {
+        max_response_size: config.http_request.max_response_size as usize,
+        timeout_secs: config.http_request.timeout_secs,
+        allowed_domains: config.http_request.allowed_domains.clone(),
+    }));
+
+    if config.composio.enabled
+        && let Some(api_key) = &config.composio.api_key {
+            tools.push(Arc::new(crate::tools::composio::ComposioTool {
+                api_key: api_key.clone(),
+                entity_id: config.composio.entity_id.clone(),
+            }));
+        }
+
+    tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
+        config.workspace_dir.clone(),
+    )));
+
+    let mut search_tool = crate::tools::web_search::WebSearchTool::default();
+    let req_config = &config.http_request;
+    search_tool.provider = req_config.search_provider.clone();
+    search_tool.api_key = req_config.brave_search_api_key.clone();
+    tools.push(Arc::new(search_tool));
+
+    tools.push(Arc::new(crate::tools::web_fetch::WebFetchTool {
+        default_max_chars: 50_000,
+    }));
+
+    tools.push(Arc::new(crate::tools::skill_search::SkillSearchTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::skill_install::SkillInstallTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::skill_list::SkillListTool {
+        workspace_dir: config.workspace_dir.clone(),
+        builtin_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(
+        crate::tools::skill_uninstall::SkillUninstallTool {
+            workspace_dir: config.workspace_dir.clone(),
+        },
+    ));
+
+    tools.push(Arc::new(crate::tools::browser_open::BrowserOpenTool {
+        allowed_domains: config.http_request.allowed_domains.clone(),
+    }));
+
+    tools.push(Arc::new(crate::tools::schedule::ScheduleTool {}));
+    if let Some(cr) = cron {
+        tools.push(Arc::new(crate::tools::cron_add::CronAddTool {
+            cron: cr.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::cron_list::CronListTool {
+            cron: cr.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::cron_remove::CronRemoveTool {
+            cron: cr.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::cron_run::CronRunTool {
+            cron: cr.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::cron_runs::CronRunsTool {
+            cron: cr.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::cron_update::CronUpdateTool {
+            cron: cr.clone(),
+        }));
+    }
+
+    tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
+    tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {}));
+    tools.push(Arc::new(crate::tools::pushover::PushoverTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+
+    tools.push(Arc::new(crate::tools::hardware_info::HardwareInfoTool {}));
+    tools.push(Arc::new(crate::tools::hardware_memory::HardwareMemoryTool {
+        boards: Vec::new(),
+    }));
+    tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
+    tools.push(Arc::new(crate::tools::spi::SpiTool {}));
+
+    if let Ok(mcp_tools) = crate::mcp::init_mcp_tools(&config.mcp_servers).await {
+        for tool in mcp_tools {
+            tools.push(tool);
+        }
+    }
+
+    if let Ok(skills) = crate::skills::list_skills(Path::new(&config.workspace_dir)) {
+        for skill in skills {
+            if skill.enabled && skill.available {
+                let skill_path = std::path::PathBuf::from(&skill.path);
+                for tool_def in skill.tools {
+                    tools.push(Arc::new(crate::tools::skill_tool::DynamicSkillTool {
+                        definition: tool_def,
+                        skill_path: skill_path.clone(),
+                    }));
+                }
+            }
+        }
+    }
+
+    if let Some(sm) = subagent_manager {
+        tools.push(Arc::new(crate::tools::delegate::DelegateTool {}));
+        tools.push(Arc::new(crate::tools::spawn::SpawnTool {
+            subagent_manager: sm,
+        }));
+        tools.push(Arc::new(crate::tools::message::MessageTool::new()));
+    }
+
+    tools
+}
+
 pub fn create_provider(config: &Config) -> Arc<dyn Provider> {
     let provider_name = &config.default_provider;
     factory::create_with_fallbacks(provider_name, config)
@@ -383,11 +694,24 @@ pub fn create_provider(config: &Config) -> Arc<dyn Provider> {
 pub async fn run_daemon(config: Config) -> Result<()> {
     info!("Initializing OpenPaw daemon...");
 
+    let config = Arc::new(config);
+
     // Initialize the global bus first (before any threads that use it)
     // All threads will clone this to share the same underlying channels
     let global_bus = bus::init_global_bus().clone();
     let bus = Arc::new(global_bus);
     let daemon_state = Arc::new(std::sync::Mutex::new(DaemonState::default()));
+    {
+        let mut ds = daemon_state.lock().unwrap();
+        ds.gateway_host = config.gateway.host.clone();
+        ds.gateway_port = config.gateway.port;
+        ds.add_component("gateway");
+        ds.add_component("heartbeat");
+        ds.add_component("scheduler");
+        ds.add_component("inbound_dispatcher");
+        ds.add_component("outbound_dispatcher");
+        ds.started = true;
+    }
 
     // Initialize Provider based on config
     let provider: Arc<dyn Provider> = create_provider(&config);
@@ -423,8 +747,8 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                             .and_then(|m| m.providers.get(provider_name))
                         {
                             let provider_key = p_cfg.api_key.trim();
-                            let has_real_provider_key = !provider_key.is_empty()
-                                && !(provider_name == "gemini"
+                            let has_real_provider_key = !(provider_key.is_empty()
+                                || provider_name == "gemini"
                                     && provider_key.eq_ignore_ascii_case("cli_oauth"));
 
                             if has_real_provider_key {
@@ -478,205 +802,33 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         }
     };
 
-    // Initialize Tools
-    let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-
-    // Memory tools — wire to the raw MemoryStore backend so the agent can
-    // explicitly store, recall, list, and forget memories at runtime.
-    let raw_memory_store: Option<Arc<dyn crate::memory::MemoryStore>> =
-        match config.memory.backend.as_str() {
-            "markdown" => Some(Arc::new(
-                crate::memory::engines::markdown::MarkdownMemory::from_workspace(
-                    &config.workspace_dir,
-                ),
-            )),
-            "none" => None,
-            _ => {
-                let db_path = format!("{}/memory.db", config.workspace_dir);
-                match crate::memory::sqlite::SqliteMemory::new(&db_path) {
-                    Ok(m) => Some(Arc::new(m)),
-                    Err(_) => None,
-                }
-            }
-        };
-
-    if let Some(ref ms) = raw_memory_store {
-        tools.push(Arc::new(crate::tools::memory_store::MemoryStoreTool {
-            memory: ms.clone(),
-        }));
-        tools.push(Arc::new(crate::tools::memory_recall::MemoryRecallTool {
-            memory: ms.clone(),
-        }));
-        tools.push(Arc::new(crate::tools::memory_forget::MemoryForgetTool {
-            memory: ms.clone(),
-        }));
-        tools.push(Arc::new(crate::tools::memory_list::MemoryListTool {
-            memory: ms.clone(),
-        }));
-    }
-
-    // File Tools
-    tools.push(Arc::new(crate::tools::file_read::FileReadTool {
-        workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
-        max_file_size: 10 * 1024 * 1024, // 10MB
-    }));
-    tools.push(Arc::new(crate::tools::file_write::FileWriteTool {
-        workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
-    }));
-    tools.push(Arc::new(crate::tools::file_edit::FileEditTool {
-        workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
-        max_file_size: 10 * 1024 * 1024,
-    }));
-    tools.push(Arc::new(crate::tools::file_append::FileAppendTool {
-        workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
-        max_file_size: 10 * 1024 * 1024,
-    }));
-
-    // Shell Tool
-    tools.push(Arc::new(crate::tools::shell::ShellTool {
-        workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
-        timeout_ns: 30_000_000_000, // 30s
-        max_output_bytes: 1024 * 1024,
-    }));
-
-    // Git Tool
-    tools.push(Arc::new(crate::tools::git::GitTool {
-        workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
-    }));
-
-    // HTTP Request Tool
-    tools.push(Arc::new(crate::tools::http_request::HttpRequestTool {
-        max_response_size: config.http_request.max_response_size as usize,
-        timeout_secs: config.http_request.timeout_secs,
-        allowed_domains: config.http_request.allowed_domains.clone(),
-    }));
-
-    // Composio Tool
-    if config.composio.enabled {
-        if let Some(api_key) = &config.composio.api_key {
-            tools.push(Arc::new(crate::tools::composio::ComposioTool {
-                api_key: api_key.clone(),
-                entity_id: config.composio.entity_id.clone(),
-            }));
-        }
-    }
-
-    // Browser Tool — auto-detects Chrome/Edge/Brave, uses dedicated openpaw profile
-    tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
-        config.workspace_dir.clone(),
-    )));
-
-    // Web Search Tool
-    let mut search_tool = crate::tools::web_search::WebSearchTool::default();
-    let req_config = &config.http_request;
-    search_tool.provider = req_config.search_provider.clone();
-    search_tool.api_key = req_config.brave_search_api_key.clone();
-    tools.push(Arc::new(search_tool));
-
-    // Web Fetch Tool
-    tools.push(Arc::new(crate::tools::web_fetch::WebFetchTool {
-        default_max_chars: 50_000,
-    }));
-
-    // Skill Tools — search GitHub for skills and install them into workspace/skills/
-    tools.push(Arc::new(crate::tools::skill_search::SkillSearchTool {
-        workspace_dir: config.workspace_dir.clone(),
-    }));
-    tools.push(Arc::new(crate::tools::skill_install::SkillInstallTool {
-        workspace_dir: config.workspace_dir.clone(),
-    }));
-    tools.push(Arc::new(crate::tools::skill_list::SkillListTool {
-        workspace_dir: config.workspace_dir.clone(),
-        builtin_dir: config.workspace_dir.clone(), // Assuming built-ins are also in workspace for now or reachable
-    }));
-    tools.push(Arc::new(
-        crate::tools::skill_uninstall::SkillUninstallTool {
-            workspace_dir: config.workspace_dir.clone(),
-        },
-    ));
-
-    // Browser Open Tool
-    tools.push(Arc::new(crate::tools::browser_open::BrowserOpenTool {
-        allowed_domains: config.http_request.allowed_domains.clone(),
-    }));
-
-    // Cron/Schedule Tools
-    tools.push(Arc::new(crate::tools::schedule::ScheduleTool {}));
-    tools.push(Arc::new(crate::tools::cron_add::CronAddTool {}));
-    tools.push(Arc::new(crate::tools::cron_list::CronListTool {}));
-    tools.push(Arc::new(crate::tools::cron_remove::CronRemoveTool {}));
-    tools.push(Arc::new(crate::tools::cron_run::CronRunTool {}));
-    tools.push(Arc::new(crate::tools::cron_runs::CronRunsTool {}));
-    tools.push(Arc::new(crate::tools::cron_update::CronUpdateTool {}));
-
-    // Utility Tools
-    tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
-    tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
-        workspace_dir: config.workspace_dir.clone(),
-    }));
-    tools.push(Arc::new(crate::tools::pushover::PushoverTool {
-        workspace_dir: config.workspace_dir.clone(),
-    }));
-    tools.push(Arc::new(crate::tools::delegate::DelegateTool {}));
     // Initialize Subagent Manager
     let subagent_manager = Arc::new(crate::subagent::SubagentManager::new(
         bus.clone(),
         crate::subagent::SubagentConfig::default(),
+        (*config).clone(),
     ));
 
-    tools.push(Arc::new(crate::tools::spawn::SpawnTool {
-        subagent_manager: subagent_manager.clone(),
-    }));
-    tools.push(Arc::new(crate::tools::message::MessageTool::new()));
+    // Start Scheduler
+    let bus_handle = bus.clone();
+    let scheduler = Arc::new(CronScheduler::init((), &config, &bus_handle));
 
-    // Hardware Tools
-    tools.push(Arc::new(
-        crate::tools::hardware_info::HardwareBoardInfoTool { boards: Vec::new() },
-    ));
-    tools.push(Arc::new(
-        crate::tools::hardware_memory::HardwareMemoryTool { boards: Vec::new() },
-    ));
-    tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
-    tools.push(Arc::new(crate::tools::spi::SpiTool {}));
+    // Initialize Tools
+    let tools = build_tools(
+        &config,
+        Some(subagent_manager.clone()),
+        memory.clone(),
+        Some(scheduler.clone()),
+    )
+    .await;
 
-    // Dynamic Skill Tools — tools defined in SKILL.toml/skill.json
-    if let Ok(skills) = crate::skills::list_skills(Path::new(&config.workspace_dir)) {
-        for skill in skills {
-            if skill.enabled && skill.available {
-                let skill_path = std::path::PathBuf::from(&skill.path);
-                for tool_def in skill.tools {
-                    tools.push(Arc::new(crate::tools::skill_tool::DynamicSkillTool {
-                        definition: tool_def,
-                        skill_path: skill_path.clone(),
-                    }));
-                }
-            }
-        }
-    }
-
-    let session_manager = Arc::new(SessionManager::new(
-        provider,
-        tools,
-        memory,
-        config.default_model.clone().unwrap_or("gpt-4o".to_string()),
-        config.workspace_dir.clone(),
-        if config.config_path.is_empty() {
-            None
-        } else {
-            Some(config.config_path.clone())
-        },
-    ));
+    let session_manager = Arc::new(SessionManager::new(config.clone(), provider, tools, memory));
 
     // Start Inbound Dispatcher
     let bus_clone = bus.clone();
     let sm_clone = session_manager.clone();
-    thread::spawn(move || inbound_dispatcher_thread(bus_clone, sm_clone));
+    let ds_clone = daemon_state.clone();
+    thread::spawn(move || inbound_dispatcher_thread(bus_clone, sm_clone, ds_clone));
 
     // Finish Subagent Manager initialization (inject session manager to break circularity)
     subagent_manager.set_session_manager(session_manager.clone());
@@ -710,7 +862,8 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let registry = Arc::new(registry);
 
     // Start Outbound Dispatcher
-    let dispatcher_handle = start_outbound_dispatcher(bus.clone(), registry.clone());
+    let ds_clone = daemon_state.clone();
+    let dispatcher_handle = start_outbound_dispatcher(bus.clone(), registry.clone(), ds_clone);
 
     // Start Heartbeat
     let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, None);
@@ -718,20 +871,20 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let config_clone = config.clone();
     thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine));
 
-    // Start Gateway (Web UI)
+    let config_clone2 = config.clone();
+    let sched_clone = scheduler.clone();
+    let ds_clone = daemon_state.clone();
+    thread::spawn(move || scheduler_thread(config_clone2, ds_clone, sched_clone));
+
+    // Start Gateway (Web UI) supervised
     let config_clone = config.clone();
+    let ds_clone = daemon_state.clone();
     tokio::spawn(async move {
-        gateway_thread(config_clone).await;
+        gateway_thread(config_clone, ds_clone).await;
     });
 
     // Print startup info
     print_startup_info(&config);
-
-    // Start Scheduler
-    let scheduler = Arc::new(CronScheduler::init((), &config, &bus));
-    let config_clone2 = config.clone();
-    let sched_clone = scheduler.clone();
-    thread::spawn(move || scheduler_thread(config_clone2, sched_clone));
 
     // Run health check
     let health = registry.health_check_all();

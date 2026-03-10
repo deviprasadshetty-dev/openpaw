@@ -1,43 +1,41 @@
 use super::{Tool, ToolContext, ToolResult};
-use crate::memory::MemoryStore;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
+
 use std::sync::Arc;
 
 pub struct MemoryForgetTool {
-    pub memory: Arc<dyn MemoryStore>,
+    pub memory: Arc<dyn crate::agent::memory_loader::Memory>,
 }
 
+#[async_trait]
 impl Tool for MemoryForgetTool {
     fn name(&self) -> &str {
         "memory_forget"
     }
 
     fn description(&self) -> &str {
-        "Remove a memory by key. Use to delete outdated facts or sensitive data."
+        "Forget a key-value pair from long-term memory"
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"key":{"type":"string","description":"The key of the memory to forget"}},"required":["key"]}"#.to_string()
+        r#"{"type":"object","properties":{"key":{"type":"string","description":"The key to forget"}},"required":["key"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let key = match args.get("key").and_then(|v| v.as_str()) {
             Some(k) => k,
             None => return Ok(ToolResult::fail("Missing 'key' parameter")),
         };
-        if key.is_empty() {
-            return Ok(ToolResult::fail("'key' must not be empty"));
-        }
 
-        // Assume `forget` exists
         match self.memory.forget(key) {
-            Ok(true) => Ok(ToolResult::ok(format!("Forgot memory: {}", key))),
-            Ok(false) => Ok(ToolResult::ok(format!("No memory found with key: {}", key))),
-            Err(e) => Ok(ToolResult::fail(format!(
-                "Failed to forget memory '{}': {}",
-                key, e
+            Ok(true) => Ok(ToolResult::ok(format!("Successfully forgot key: {}", key))),
+            Ok(false) => Ok(ToolResult::fail(format!(
+                "No memory found for key: {}",
+                key
             ))),
+            Err(e) => Ok(ToolResult::fail(format!("Failed to forget memory: {}", e))),
         }
     }
 }

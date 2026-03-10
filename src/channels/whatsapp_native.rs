@@ -7,7 +7,7 @@ use super::root::{Channel, ParsedMessage};
 
 pub struct WhatsAppNativeChannel {
     bridge_url: String,
-    webhook_url: String,
+    _webhook_url: String,
     allow_from: Vec<String>,
     client: Client,
 }
@@ -26,7 +26,7 @@ impl WhatsAppNativeChannel {
             } else {
                 bridge_url
             },
-            webhook_url,
+            _webhook_url: webhook_url,
             allow_from,
             client: Client::new(),
         }

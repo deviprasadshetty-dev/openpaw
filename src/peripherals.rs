@@ -27,10 +27,10 @@ pub struct SerialPeripheral {
     peripheral_name: String,
     board_type_str: String,
     port_path: String,
-    baud_rate: u32,
+    _baud_rate: u32,
     connected: bool,
     // serial_port: Option<Box<dyn serialport::SerialPort>>, // Dependency needed
-    msg_id: u32,
+    _msg_id: u32,
 }
 
 impl SerialPeripheral {
@@ -42,9 +42,9 @@ impl SerialPeripheral {
             peripheral_name: board.to_string(),
             board_type_str: board.to_string(),
             port_path: port_path.to_string(),
-            baud_rate: baud,
+            _baud_rate: baud,
             connected: false,
-            msg_id: 0,
+            _msg_id: 0,
         })
     }
 

@@ -60,20 +60,16 @@ impl BridgeManager {
         // Spawn threads to capture output
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    info!("[WhatsApp Bridge] {}", l);
-                    // Special detection for QR codes or pairing status could go here
-                }
+            for l in reader.lines().map_while(Result::ok) {
+                info!("[WhatsApp Bridge] {}", l);
+                // Special detection for QR codes or pairing status could go here
             }
         });
 
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    warn!("[WhatsApp Bridge Error] {}", l);
-                }
+            for l in reader.lines().map_while(Result::ok) {
+                warn!("[WhatsApp Bridge Error] {}", l);
             }
         });
 

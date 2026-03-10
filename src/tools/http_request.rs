@@ -1,7 +1,7 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
-use reqwest::Url;
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest::{Client, Url};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -11,6 +11,7 @@ pub struct HttpRequestTool {
     pub allowed_domains: Vec<String>,
 }
 
+#[async_trait]
 impl Tool for HttpRequestTool {
     fn name(&self) -> &str {
         "http_request"
@@ -24,7 +25,7 @@ impl Tool for HttpRequestTool {
         r#"{"type":"object","properties":{"url":{"type":"string","description":"URL to request"},"method":{"type":"string","description":"HTTP method (GET, POST, etc.)","default":"GET"},"headers":{"type":"object","description":"HTTP headers"},"body":{"type":"string","description":"Request body"}},"required":["url"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let url = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => return Ok(ToolResult::fail("Missing 'url' parameter")),
@@ -70,21 +71,20 @@ impl Tool for HttpRequestTool {
             _ => return Ok(ToolResult::fail(format!("Unsupported method: {}", method))),
         };
 
-        if let Some(h_val) = headers_json {
-            if let Some(h_map) = h_val.as_object() {
+        if let Some(h_val) = headers_json
+            && let Some(h_map) = h_val.as_object() {
                 for (k, v) in h_map {
                     if let Some(v_str) = v.as_str() {
                         req = req.header(k, v_str);
                     }
                 }
             }
-        }
 
         if let Some(b) = body_str {
             req = req.body(b.to_string());
         }
 
-        let resp = match req.send() {
+        let resp = match req.send().await {
             Ok(r) => r,
             Err(e) => return Ok(ToolResult::fail(format!("Request failed: {}", e))),
         };
@@ -92,8 +92,7 @@ impl Tool for HttpRequestTool {
         let status = resp.status();
         let success = status.is_success();
 
-        // Read body with limit
-        let text = match resp.text() {
+        let text = match resp.text().await {
             Ok(t) => {
                 if t.len() > self.max_response_size {
                     format!("{}\n\n[Content truncated]", &t[..self.max_response_size])

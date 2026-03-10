@@ -158,6 +158,10 @@ async fn main() -> Result<()> {
             pushover: Default::default(),
             mcp_servers: Default::default(),
             agents: Vec::new(),
+            reliability: Default::default(),
+            scheduler: Default::default(),
+            session: Default::default(),
+            bindings: Vec::new(),
             config_path: String::new(),
             workspace_dir: ".".to_string(),
             default_model: None,
@@ -237,16 +241,14 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     let provider = create_provider(&config);
 
     // Get model name
-    let model_name =
-        config
-            .default_model
-            .clone()
-            .unwrap_or_else(|| match config.default_provider.as_str() {
-                "gemini" => "gemini-2.5-flash".to_string(),
-                "openai" => "gpt-4o".to_string(),
-                "anthropic" => "claude-3-5-sonnet-20241022".to_string(),
-                _ => "gpt-4o".to_string(),
-            });
+    let model_name = config
+        .get_model_for_provider(&config.default_provider)
+        .unwrap_or_else(|| match config.default_provider.as_str() {
+            "gemini" => "gemini-2.0-flash".to_string(),
+            "openai" => "gpt-4o".to_string(),
+            "anthropic" => "claude-3-5-sonnet-latest".to_string(),
+            _ => "gpt-4o".to_string(),
+        });
 
     // Create agent with empty tools (one-shot mode doesn't need tools for now)
     let mut agent = Agent::new(

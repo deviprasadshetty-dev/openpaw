@@ -106,14 +106,14 @@ pub fn get_system_temperature() -> Result<String> {
     {
         // Try CPU temperature via WMI (requires admin)
         let output = Command::new("powershell")
-            .args(&[
+            .args([
                 "-Command",
                 "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -ExpandProperty CurrentTemperature",
             ])
             .output();
 
-        if let Ok(out) = output {
-            if out.status.success() {
+        if let Ok(out) = output
+            && out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if let Ok(temp_k) = s.parse::<f64>() {
                     // Kelvin/10 to Celsius
@@ -121,22 +121,20 @@ pub fn get_system_temperature() -> Result<String> {
                     return Ok(format!("{:.1}°C (CPU)", temp_c));
                 }
             }
-        }
 
         // Fallback to GPU temperature via nvidia-smi
         let gpu_output = Command::new("nvidia-smi")
-            .args(&[
+            .args([
                 "--query-gpu=temperature.gpu",
                 "--format=csv,noheader,nounits",
             ])
             .output();
 
-        if let Ok(out) = gpu_output {
-            if out.status.success() {
+        if let Ok(out) = gpu_output
+            && out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 return Ok(format!("{}°C (GPU)", s));
             }
-        }
 
         Ok("Temperature data unavailable (check permissions or drivers)".to_string())
     }

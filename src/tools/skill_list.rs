@@ -1,15 +1,16 @@
 use super::{Tool, ToolContext, ToolResult};
 use crate::skills::list_skills_merged;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
 
-/// List all installed and built-in skills.
 pub struct SkillListTool {
     pub workspace_dir: String,
     pub builtin_dir: String,
 }
 
+#[async_trait]
 impl Tool for SkillListTool {
     fn name(&self) -> &str {
         "skill_list"
@@ -23,7 +24,7 @@ impl Tool for SkillListTool {
         r#"{"type":"object","properties":{},"required":[]}"#.to_string()
     }
 
-    fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
         let skills =
             list_skills_merged(Path::new(&self.builtin_dir), Path::new(&self.workspace_dir))?;
 

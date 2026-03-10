@@ -82,11 +82,10 @@ pub fn load_telegram_update_offset(
     let content = fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
 
-    if let Some(version) = parsed.get("version") {
-        if version.as_i64() != Some(TELEGRAM_OFFSET_STORE_VERSION) {
+    if let Some(version) = parsed.get("version")
+        && version.as_i64() != Some(TELEGRAM_OFFSET_STORE_VERSION) {
             return None;
         }
-    }
 
     let last_update_id = parsed.get("last_update_id")?.as_i64()?;
 
@@ -96,11 +95,10 @@ pub fn load_telegram_update_offset(
         if stored_bot_id != expected {
             return None;
         }
-    } else if let Some(stored_bot_id) = parsed.get("bot_id") {
-        if !stored_bot_id.is_null() && !stored_bot_id.is_string() {
+    } else if let Some(stored_bot_id) = parsed.get("bot_id")
+        && !stored_bot_id.is_null() && !stored_bot_id.is_string() {
             return None;
         }
-    }
 
     Some(last_update_id)
 }
@@ -216,11 +214,10 @@ fn telegram_polling_loop(
 
     let mut offset =
         load_telegram_update_offset(config, channel.account_id(), bot_token).unwrap_or(0);
-    if offset > 0 {
-        if let Some(tg) = channel.as_any().downcast_ref::<TelegramChannel>() {
+    if offset > 0
+        && let Some(tg) = channel.as_any().downcast_ref::<TelegramChannel>() {
             tg.set_initial_update_offset(offset);
         }
-    }
 
     while !stop_requested.load(Ordering::Relaxed) {
         last_activity.store(

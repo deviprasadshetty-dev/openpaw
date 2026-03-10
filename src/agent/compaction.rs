@@ -161,12 +161,10 @@ pub fn auto_compact_history(
     let mut summary_content = format!("[Compaction summary]\n{}", summary);
     if let Some(workspace_context) =
         read_workspace_context_for_summary(config.workspace_dir.as_deref())
-    {
-        if !workspace_context.is_empty() {
+        && !workspace_context.is_empty() {
             summary_content.push_str("\n\n");
             summary_content.push_str(&workspace_context);
         }
-    }
 
     // Advance compact_end to the next "user" message to ensure the kept history starts with a user prompt.
     // Strict APIs like Gemini and Anthropic will reject histories that start with "assistant" or don't alternate.

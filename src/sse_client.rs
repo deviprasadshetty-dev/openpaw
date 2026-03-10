@@ -37,7 +37,7 @@ impl SseClient {
     fn extract_delta_content(json_str: &str) -> Option<String> {
         let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
         let choices = parsed.get("choices")?.as_array()?;
-        let first = choices.get(0)?;
+        let first = choices.first()?;
         let delta = first.get("delta")?;
         let content = delta.get("content")?.as_str()?;
         if content.is_empty() {

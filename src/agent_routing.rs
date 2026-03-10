@@ -1,83 +1,7 @@
-use crate::config_types::{DmScope, IdentityLink, NamedAgentConfig};
-use serde::{Deserialize, Serialize};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatType {
-    Direct,
-    Group,
-    Channel,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct PeerRef {
-    pub kind: ChatType,
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct BindingMatch {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub peer: Option<PeerRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub guild_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_id: Option<String>,
-    #[serde(default)]
-    pub roles: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AgentBinding {
-    pub agent_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub comment: Option<String>,
-    #[serde(default)]
-    pub r#match: BindingMatch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MatchedBy {
-    Peer,
-    ParentPeer,
-    GuildRoles,
-    Guild,
-    Team,
-    Account,
-    ChannelOnly,
-    Default,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResolvedRoute {
-    pub agent_id: String,
-    pub channel: String,
-    pub account_id: String,
-    pub session_key: String,
-    pub main_session_key: String,
-    pub matched_by: MatchedBy,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RouteInput {
-    pub channel: String,
-    pub account_id: String,
-    pub peer: Option<PeerRef>,
-    pub parent_peer: Option<PeerRef>,
-    pub guild_id: Option<String>,
-    pub team_id: Option<String>,
-    #[serde(default)]
-    pub member_role_ids: Vec<String>,
-}
+use crate::config_types::{
+    AgentBinding, ChatType, DmScope, IdentityLink, MatchedBy, NamedAgentConfig, PeerRef,
+    ResolvedRoute, RouteInput, SessionConfig,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -129,19 +53,8 @@ pub fn resolve_linked_peer_id(peer_id: &str, identity_links: &[IdentityLink]) ->
 }
 
 /// Build a DM-scope-aware session key.
-pub fn build_session_key(
-    agent_id: &str,
-    channel: &str,
-    peer: Option<&PeerRef>,
-) -> String {
-    build_session_key_with_scope(
-        agent_id,
-        channel,
-        peer,
-        DmScope::PerChannelPeer,
-        None,
-        &[],
-    )
+pub fn build_session_key(agent_id: &str, channel: &str, peer: Option<&PeerRef>) -> String {
+    build_session_key_with_scope(agent_id, channel, peer, DmScope::PerChannelPeer, None, &[])
 }
 
 /// Build a session key respecting DmScope and identity links.
@@ -173,7 +86,9 @@ pub fn build_session_key_with_scope(
         match dm_scope {
             DmScope::Main => format!("agent:{}:main", norm_agent),
             DmScope::PerPeer => format!("agent:{}:direct:{}", norm_agent, resolved_peer),
-            DmScope::PerChannelPeer => format!("agent:{}:{}:direct:{}", norm_agent, channel, resolved_peer),
+            DmScope::PerChannelPeer => {
+                format!("agent:{}:{}:direct:{}", norm_agent, channel, resolved_peer)
+            }
             DmScope::PerAccountChannelPeer => format!(
                 "agent:{}:{}:{}:direct:{}",
                 norm_agent,
@@ -229,16 +144,14 @@ pub fn peer_matches(binding_peer: Option<&PeerRef>, input_peer: Option<&PeerRef>
 /// Pre-filter: check that a binding's channel and account_id constraints
 /// match the input. A null constraint means "any" (matches everything).
 pub fn binding_matches_scope(binding: &AgentBinding, input: &RouteInput) -> bool {
-    if let Some(bc) = &binding.r#match.channel {
-        if bc != &input.channel {
+    if let Some(bc) = &binding.r#match.channel
+        && bc != &input.channel {
             return false;
         }
-    }
-    if let Some(ba) = &binding.r#match.account_id {
-        if ba != &input.account_id {
+    if let Some(ba) = &binding.r#match.account_id
+        && ba != &input.account_id {
             return false;
         }
-    }
     true
 }
 
@@ -264,7 +177,11 @@ fn is_channel_only(b: &AgentBinding) -> bool {
 /// Check ALL constraints on a binding against input. Each constraint on the
 /// binding must match the corresponding input field. Null constraints match
 /// anything (they impose no restriction).
-fn all_constraints_match(b: &AgentBinding, input: &RouteInput, check_peer: Option<&PeerRef>) -> bool {
+fn all_constraints_match(
+    b: &AgentBinding,
+    input: &RouteInput,
+    check_peer: Option<&PeerRef>,
+) -> bool {
     // Channel + account_id already checked in pre-filter.
     // Peer constraint: if binding has a peer, it must match the given check_peer.
     if let Some(bp) = &b.r#match.peer {
@@ -297,11 +214,10 @@ fn all_constraints_match(b: &AgentBinding, input: &RouteInput, check_peer: Optio
         }
     }
     // Roles constraint
-    if !b.r#match.roles.is_empty() {
-        if !has_matching_role(&b.r#match.roles, &input.member_role_ids) {
+    if !b.r#match.roles.is_empty()
+        && !has_matching_role(&b.r#match.roles, &input.member_role_ids) {
             return false;
         }
-    }
     true
 }
 
@@ -330,6 +246,23 @@ pub fn resolve_route(
     bindings: &[AgentBinding],
     agents: &[NamedAgentConfig],
 ) -> ResolvedRoute {
+    // For backward compatibility, use default SessionConfig.
+    let default_session_config = SessionConfig {
+        dm_scope: DmScope::PerChannelPeer,
+        identity_links: vec![],
+        idle_minutes: 60,
+        typing_interval_secs: 5,
+    };
+    resolve_route_with_session(input, bindings, agents, &default_session_config)
+}
+
+/// Resolve the agent route for a given input using SessionConfig.
+pub fn resolve_route_with_session(
+    input: &RouteInput,
+    bindings: &[AgentBinding],
+    agents: &[NamedAgentConfig],
+    session_config: &SessionConfig,
+) -> ResolvedRoute {
     // Pre-filter bindings by channel + account_id scope.
     let scoped_bindings: Vec<&AgentBinding> = bindings
         .iter()
@@ -340,34 +273,34 @@ pub fn resolve_route(
     let mut matched_by = MatchedBy::Default;
 
     // 1. Peer Match (exact kind + id)
-    if matched_agent.is_none() {
-        if let Some(input_peer) = &input.peer {
+    if matched_agent.is_none()
+        && let Some(input_peer) = &input.peer {
             for b in &scoped_bindings {
-                if let Some(bp) = &b.r#match.peer {
-                    if peer_matches(Some(bp), Some(input_peer)) && all_constraints_match(b, input, Some(input_peer)) {
+                if let Some(bp) = &b.r#match.peer
+                    && peer_matches(Some(bp), Some(input_peer))
+                        && all_constraints_match(b, input, Some(input_peer))
+                    {
                         matched_agent = Some(b.agent_id.clone());
                         matched_by = MatchedBy::Peer;
                         break;
                     }
-                }
             }
         }
-    }
 
     // 2. Parent Peer Match
-    if matched_agent.is_none() {
-        if let Some(parent_peer) = &input.parent_peer {
+    if matched_agent.is_none()
+        && let Some(parent_peer) = &input.parent_peer {
             for b in &scoped_bindings {
-                if let Some(bp) = &b.r#match.peer {
-                    if peer_matches(Some(bp), Some(parent_peer)) && all_constraints_match(b, input, Some(parent_peer)) {
+                if let Some(bp) = &b.r#match.peer
+                    && peer_matches(Some(bp), Some(parent_peer))
+                        && all_constraints_match(b, input, Some(parent_peer))
+                    {
                         matched_agent = Some(b.agent_id.clone());
                         matched_by = MatchedBy::ParentPeer;
                         break;
                     }
-                }
             }
         }
-    }
 
     // 3. Guild Roles Match
     if matched_agent.is_none() && input.guild_id.is_some() && !input.member_role_ids.is_empty() {
@@ -381,38 +314,38 @@ pub fn resolve_route(
     }
 
     // 4. Guild Match
-    if matched_agent.is_none() {
-        if let Some(guild_id) = &input.guild_id {
+    if matched_agent.is_none()
+        && let Some(guild_id) = &input.guild_id {
             for b in &scoped_bindings {
-                 // Must have guild_id, no peer, no team, no roles
-                 if b.r#match.guild_id.as_deref() == Some(guild_id) &&
-                    b.r#match.peer.is_none() &&
-                    b.r#match.team_id.is_none() &&
-                    b.r#match.roles.is_empty() {
-                        matched_agent = Some(b.agent_id.clone());
-                        matched_by = MatchedBy::Guild;
-                        break;
-                    }
+                // Must have guild_id, no peer, no team, no roles
+                if b.r#match.guild_id.as_deref() == Some(guild_id)
+                    && b.r#match.peer.is_none()
+                    && b.r#match.team_id.is_none()
+                    && b.r#match.roles.is_empty()
+                {
+                    matched_agent = Some(b.agent_id.clone());
+                    matched_by = MatchedBy::Guild;
+                    break;
+                }
             }
         }
-    }
 
     // 5. Team Match
-    if matched_agent.is_none() {
-        if let Some(team_id) = &input.team_id {
+    if matched_agent.is_none()
+        && let Some(team_id) = &input.team_id {
             for b in &scoped_bindings {
                 // Must have team_id, no peer, no guild, no roles
-                if b.r#match.team_id.as_deref() == Some(team_id) &&
-                   b.r#match.peer.is_none() &&
-                   b.r#match.guild_id.is_none() &&
-                   b.r#match.roles.is_empty() {
-                        matched_agent = Some(b.agent_id.clone());
-                        matched_by = MatchedBy::Team;
-                        break;
-                   }
+                if b.r#match.team_id.as_deref() == Some(team_id)
+                    && b.r#match.peer.is_none()
+                    && b.r#match.guild_id.is_none()
+                    && b.r#match.roles.is_empty()
+                {
+                    matched_agent = Some(b.agent_id.clone());
+                    matched_by = MatchedBy::Team;
+                    break;
+                }
             }
         }
-    }
 
     // 6. Account Match
     if matched_agent.is_none() {
@@ -438,17 +371,16 @@ pub fn resolve_route(
 
     // Default Fallback
     let final_agent_id = matched_agent.unwrap_or_else(|| find_default_agent(agents));
-    
+
     // Construct keys
-    // Note: DmScope should ideally come from SessionConfig, but for now we default to PerChannelPeer
-    // or we might need to pass SessionConfig into this function if strictly following Zig's context usage.
-    // In Zig `resolveRoute` returned `ResolvedRoute` but didn't seem to take `SessionConfig`.
-    // Wait, the Zig `resolveRoute` creates `session_key`. Let's check how it does it.
-    // Zig `resolveRoute` implementation wasn't fully visible in previous `read_file` calls.
-    // I need to see the implementation of `resolveRoute` in Zig to be sure about `session_key` generation.
-    // I'll assume standard `build_session_key` for now.
-    
-    let session_key = build_session_key(&final_agent_id, &input.channel, input.peer.as_ref());
+    let session_key = build_session_key_with_scope(
+        &final_agent_id,
+        &input.channel,
+        input.peer.as_ref(),
+        session_config.dm_scope,
+        Some(&input.account_id),
+        &session_config.identity_links,
+    );
     let main_session_key = build_main_session_key(&final_agent_id);
 
     ResolvedRoute {

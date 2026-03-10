@@ -68,7 +68,7 @@ impl OAuthToken {
 
 // ── Credential Store ───────────────────────────────────────────────────
 
-const CRED_DIR: &str = ".nullclaw";
+const CRED_DIR: &str = ".openpaw";
 const CRED_FILE: &str = "auth.json";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -197,7 +197,7 @@ pub fn refresh_access_token(
     let resp = client
         .post(token_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", "nullClaw/1.0")
+        .header("User-Agent", "openpaw/1.0")
         .body(body_str)
         .send()?;
 
@@ -241,7 +241,7 @@ pub fn start_device_code_flow(
     let resp = client
         .post(device_auth_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", "nullClaw/1.0")
+        .header("User-Agent", "openpaw/1.0")
         .body(body_str)
         .send()?;
 

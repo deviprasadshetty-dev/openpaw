@@ -41,38 +41,31 @@ impl Session {
 /// It creates lazy agents on demand and cleans up idle ones.
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
-    // Below are factories or shared instances we inject into new Agents.
-    // We clone these Arcs whenever we spawn a new session.
+    // Shared state/config
+    config: Arc<crate::config::Config>,
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
     memory: Option<Arc<dyn Memory>>,
-    model_name: String,
-    workspace_dir: String,
-    config_path: Option<String>,
 }
 
 impl SessionManager {
     pub fn new(
+        config: Arc<crate::config::Config>,
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
         memory: Option<Arc<dyn Memory>>,
-        model_name: String,
-        workspace_dir: String,
-        config_path: Option<String>,
     ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            config,
             provider,
             tools,
             memory,
-            model_name,
-            workspace_dir,
-            config_path,
         }
     }
 
     /// Retrieve an existing session by its key, or create a new one.
-    pub fn get_or_create(&self, session_key: &str) -> Arc<Session> {
+    pub fn get_or_create(&self, session_key: &str, agent_id: &str) -> Arc<Session> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(session) = sessions.get(session_key) {
@@ -84,14 +77,33 @@ impl SessionManager {
             return Arc::clone(session);
         }
 
+        // Look up agent config
+        let agent_cfg = self.config.agents.iter().find(|a| a.name == agent_id);
+
+        let provider = Arc::clone(&self.provider);
+        let model = agent_cfg.map(|a| a.model.clone()).unwrap_or_else(|| {
+            self.config
+                .get_model_for_provider(&self.config.default_provider)
+                .unwrap_or_else(|| "gpt-4o".to_string())
+        });
+
         // Create new agent with the shared provider, tools, memory, etc.
         let mut agent = Agent::new(
-            Arc::clone(&self.provider),
+            provider,
             self.tools.clone(),
-            self.model_name.clone(),
-            self.workspace_dir.clone(),
+            model,
+            self.config.workspace_dir.clone(),
         );
-        agent.config_path = self.config_path.clone();
+        agent.config_path = if self.config.config_path.is_empty() {
+            None
+        } else {
+            Some(self.config.config_path.clone())
+        };
+
+        if let Some(cfg) = agent_cfg
+            && let Some(prompt) = &cfg.system_prompt {
+                agent = agent.with_system_prompt(prompt);
+            }
 
         if let Some(mem) = &self.memory {
             agent = agent.with_memory(Arc::clone(mem));
@@ -108,10 +120,11 @@ impl SessionManager {
     pub async fn process_message(
         &self,
         session_key: &str,
+        agent_id: &str,
         message: String,
         context: ToolContext,
     ) -> Result<String> {
-        let session_arc = self.get_or_create(session_key);
+        let session_arc = self.get_or_create(session_key, agent_id);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -138,11 +151,12 @@ impl SessionManager {
     pub async fn process_message_stream(
         &self,
         session_key: &str,
+        agent_id: &str,
         message: String,
         context: ToolContext,
         callback: crate::providers::StreamCallback,
     ) -> Result<String> {
-        let session_arc = self.get_or_create(session_key);
+        let session_arc = self.get_or_create(session_key, agent_id);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -195,5 +209,9 @@ impl SessionManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len()
+    }
+
+    pub fn get_config(&self) -> &crate::config::Config {
+        &self.config
     }
 }

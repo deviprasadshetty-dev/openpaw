@@ -1,17 +1,17 @@
 use crate::tools::{Tool, ToolContext, ToolResult};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex;
 
 use crate::config_types::McpServerConfig;
-// ── Tool definition from server ─────────────────────────────────
 use crate::version;
-
-// ── Tool definition from server ─────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpToolDef {
@@ -20,8 +20,6 @@ pub struct McpToolDef {
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
 }
-
-// ── McpServer ───────────────────────────────────────────────────
 
 pub struct McpServer {
     pub name: String,
@@ -44,14 +42,23 @@ impl McpServer {
         }
     }
 
-    pub fn connect(&self) -> Result<()> {
+    pub async fn connect(&self) -> Result<()> {
         let mut cmd = Command::new(&self.config.command);
         cmd.args(&self.config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
-        // Setup environment
+        if !self.config.always_inherit {
+            cmd.env_clear();
+        }
+
+        for key in &self.config.inherit {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
+
         for env_entry in &self.config.env {
             cmd.env(&env_entry.key, &env_entry.value);
         }
@@ -61,11 +68,15 @@ impl McpServer {
         let stdin = child.stdin.take().context("Failed to attach to stdin")?;
         let stdout = child.stdout.take().context("Failed to attach to stdout")?;
 
-        *self.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
-        *self.stdin.lock().unwrap_or_else(|e| e.into_inner()) = Some(stdin);
-        *self.stdout.lock().unwrap_or_else(|e| e.into_inner()) = Some(BufReader::new(stdout));
+        {
+            let mut child_guard = self.child.lock().await;
+            *child_guard = Some(child);
+            let mut stdin_guard = self.stdin.lock().await;
+            *stdin_guard = Some(stdin);
+            let mut stdout_guard = self.stdout.lock().await;
+            *stdout_guard = Some(BufReader::new(stdout));
+        }
 
-        // Send initialize request
         let init_params = serde_json::json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
@@ -75,7 +86,7 @@ impl McpServer {
             }
         });
 
-        let init_resp_str = self.send_request("initialize", Some(init_params))?;
+        let init_resp_str = self.send_request("initialize", Some(init_params)).await?;
         let init_resp: Value = serde_json::from_str(&init_resp_str)?;
 
         if init_resp
@@ -86,14 +97,16 @@ impl McpServer {
             return Err(anyhow::anyhow!("Invalid handshake response"));
         }
 
-        // Send initialized notification
-        self.send_notification("notifications/initialized", None)?;
+        self.send_notification("notifications/initialized", None)
+            .await?;
 
         Ok(())
     }
 
-    pub fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        let resp_str = self.send_request("tools/list", Some(serde_json::json!({})))?;
+    pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
+        let resp_str = self
+            .send_request("tools/list", Some(serde_json::json!({})))
+            .await?;
         let resp: Value = serde_json::from_str(&resp_str)?;
 
         if let Some(err) = resp.get("error") {
@@ -107,13 +120,13 @@ impl McpServer {
         Ok(tools)
     }
 
-    pub fn call_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
+    pub async fn call_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
         let params = serde_json::json!({
             "name": tool_name,
             "arguments": args
         });
 
-        let resp_str = self.send_request("tools/call", Some(params))?;
+        let resp_str = self.send_request("tools/call", Some(params)).await?;
         let resp: Value = serde_json::from_str(&resp_str)?;
 
         if let Some(err) = resp.get("error") {
@@ -138,7 +151,7 @@ impl McpServer {
         Ok(output)
     }
 
-    fn send_request(&self, method: &str, params: Option<Value>) -> Result<String> {
+    async fn send_request(&self, method: &str, params: Option<Value>) -> Result<String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let mut req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -155,16 +168,16 @@ impl McpServer {
         msg_str.push('\n');
 
         {
-            let mut stdin_guard = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stdin_guard = self.stdin.lock().await;
             let stdin = stdin_guard.as_mut().context("No stdin")?;
-            stdin.write_all(msg_str.as_bytes())?;
-            stdin.flush()?;
+            stdin.write_all(msg_str.as_bytes()).await?;
+            stdin.flush().await?;
         }
 
-        self.read_line()
+        self.read_line().await
     }
 
-    fn send_notification(&self, method: &str, params: Option<Value>) -> Result<()> {
+    async fn send_notification(&self, method: &str, params: Option<Value>) -> Result<()> {
         let mut req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -179,40 +192,26 @@ impl McpServer {
         msg_str.push('\n');
 
         {
-            let mut stdin_guard = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stdin_guard = self.stdin.lock().await;
             let stdin = stdin_guard.as_mut().context("No stdin")?;
-            stdin.write_all(msg_str.as_bytes())?;
-            stdin.flush()?;
+            stdin.write_all(msg_str.as_bytes()).await?;
+            stdin.flush().await?;
         }
 
         Ok(())
     }
 
-    fn read_line(&self) -> Result<String> {
+    async fn read_line(&self) -> Result<String> {
         let mut line = String::new();
-        let mut stdout_guard = self.stdout.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stdout_guard = self.stdout.lock().await;
         let stdout = stdout_guard.as_mut().context("No stdout")?;
-        let bytes_read = stdout.read_line(&mut line)?;
+        let bytes_read = stdout.read_line(&mut line).await?;
         if bytes_read == 0 {
             return Err(anyhow::anyhow!("End of stream"));
         }
         Ok(line.trim_end().to_string())
     }
 }
-
-impl Drop for McpServer {
-    fn drop(&mut self) {
-        if let Ok(mut child_guard) = self.child.lock() {
-            if let Some(mut child) = child_guard.take() {
-                let _ = self.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
-// ── McpToolWrapper ──────────────────────────────────────────────
 
 pub struct McpToolWrapper {
     server: Arc<McpServer>,
@@ -222,6 +221,7 @@ pub struct McpToolWrapper {
     params_json_str: String,
 }
 
+#[async_trait]
 impl Tool for McpToolWrapper {
     fn name(&self) -> &str {
         &self.prefixed_name
@@ -235,8 +235,8 @@ impl Tool for McpToolWrapper {
         self.params_json_str.clone()
     }
 
-    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
-        match self.server.call_tool(&self.original_name, &arguments) {
+    async fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
+        match self.server.call_tool(&self.original_name, &arguments).await {
             Ok(output) => Ok(ToolResult::ok(output)),
             Err(e) => Ok(ToolResult::fail(format!(
                 "MCP tool '{}' failed: {}",
@@ -246,20 +246,18 @@ impl Tool for McpToolWrapper {
     }
 }
 
-// ── Top-level init ──────────────────────────────────────────────
-
-pub fn init_mcp_tools(configs: &[McpServerConfig]) -> Result<Vec<Arc<dyn Tool>>> {
+pub async fn init_mcp_tools(configs: &[McpServerConfig]) -> Result<Vec<Arc<dyn Tool>>> {
     let mut all_tools: Vec<Arc<dyn Tool>> = Vec::new();
 
     for cfg in configs {
         let server = Arc::new(McpServer::new(cfg.clone()));
 
-        if let Err(e) = server.connect() {
+        if let Err(e) = server.connect().await {
             tracing::error!("MCP server '{}': connect failed: {}", cfg.name, e);
             continue;
         }
 
-        let tool_defs = match server.list_tools() {
+        let tool_defs = match server.list_tools().await {
             Ok(defs) => defs,
             Err(e) => {
                 tracing::error!("MCP server '{}': tools/list failed: {}", cfg.name, e);

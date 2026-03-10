@@ -1,68 +1,41 @@
 use super::{Tool, ToolContext, ToolResult};
-use crate::memory::MemoryStore;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
+
 use std::sync::Arc;
 
 pub struct MemoryRecallTool {
-    pub memory: Arc<dyn MemoryStore>,
+    pub memory: Arc<dyn crate::agent::memory_loader::Memory>,
 }
 
+#[async_trait]
 impl Tool for MemoryRecallTool {
     fn name(&self) -> &str {
         "memory_recall"
     }
 
     fn description(&self) -> &str {
-        "Search long-term memory for relevant facts, preferences, or context."
+        "Recall a value from long-term memory by key"
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"query":{"type":"string","description":"Keywords or phrase to search for in memory"},"limit":{"type":"integer","description":"Max results to return (default: 5)"}},"required":["query"]}"#.to_string()
+        r#"{"type":"object","properties":{"key":{"type":"string","description":"The key to recall"}},"required":["key"]}"#.to_string()
     }
 
-    fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
-        let query = match arguments.get("query").and_then(|v| v.as_str()) {
-            Some(q) => q,
-            None => return Ok(ToolResult::fail("Missing 'query' parameter")),
-        };
-        if query.is_empty() {
-            return Ok(ToolResult::fail("'query' must not be empty"));
-        }
-
-        let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5);
-        let limit = if limit > 0 && limit <= 100 {
-            limit as usize
-        } else {
-            5
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+        let key = match args.get("key").and_then(|v| v.as_str()) {
+            Some(k) => k,
+            None => return Ok(ToolResult::fail("Missing 'key' parameter")),
         };
 
-        // Assume `recall` method exists
-        match self.memory.recall(query, limit, None) {
-            Ok(entries) => {
-                if entries.is_empty() {
-                    return Ok(ToolResult::ok(format!(
-                        "No memories found matching: {}",
-                        query
-                    )));
-                }
-
-                let mut out = format!("Found {} memories:\n", entries.len());
-                for (i, entry) in entries.iter().enumerate() {
-                    out.push_str(&format!(
-                        "{}. [{}] ({:?}): {}\n",
-                        i + 1,
-                        entry.key,
-                        entry.category,
-                        entry.content
-                    ));
-                }
-                Ok(ToolResult::ok(out))
-            }
-            Err(e) => Ok(ToolResult::fail(format!(
-                "Failed to recall memories for '{}': {}",
-                query, e
+        match self.memory.get(key) {
+            Ok(Some(entry)) => Ok(ToolResult::ok(format!("Key: {}\nValue: {}", key, entry.content))),
+            Ok(None) => Ok(ToolResult::fail(format!(
+                "No memory found for key: {}",
+                key
             ))),
+            Err(e) => Ok(ToolResult::fail(format!("Failed to recall memory: {}", e))),
         }
     }
 }

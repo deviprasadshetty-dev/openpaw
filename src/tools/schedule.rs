@@ -1,10 +1,12 @@
 use super::{Tool, ToolContext, ToolResult};
 use crate::tools::cron_utils::CronScheduler;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
 pub struct ScheduleTool {}
 
+#[async_trait]
 impl Tool for ScheduleTool {
     fn name(&self) -> &str {
         "schedule"
@@ -18,7 +20,7 @@ impl Tool for ScheduleTool {
         r#"{"type":"object","properties":{"action":{"type":"string","enum":["create","add","once","list","get","cancel","remove","pause","resume"],"description":"Action to perform"},"expression":{"type":"string","description":"Cron expression for recurring tasks"},"delay":{"type":"string","description":"Delay for one-shot tasks (e.g. '30m', '2h')"},"command":{"type":"string","description":"Shell command to execute"},"id":{"type":"string","description":"Task ID"}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return Ok(ToolResult::fail("Missing 'action' parameter")),

@@ -1,14 +1,16 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 const MAX_IMAGE_BYTES: u64 = 5_242_880;
 
 pub struct ImageInfoTool {}
 
+#[async_trait]
 impl Tool for ImageInfoTool {
     fn name(&self) -> &str {
         "image_info"
@@ -22,7 +24,7 @@ impl Tool for ImageInfoTool {
         r#"{"type":"object","properties":{"path":{"type":"string","description":"Path to the image file"},"include_base64":{"type":"boolean","description":"Include base64-encoded data (default: false)"}},"required":["path"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolResult::fail("Missing 'path' parameter")),
@@ -30,7 +32,7 @@ impl Tool for ImageInfoTool {
 
         let path = Path::new(path_str);
 
-        let mut file = match File::open(path) {
+        let mut file = match File::open(path).await {
             Ok(f) => f,
             Err(e) => {
                 return Ok(ToolResult::fail(format!(
@@ -40,7 +42,7 @@ impl Tool for ImageInfoTool {
             }
         };
 
-        let metadata = match file.metadata() {
+        let metadata = match file.metadata().await {
             Ok(m) => m,
             Err(e) => return Ok(ToolResult::fail(format!("Failed to read metadata: {}", e))),
         };
@@ -54,7 +56,7 @@ impl Tool for ImageInfoTool {
         }
 
         let mut header = [0u8; 128];
-        let bytes_read = file.read(&mut header).unwrap_or(0);
+        let bytes_read = file.read(&mut header).await.unwrap_or(0);
         let bytes = &header[0..bytes_read];
 
         let format = detect_format(bytes);
@@ -86,8 +88,8 @@ pub fn detect_format(bytes: &[u8]) -> &'static str {
     if bytes[0] == b'G' && bytes[1] == b'I' && bytes[2] == b'F' && bytes[3] == b'8' {
         return "gif";
     }
-    if bytes[0] == b'R' && bytes[1] == b'I' && bytes[2] == b'F' && bytes[3] == b'F' {
-        if bytes.len() >= 12
+    if bytes[0] == b'R' && bytes[1] == b'I' && bytes[2] == b'F' && bytes[3] == b'F'
+        && bytes.len() >= 12
             && bytes[8] == b'W'
             && bytes[9] == b'E'
             && bytes[10] == b'B'
@@ -95,7 +97,6 @@ pub fn detect_format(bytes: &[u8]) -> &'static str {
         {
             return "webp";
         }
-    }
     if bytes[0] == b'B' && bytes[1] == b'M' {
         return "bmp";
     }
@@ -116,7 +117,7 @@ pub fn extract_dimensions(bytes: &[u8], format: &str) -> Option<(u32, u32)> {
     if format == "bmp" && bytes.len() >= 26 {
         let w = u32::from_le_bytes(bytes[18..22].try_into().unwrap());
         let h_raw = i32::from_le_bytes(bytes[22..26].try_into().unwrap());
-        let h = h_raw.abs() as u32;
+        let h = h_raw.unsigned_abs();
         return Some((w, h));
     }
     if format == "jpeg" {
@@ -126,7 +127,7 @@ pub fn extract_dimensions(bytes: &[u8], format: &str) -> Option<(u32, u32)> {
 }
 
 fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    let mut i = 2; // skip SOI marker
+    let mut i = 2;
     while i + 1 < bytes.len() {
         if bytes[i] != 0xFF {
             return None;
@@ -134,7 +135,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         let marker = bytes[i + 1];
         i += 2;
 
-        if marker >= 0xC0 && marker <= 0xC3 {
+        if (0xC0..=0xC3).contains(&marker) {
             if i + 7 <= bytes.len() {
                 let h = u16::from_be_bytes(bytes[i + 3..i + 5].try_into().unwrap()) as u32;
                 let w = u16::from_be_bytes(bytes[i + 5..i + 7].try_into().unwrap()) as u32;

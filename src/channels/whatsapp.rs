@@ -221,8 +221,8 @@ impl WhatsAppChannel {
             API_VERSION, self.phone_number_id
         );
 
-        let to = if recipient.starts_with('+') {
-            &recipient[1..]
+        let to = if let Some(stripped) = recipient.strip_prefix('+') {
+            stripped
         } else {
             recipient
         };

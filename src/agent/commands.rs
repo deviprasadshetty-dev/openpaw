@@ -18,7 +18,7 @@ pub fn parse_slash_command(message: &str) -> Option<SlashCommand> {
 
     let body = &trimmed[1..];
     let split_idx = body
-        .find(|c| c == ':' || c == ' ' || c == '\t')
+        .find([':', ' ', '\t'])
         .unwrap_or(body.len());
 
     let raw_name = &body[..split_idx];
@@ -55,6 +55,12 @@ pub trait Command: Send + Sync {
 
 pub struct CommandRegistry {
     commands: HashMap<String, Arc<dyn Command>>,
+}
+
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CommandRegistry {
@@ -139,9 +145,9 @@ impl Command for ProviderCommand {
 
         if parts.is_empty() || parts[0] == "list" {
             let mut msg = String::from("Configured providers:\n");
-            if let Some(path) = &agent.config_path {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if let Ok(cfg) = serde_json::from_str::<crate::config::Config>(&content) {
+            if let Some(path) = &agent.config_path
+                && let Ok(content) = std::fs::read_to_string(path)
+                    && let Ok(cfg) = serde_json::from_str::<crate::config::Config>(&content) {
                         if let Some(models) = cfg.models {
                             for name in models.providers.keys() {
                                 let marker = if name == &cfg.default_provider {
@@ -154,8 +160,6 @@ impl Command for ProviderCommand {
                         }
                         return Some(msg);
                     }
-                }
-            }
             return Some("Could not list providers: config not found.".to_string());
         }
 
@@ -181,6 +185,7 @@ impl Command for ProviderCommand {
                                             .or_insert(crate::config::ProviderConfig {
                                                 api_key: key.clone(),
                                                 base_url: None,
+                                                model: None,
                                             });
                                         p_cfg.api_key = key;
                                     } else {
@@ -190,6 +195,7 @@ impl Command for ProviderCommand {
                                             crate::config::ProviderConfig {
                                                 api_key: key,
                                                 base_url: None,
+                                                model: None,
                                             },
                                         );
                                         cfg.models =
@@ -247,13 +253,12 @@ impl Command for TempCommand {
 }
 
 pub fn bare_session_reset_prompt(message: &str) -> Option<&'static str> {
-    if let Some(cmd) = parse_slash_command(message) {
-        if (cmd.name.eq_ignore_ascii_case("new") || cmd.name.eq_ignore_ascii_case("reset"))
+    if let Some(cmd) = parse_slash_command(message)
+        && (cmd.name.eq_ignore_ascii_case("new") || cmd.name.eq_ignore_ascii_case("reset"))
             && cmd.arg.is_empty()
         {
             return Some(BARE_SESSION_RESET_PROMPT);
         }
-    }
     None
 }
 

@@ -11,7 +11,7 @@ pub fn get_home_dir() -> Option<PathBuf> {
         }
         let drive = env::var("HOMEDRIVE").ok()?;
         let path = env::var("HOMEPATH").ok()?;
-        return Some(PathBuf::from(format!("{}{}", drive, path)));
+        Some(PathBuf::from(format!("{}{}", drive, path)))
     } else {
         env::var("HOME").ok().map(PathBuf::from)
     }

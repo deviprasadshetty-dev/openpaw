@@ -1,9 +1,11 @@
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 
 pub struct I2cTool {}
 
+#[async_trait]
 impl Tool for I2cTool {
     fn name(&self) -> &str {
         "i2c"
@@ -17,7 +19,7 @@ impl Tool for I2cTool {
         r#"{"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"integer","description":"I2C bus number (e.g. 1 for /dev/i2c-1)"},"address":{"type":"string","description":"Device address in hex (0x03-0x77)"},"register":{"type":"integer","description":"Register number to read/write"},"value":{"type":"integer","description":"Byte value to write (0-255)"},"length":{"type":"integer","description":"Number of bytes to read (default 1)"}},"required":["action"]}"#.to_string()
     }
 
-    fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return Ok(ToolResult::fail("Missing 'action' parameter")),

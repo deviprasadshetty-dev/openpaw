@@ -1,8 +1,8 @@
-use crate::agent_routing::{ChatType, PeerRef};
 use crate::channel_loop::{self, ChannelRuntime, PollingSpawnResult};
 use crate::channels::root::Channel;
 use crate::channels::telegram::TelegramChannel;
 use crate::config::Config;
+use crate::config_types::{ChatType, PeerRef};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -29,13 +29,11 @@ fn telegram_polling_source_key(_allocator: (), channel: &dyn Channel) -> Option<
     None
 }
 
-pub const POLLING_DESCRIPTORS: &[PollingDescriptor] = &[
-    PollingDescriptor {
-        channel_name: "telegram",
-        spawn: channel_loop::spawn_telegram_polling,
-        source_key: Some(telegram_polling_source_key),
-    },
-];
+pub const POLLING_DESCRIPTORS: &[PollingDescriptor] = &[PollingDescriptor {
+    channel_name: "telegram",
+    spawn: channel_loop::spawn_telegram_polling,
+    source_key: Some(telegram_polling_source_key),
+}];
 
 pub fn find_polling_descriptor(channel_name: &str) -> Option<&'static PollingDescriptor> {
     POLLING_DESCRIPTORS
@@ -43,6 +41,9 @@ pub fn find_polling_descriptor(channel_name: &str) -> Option<&'static PollingDes
         .find(|desc| desc.channel_name == channel_name)
 }
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InboundMetadata {
     pub account_id: Option<String>,
     pub peer_kind: Option<ChatType>,
@@ -84,12 +85,6 @@ pub fn parse_peer_kind(raw: &str) -> Option<ChatType> {
 
 // Default account helpers removed for non-Telegram channels
 
-fn strip_prefix<'a>(value: &'a str, prefix: &str) -> &'a str {
-    if let Some(stripped) = value.strip_prefix(prefix) {
-        stripped
-    } else {
-        value
-    }
-}
+
 
 // Peer derivation helpers removed for non-Telegram channels

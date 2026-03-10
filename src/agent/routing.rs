@@ -120,24 +120,17 @@ pub fn resolve_thread_parent_session_key(key: &str) -> Option<&str> {
     key.rfind(":thread:").map(|idx| &key[0..idx])
 }
 
-fn peer_matches(binding_peer: Option<&PeerRef>, input_peer: Option<&PeerRef>) -> bool {
-    match (binding_peer, input_peer) {
-        (Some(bp), Some(ip)) => bp.kind == ip.kind && bp.id == ip.id,
-        _ => false,
-    }
-}
+
 
 fn binding_matches_scope(binding: &AgentBinding, input: &RouteInput) -> bool {
-    if let Some(ref bc) = binding.match_.channel {
-        if bc != &input.channel {
+    if let Some(ref bc) = binding.match_.channel
+        && bc != &input.channel {
             return false;
         }
-    }
-    if let Some(ref ba) = binding.match_.account_id {
-        if ba != &input.account_id {
+    if let Some(ref ba) = binding.match_.account_id
+        && ba != &input.account_id {
             return false;
         }
-    }
     true
 }
 
@@ -175,23 +168,20 @@ fn all_constraints_match(
         }
     }
 
-    if let Some(ref bg) = b.match_.guild_id {
-        if Some(bg) != input.guild_id.as_ref() {
+    if let Some(ref bg) = b.match_.guild_id
+        && Some(bg) != input.guild_id.as_ref() {
             return false;
         }
-    }
 
-    if let Some(ref bt) = b.match_.team_id {
-        if Some(bt) != input.team_id.as_ref() {
+    if let Some(ref bt) = b.match_.team_id
+        && Some(bt) != input.team_id.as_ref() {
             return false;
         }
-    }
 
-    if !b.match_.roles.is_empty() {
-        if !has_matching_role(&b.match_.roles, &input.member_role_ids) {
+    if !b.match_.roles.is_empty()
+        && !has_matching_role(&b.match_.roles, &input.member_role_ids) {
             return false;
         }
-    }
 
     true
 }
@@ -227,15 +217,14 @@ pub fn resolve_route(
     }
 
     // Tier 2: parent_peer match
-    if let Some(ref pp) = input.parent_peer {
-        if !pp.id.is_empty() {
+    if let Some(ref pp) = input.parent_peer
+        && !pp.id.is_empty() {
             for b in &candidates {
                 if b.match_.peer.is_some() && all_constraints_match(b, input, Some(pp)) {
                     return build_route(&b.agent_id, input, MatchedBy::ParentPeer);
                 }
             }
         }
-    }
 
     // Tier 3: guild_id + roles match
     if input.guild_id.is_some() && !input.member_role_ids.is_empty() {

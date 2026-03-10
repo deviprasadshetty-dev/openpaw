@@ -56,13 +56,127 @@ pub struct Agent {
     pub response_cache: response_cache::ResponseCache,
 }
 
+/// QW-6: Conditional follow-through detection.
+/// Returns true if the LLM output contains phrases indicating it intends to take action,
+/// but didn't actually emit a tool call.
+pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
+    if available_tools.is_empty() {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    let trimmed = text.trim();
+
+    // 0. Safe phrases that should NEVER trigger follow-through
+    const SAFE_PHRASES: &[&str] = &["let me know", "i'll let you know", "i will let you know"];
+    if SAFE_PHRASES.iter().any(|p| lower.contains(p)) {
+        return false;
+    }
+
+    // Intent starters
+    const STARTERS: &[&str] = &[
+        "let me",
+        "i will",
+        "i'll",
+        "let's",
+        "i'm going to",
+        "i am going to",
+        "i need to",
+        "i should",
+        "gonna",
+        "so i need",
+    ];
+    // Action verbs
+    const VERBS: &[&str] = &[
+        "try", "check", "run", "do", "get", "execute", "look", "apply", "fix", "start", "use",
+        "search", "fetch", "read", "write", "list", "ls", "edit", "update", "modify", "patch",
+        "delete", "remove", "create", "make", "find",
+    ];
+    // Immediacy indicators
+    const IMMEDIACY: &[&str] = &["now", "again", "immediately", "straight away", "instead"];
+
+    let has_starter = STARTERS.iter().any(|s| lower.contains(s));
+
+    // Improved verb check: avoid matching "ls" in "else" or "do" in "down"
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let has_verb = VERBS.iter().any(|&v| {
+        if v.len() <= 2 {
+            words.contains(&v)
+        } else {
+            lower.contains(v)
+        }
+    });
+
+    let has_immediacy = IMMEDIACY.iter().any(|a| lower.contains(a));
+    let ends_with_colon = trimmed.ends_with(':');
+
+    // 1. High confidence trigger: Starter + Verb + (Immediacy OR Colon)
+    if has_starter && has_verb && (has_immediacy || ends_with_colon) {
+        return true;
+    }
+
+    // 2. Phrase-based fallback
+    const PHRASES: &[&str] = &["starting the", "applying the", "let's see what i can do"];
+    if PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+
+    // 3. Tool Relevance Trigger
+    if has_starter && has_verb {
+        let has_relevant_tool = available_tools.iter().any(|t| {
+            let n = t.name().to_lowercase();
+            n.contains("read")
+                || n.contains("fetch")
+                || n.contains("search")
+                || n.contains("ls")
+                || n.contains("get")
+                || n.contains("shell")
+                || n.contains("terminal")
+                || n.contains("browser")
+                || n.contains("file")
+                || n.contains("write")
+                || n.contains("edit")
+                || n.contains("run")
+                || n.contains("exec")
+                || n.contains("git")
+        });
+
+        if has_relevant_tool
+            && let Some(last_line) = trimmed.lines().last() {
+                let last_lower = last_line.to_lowercase();
+                let last_words: Vec<&str> = last_lower
+                    .split(|c: char| !c.is_alphanumeric() && c != '\'')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                let last_has_starter = STARTERS.iter().any(|s| last_lower.contains(s));
+                let last_has_verb = VERBS.iter().any(|&v| {
+                    if v.len() <= 2 {
+                        last_words.contains(&v)
+                    } else {
+                        last_lower.contains(v)
+                    }
+                });
+
+                if last_has_starter && last_has_verb {
+                    return true;
+                }
+            }
+    }
+
+    false
+}
+
 /// Removes raw tool-call markup from LLM output that leaked into the final text.
 /// Strips:
 ///   - `<tool_call>...</tool_call>` XML blocks
 ///   - `[tool_call]...[/tool_call]` and `[TOOL_CALL]...[/TOOL_CALL]` bracket blocks
 ///   - `` ```tool_call...``` `` fenced code blocks
 ///   - `` ```tool_code...``` `` fenced blocks that look like Python/JSON dumps
-/// Returns a trimmed result; falls back to "\u{2705} Done." if everything was stripped.
+///     Returns a trimmed result; falls back to "✅ Done." if everything was stripped.
 pub fn strip_tool_call_markup(text: &str) -> String {
     use std::sync::OnceLock;
 
@@ -93,7 +207,7 @@ pub fn strip_tool_call_markup(text: &str) -> String {
 
     let trimmed = out.trim().to_string();
     if trimmed.is_empty() {
-        "\u{2705} Done (Action completed).".to_string()
+        "\u{2705} Done.".to_string()
     } else {
         trimmed
     }
@@ -158,6 +272,12 @@ impl Agent {
         self
     }
 
+    pub fn with_system_prompt(mut self, prompt: &str) -> Self {
+        let _ = self.cached_system_prompt.set(prompt.to_string());
+        self.has_system_prompt = true;
+        self
+    }
+
     pub fn reset_history(&mut self) {
         self.history.clear();
         self.has_system_prompt = false;
@@ -181,13 +301,12 @@ impl Agent {
         let current_tool_hash = self.compute_tool_hash();
         let workspace_fp = prompt::workspace_prompt_fingerprint(&self.workspace_dir);
 
-        if let Some(cached) = self.cached_system_prompt.get() {
-            if current_tool_hash == self.last_tool_hash
+        if let Some(cached) = self.cached_system_prompt.get()
+            && current_tool_hash == self.last_tool_hash
                 && Some(workspace_fp) == self.workspace_prompt_fingerprint
             {
                 return Ok(cached.clone());
             }
-        }
 
         let prompt = self.build_system_prompt()?;
         self.cached_system_prompt = OnceLock::new();
@@ -323,41 +442,9 @@ impl Agent {
             );
         }
 
-        // B-1: Resolve adaptive max tokens
+        // QW-6: Conditional follow-through detection
         let current_max_tokens =
             max_tokens_resolver::resolve_max_tokens(Some(self.history.len()), &model_to_use);
-
-        // QW-6: Conditional follow-through detection
-        fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
-            if available_tools.is_empty() {
-                return false;
-            }
-            let lower = text.to_lowercase();
-            const ACTION_PATTERNS: &[&str] = &[
-                "i'll check",
-                "i will check",
-                "let me check",
-                "i'll look",
-                "i will look",
-                "let me look",
-                "i'll try",
-                "i will try",
-                "let me try",
-            ];
-
-            if ACTION_PATTERNS.iter().any(|p| lower.contains(p)) {
-                // Only force if we have tools that can actually "check" or "look"
-                return available_tools.iter().any(|t| {
-                    let n = t.name().to_lowercase();
-                    n.contains("read")
-                        || n.contains("fetch")
-                        || n.contains("search")
-                        || n.contains("ls")
-                        || n.contains("get")
-                });
-            }
-            false
-        }
 
         // Prepare ToolSpecs once
         let tool_specs: Vec<ToolSpec> = self
@@ -390,10 +477,18 @@ impl Agent {
 
         // Loop for tools
         let mut iterations = 0;
+        let mut accumulated_text = String::new();
+
         loop {
             if iterations >= self.max_tool_iterations {
                 warn!("Max tool iterations reached");
-                break;
+                let summary = self
+                    .iterations_exhausted_summary(&history_slice, &model_to_use)
+                    .await?;
+                if !accumulated_text.is_empty() {
+                    return Ok(format!("{}\n\n{}", accumulated_text.trim(), summary));
+                }
+                return Ok(summary);
             }
 
             // M-2: Check LLM response cache
@@ -415,12 +510,56 @@ impl Agent {
                 reasoning_effort: None,
             };
 
-            let response = self.provider.chat(&request)?;
+            // R-2: Retry logic for provider calls
+            let mut last_error = None;
+            let mut response = None;
+            for attempt in 1..=3 {
+                match self.provider.chat(&request) {
+                    Ok(resp) => {
+                        response = Some(resp);
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("Provider chat attempt {} failed: {}", attempt, e);
+                        last_error = Some(e);
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                500 * attempt as u64,
+                            ))
+                            .await;
+                        }
+                    }
+                }
+            }
+
+            let response = match response {
+                Some(resp) => resp,
+                None => {
+                    let err = format!(
+                        "❌ Error: I encountered a persistent issue communicating with the AI provider: {}. Please try again in a moment.",
+                        last_error.unwrap()
+                    );
+                    if !accumulated_text.is_empty() {
+                        return Ok(format!("{}\n\n{}", accumulated_text.trim(), err));
+                    }
+                    return Ok(err);
+                }
+            };
 
             // M-2: Store in cache
             if let Some(ref content) = response.content {
                 self.response_cache
                     .insert(&self.history, &model_to_use, content.clone());
+            }
+
+            // Extract any text present in this iteration (outside tool calls)
+            let current_text =
+                strip_tool_call_markup(&response.content.clone().unwrap_or_default());
+            if current_text != "✅ Done." && !current_text.is_empty() {
+                if !accumulated_text.is_empty() {
+                    accumulated_text.push_str("\n\n");
+                }
+                accumulated_text.push_str(&current_text);
             }
 
             // B-6: Record cost usage
@@ -474,7 +613,7 @@ impl Agent {
                     {
                         self.history.push(ChatMessage {
                             role: "user".to_string(),
-                            content: "SYSTEM: You promised to take action now. Issue the appropriate tool call(s) now.".to_string(),
+                            content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
                             name: None,
                             tool_calls: None,
                             tool_call_id: None,
@@ -485,7 +624,10 @@ impl Agent {
                     }
 
                     // No tool calls, no promise — genuine final response
-                    return Ok(strip_tool_call_markup(&display_text));
+                    if accumulated_text.is_empty() {
+                        return Ok(current_text);
+                    }
+                    return Ok(accumulated_text);
                 }
                 parse_result.calls
             };
@@ -500,19 +642,18 @@ impl Agent {
                 let call = tool_call.clone();
                 let cache = self.tool_cache.clone();
                 let ctx_clone = context.clone();
-                let handle = tokio::task::spawn_blocking(move || {
+                let handle = tokio::spawn(async move {
                     if let Some(tool) = tool {
-                        if tool.cacheable() {
-                            if let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
+                        if tool.cacheable()
+                            && let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
                             {
                                 let mut res = cached_result;
                                 res.tool_call_id = call.tool_call_id.clone();
                                 return res;
                             }
-                        }
 
                         match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
-                            Ok(args) => match tool.execute(args, &ctx_clone) {
+                            Ok(args) => match tool.execute(args, &ctx_clone).await {
                                 Ok(output) => {
                                     let res = ToolExecutionResult {
                                         name: call.name.clone(),
@@ -559,11 +700,17 @@ impl Agent {
                 }
             }
 
-            // Append tool results to history
+            // Append tool results to history with reflection prompt
             for result in execution_results {
+                let formatted_output = if result.success {
+                    result.output
+                } else {
+                    format!("❌ Tool Error ({}): {}", result.name, result.output)
+                };
+
                 self.history.push(ChatMessage {
                     role: "tool".to_string(),
-                    content: result.output,
+                    content: formatted_output,
                     name: Some(result.name),
                     tool_calls: None,
                     tool_call_id: result.tool_call_id,
@@ -571,14 +718,64 @@ impl Agent {
                 });
             }
 
+            // Add reflection prompt for the next iteration
+            self.history.push(ChatMessage {
+                role: "user".to_string(),
+                content: "Reflect on the tool results above and decide your next steps. If a tool failed, try a different approach or fix the parameters. If you have enough info, provide a final answer.".to_string(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                content_parts: None,
+            });
+
             // ── CRITICAL: re-enter loop so the provider sees tool results ──
             iterations += 1;
-            continue;
         }
+    }
 
-        Ok(strip_tool_call_markup(
-            "[Agent]: Max tool iterations reached",
-        ))
+    /// Summarizes the work done when max iterations are reached, instead of failing silently.
+    async fn iterations_exhausted_summary(
+        &mut self,
+        history_slice: &[ChatMessage],
+        model: &str,
+    ) -> Result<String> {
+        warn!("Tool iterations exhausted, requesting summary");
+
+        let mut summary_history = history_slice.to_vec();
+        summary_history.push(ChatMessage {
+            role: "user".to_string(),
+            content: "SYSTEM: You have reached the maximum number of tool iterations. DO NOT call any more tools. Summarize what you have accomplished so far and what remains to be done.".to_string(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+        });
+
+        let request = ChatRequest {
+            messages: &summary_history,
+            model,
+            temperature: 0.0, // Stable summary
+            max_tokens: Some(1000),
+            tools: None, // Force text-only
+            timeout_secs: 30,
+            reasoning_effort: None,
+        };
+
+        match self.provider.chat(&request) {
+            Ok(resp) => {
+                let content = resp.content.unwrap_or_else(|| {
+                    "I reached my tool limit but couldn't generate a summary.".to_string()
+                });
+                Ok(format!(
+                    "[Limit reached]\n\n{}",
+                    strip_tool_call_markup(&content)
+                ))
+            }
+            Err(e) => Ok(format!(
+                "⚠️ I reached the maximum tool iteration limit and encountered an error while summarizing: {}. Please try again with a fresh session.",
+                e
+            )),
+        }
     }
 
     /// Streaming variant of `turn()`. Emits text deltas to `callback` as tokens arrive.
@@ -707,33 +904,6 @@ impl Agent {
         let current_max_tokens =
             max_tokens_resolver::resolve_max_tokens(Some(self.history.len()), &model_to_use);
 
-        // QW-6: Conditional follow-through detection helper
-        fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
-            if available_tools.is_empty() {
-                return false;
-            }
-            let lower = text.to_lowercase();
-            const ACTION_PATTERNS: &[&str] = &[
-                "i'll check",
-                "i will check",
-                "let me check",
-                "i'll look",
-                "i will look",
-                "let me look",
-            ];
-            if ACTION_PATTERNS.iter().any(|p| lower.contains(p)) {
-                return available_tools.iter().any(|t| {
-                    let n = t.name().to_lowercase();
-                    n.contains("read")
-                        || n.contains("fetch")
-                        || n.contains("search")
-                        || n.contains("ls")
-                        || n.contains("get")
-                });
-            }
-            false
-        }
-
         // Prepare ToolSpecs once
         let tool_specs: Vec<ToolSpec> = self
             .tools
@@ -767,7 +937,9 @@ impl Agent {
         loop {
             if iterations >= self.max_tool_iterations {
                 warn!("Max tool iterations reached");
-                break;
+                return self
+                    .iterations_exhausted_summary(&history_slice, &model_to_use)
+                    .await;
             }
 
             // M-2: Check LLM response cache
@@ -791,23 +963,55 @@ impl Agent {
 
             // Use streaming: collect full text via shared accumulator
             let accumulated = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-            let acc_clone = accumulated.clone();
-            let cb_clone = shared_callback.clone();
+            // R-2: Retry logic for streaming provider calls
+            let mut last_error = None;
+            let mut response = None;
+            for attempt in 1..=3 {
+                let acc_retry = accumulated.clone();
+                let cb_retry = shared_callback.clone();
+                let stream_cb: crate::providers::StreamCallback =
+                    Box::new(move |chunk: StreamChunk| {
+                        if let StreamChunk::Delta(ref text) = chunk
+                            && let Ok(mut acc) = acc_retry.lock() {
+                                acc.push_str(text);
+                            }
+                        if let Ok(mut cb) = cb_retry.lock() {
+                            cb(chunk);
+                        }
+                    });
 
-            // Create a forwarding callback that both accumulates and forwards deltas
-            let stream_cb: crate::providers::StreamCallback =
-                Box::new(move |chunk: StreamChunk| {
-                    if let StreamChunk::Delta(ref text) = chunk {
-                        if let Ok(mut acc) = acc_clone.lock() {
-                            acc.push_str(text);
+                match self.provider.chat_stream(&request, stream_cb) {
+                    Ok(resp) => {
+                        response = Some(resp);
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("Provider chat_stream attempt {} failed: {}", attempt, e);
+                        last_error = Some(e);
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                500 * attempt as u64,
+                            ))
+                            .await;
                         }
                     }
-                    if let Ok(mut cb) = cb_clone.lock() {
-                        cb(chunk);
-                    }
-                });
+                }
+            }
 
-            let response = self.provider.chat_stream(&request, stream_cb)?;
+            let response = match response {
+                Some(resp) => resp,
+                None => {
+                    let err_msg = format!(
+                        "❌ Error: I encountered a persistent issue communicating with the AI provider: {}. Please try again in a moment.",
+                        last_error.unwrap()
+                    );
+                    if let Ok(mut cb) = shared_callback.lock() {
+                        cb(StreamChunk::Delta(err_msg.clone()));
+                        cb(StreamChunk::Done(crate::providers::TokenUsage::default()));
+                    }
+                    return Ok(err_msg);
+                }
+            };
 
             // M-2: Store in cache
             if let Some(ref content) = response.content {
@@ -864,7 +1068,7 @@ impl Agent {
                     {
                         self.history.push(ChatMessage {
                             role: "user".to_string(),
-                            content: "SYSTEM: You promised to take action now. Issue the appropriate tool call(s) now.".to_string(),
+                            content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
                             name: None,
                             tool_calls: None,
                             tool_call_id: None,
@@ -890,19 +1094,18 @@ impl Agent {
                 let call = tool_call.clone();
                 let cache = self.tool_cache.clone();
                 let ctx_clone = context.clone();
-                let handle = tokio::task::spawn_blocking(move || {
+                let handle = tokio::spawn(async move {
                     if let Some(tool) = tool {
-                        if tool.cacheable() {
-                            if let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
+                        if tool.cacheable()
+                            && let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
                             {
                                 let mut res = cached_result;
                                 res.tool_call_id = call.tool_call_id.clone();
                                 return res;
                             }
-                        }
 
                         match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
-                            Ok(args) => match tool.execute(args, &ctx_clone) {
+                            Ok(args) => match tool.execute(args, &ctx_clone).await {
                                 Ok(output) => {
                                     let res = ToolExecutionResult {
                                         name: call.name.clone(),
@@ -950,9 +1153,15 @@ impl Agent {
             }
 
             for result in execution_results {
+                let formatted_output = if result.success {
+                    result.output
+                } else {
+                    format!("❌ Tool Error ({}): {}", result.name, result.output)
+                };
+
                 self.history.push(ChatMessage {
                     role: "tool".to_string(),
-                    content: result.output,
+                    content: formatted_output,
                     name: Some(result.name),
                     tool_calls: None,
                     tool_call_id: result.tool_call_id,
@@ -960,14 +1169,19 @@ impl Agent {
                 });
             }
 
+            // Add reflection prompt for the next iteration
+            self.history.push(ChatMessage {
+                role: "user".to_string(),
+                content: "Reflect on the tool results above and decide your next steps. If a tool failed, try a different approach or fix the parameters. If you have enough info, provide a final answer.".to_string(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                content_parts: None,
+            });
+
             // ── CRITICAL: re-enter loop so the provider sees tool results ──
             iterations += 1;
-            continue;
         }
-
-        Ok(strip_tool_call_markup(
-            "[Agent]: Max tool iterations reached",
-        ))
     }
 }
 
@@ -1010,5 +1224,62 @@ mod tests {
         let input = "This is a normal response without any tool calls.";
         let out = strip_tool_call_markup(input);
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn test_should_force_follow_through() {
+        use std::sync::Arc;
+        struct MockTool;
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for MockTool {
+            fn name(&self) -> &str {
+                "test_tool"
+            }
+            fn description(&self) -> &str {
+                "desc"
+            }
+            fn parameters_json(&self) -> String {
+                "{}".into()
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: &crate::tools::ToolContext,
+            ) -> anyhow::Result<crate::tools::ToolResult> {
+                Ok(crate::tools::ToolResult::ok("ok"))
+            }
+        }
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockTool)];
+
+        assert!(should_force_follow_through("Let me try that now:", &tools));
+        assert!(should_force_follow_through(
+            "I will get it done now.",
+            &tools
+        ));
+        assert!(should_force_follow_through("I'll check the logs", &tools));
+        assert!(should_force_follow_through(
+            "Let's see what I can do.",
+            &tools
+        ));
+        assert!(should_force_follow_through(
+            "Let me try a different approach:",
+            &tools
+        ));
+        assert!(should_force_follow_through(
+            "So I need to use action: 'execute' with the exact tool slug. Let me try that now:",
+            &tools
+        ));
+        assert!(should_force_follow_through(
+            "I should probably check the file again.",
+            &tools
+        ));
+        assert!(!should_force_follow_through(
+            "I have finished the task.",
+            &tools
+        ));
+        assert!(!should_force_follow_through(
+            "Let me know if you need anything else.",
+            &tools
+        ));
     }
 }
