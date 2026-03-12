@@ -344,6 +344,7 @@ pub fn inbound_dispatcher_thread(
                 let cb_bus = bus_clone.clone();
 
                 let acc_text = Arc::new(std::sync::Mutex::new(String::new()));
+                let last_emitted_len = Arc::new(std::sync::Mutex::new(0));
                 let last_emit = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
                 let stream_cb: crate::providers::StreamCallback = Box::new(move |chunk| {
@@ -357,9 +358,15 @@ pub fn inbound_dispatcher_thread(
 
                         // Limit to 5 chunks per second (200ms) for smoother streaming
                         if now.duration_since(*last).as_millis() > 200 {
-                            *last = now;
-                            let outbound = bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &acc);
-                            let _ = cb_bus.publish_outbound(outbound);
+                            let mut last_len = last_emitted_len.lock().unwrap();
+                            let delta = acc[*last_len..].to_string();
+                            
+                            if !delta.is_empty() {
+                                *last = now;
+                                *last_len = acc.len();
+                                let outbound = bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &delta);
+                                let _ = cb_bus.publish_outbound(outbound);
+                            }
                         }
                     }
                 });

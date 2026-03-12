@@ -1161,22 +1161,47 @@ impl Channel for TelegramChannel {
         // Stop typing heartbeat
         self.stop_typing_heartbeat(chat_id);
 
-        // Clean up streaming state
-        {
+        // Clean up streaming state and capture the message ID if we were streaming
+        let stream_msg_id = {
             let mut streams = self.active_streams.lock().unwrap();
-            streams.remove(chat_id);
+            let id = streams.remove(chat_id);
             let mut drafts = self.draft_buffers.lock().unwrap();
             drafts.remove(chat_id);
             let mut filters = self.tag_filters.lock().unwrap();
             filters.remove(chat_id);
-        }
+            id
+        };
 
         let (cleaned_text, attachments) = self.parse_outbound_attachments(text);
         let text_to_send = cleaned_text.trim();
 
         if !text_to_send.is_empty() {
-            self.send_message_with_splitting(chat_id, text_to_send, None)?;
-        } else if attachments.is_empty() {
+            if let Some(msg_id) = stream_msg_id {
+                // If the final text is too long, we edit the first part and split the rest
+                if text_to_send.len() <= MAX_MESSAGE_LEN {
+                    let _ = self.send_single_message_internal(chat_id, text_to_send, None, Some(msg_id));
+                } else {
+                    let chunks = self.smart_split(text_to_send, MAX_MESSAGE_LEN - 12);
+                    for (i, chunk) in chunks.iter().enumerate() {
+                        let is_last = i == chunks.len() - 1;
+                        let to_send = if is_last {
+                            chunk.to_string()
+                        } else {
+                            format!("{}\n\n⏬", chunk)
+                        };
+
+                        if i == 0 {
+                            let _ = self.send_single_message_internal(chat_id, &to_send, None, Some(msg_id));
+                        } else {
+                            self.send_single_message(chat_id, &to_send, None)?;
+                        }
+                    }
+                }
+            } else {
+                self.send_message_with_splitting(chat_id, text_to_send, None)?;
+            }
+        }
+ else if attachments.is_empty() {
             // Fallback for empty messages
             self.send_message_with_splitting(chat_id, "✅ Done.", None)?;
         }

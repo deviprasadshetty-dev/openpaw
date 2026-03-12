@@ -142,6 +142,7 @@ pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]
                 || n.contains("run")
                 || n.contains("exec")
                 || n.contains("git")
+                || n.contains("tool")
         });
 
         if has_relevant_tool
@@ -611,16 +612,39 @@ impl Agent {
                     if iterations < self.max_tool_iterations.saturating_sub(1)
                         && should_force_follow_through(&display_text, &self.tools)
                     {
-                        self.history.push(ChatMessage {
-                            role: "user".to_string(),
-                            content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
-                            name: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            content_parts: None,
-                        });
-                        iterations += 1;
-                        continue;
+                        // BREAK REPETITION LOOP: Check if we just sent this exact nudge 
+                        // OR if the model is just repeating the exact same text.
+                        let is_repeating = if self.history.len() >= 2 {
+                            let prev_msg = &self.history[self.history.len() - 2];
+                            // If history[len-1] is the current response (pushed above), 
+                            // history[len-2] is the previous SYSTEM nudge or user message.
+                            // If we want to check the PREVIOUS assistant message, it's history[len-3].
+                            let prev_assistant = if self.history.len() >= 3 {
+                                Some(&self.history[self.history.len() - 3])
+                            } else {
+                                None
+                            };
+
+                            let nudge_already_sent = prev_msg.role == "user" && prev_msg.content.contains("SYSTEM: You promised to take action now");
+                            let text_repeated = prev_assistant.map(|m| m.role == "assistant" && m.content == display_text).unwrap_or(false);
+                            
+                            nudge_already_sent || text_repeated
+                        } else {
+                            false
+                        };
+
+                        if !is_repeating {
+                            self.history.push(ChatMessage {
+                                role: "user".to_string(),
+                                content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                content_parts: None,
+                            });
+                            iterations += 1;
+                            continue;
+                        }
                     }
 
                     // No tool calls, no promise — genuine final response
@@ -1066,16 +1090,39 @@ impl Agent {
                     if iterations < self.max_tool_iterations.saturating_sub(1)
                         && should_force_follow_through(&display_text, &self.tools)
                     {
-                        self.history.push(ChatMessage {
-                            role: "user".to_string(),
-                            content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
-                            name: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            content_parts: None,
-                        });
-                        iterations += 1;
-                        continue;
+                        // BREAK REPETITION LOOP: Check if we just sent this exact nudge 
+                        // OR if the model is just repeating the exact same text.
+                        let is_repeating = if self.history.len() >= 2 {
+                            let prev_msg = &self.history[self.history.len() - 2];
+                            // If history[len-1] is the current response (pushed above), 
+                            // history[len-2] is the previous SYSTEM nudge or user message.
+                            // If we want to check the PREVIOUS assistant message, it's history[len-3].
+                            let prev_assistant = if self.history.len() >= 3 {
+                                Some(&self.history[self.history.len() - 3])
+                            } else {
+                                None
+                            };
+
+                            let nudge_already_sent = prev_msg.role == "user" && prev_msg.content.contains("SYSTEM: You promised to take action now");
+                            let text_repeated = prev_assistant.map(|m| m.role == "assistant" && m.content == display_text).unwrap_or(false);
+                            
+                            nudge_already_sent || text_repeated
+                        } else {
+                            false
+                        };
+
+                        if !is_repeating {
+                            self.history.push(ChatMessage {
+                                role: "user".to_string(),
+                                content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                content_parts: None,
+                            });
+                            iterations += 1;
+                            continue;
+                        }
                     }
 
                     // No tool calls — return final text
