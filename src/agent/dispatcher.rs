@@ -5,6 +5,7 @@ pub struct ParsedToolCall {
     pub name: String,
     pub arguments_json: String,
     pub tool_call_id: Option<String>,
+    pub thought_signature: Option<String>,
 }
 
 pub struct ParseResult {
@@ -18,6 +19,7 @@ pub struct ToolExecutionResult {
     pub output: String,
     pub success: bool,
     pub tool_call_id: Option<String>,
+    pub thought_signature: Option<String>,
 }
 
 pub fn parse_tool_calls(response: &str) -> ParseResult {
@@ -82,10 +84,18 @@ fn parse_native_tool_calls(response: &str) -> Option<ParseResult> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let thought_sig = tc_obj
+            .get("function")
+            .and_then(|v| v.as_object())
+            .and_then(|f| f.get("thought_signature"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         calls.push(ParsedToolCall {
             name: name_str.to_string(),
             arguments_json: args_str.to_string(),
             tool_call_id: tc_id,
+            thought_signature: thought_sig,
         });
     }
 
@@ -139,6 +149,7 @@ fn parse_xml_tool_calls(response: &str) -> ParseResult {
                                     name: name.to_string(),
                                     arguments_json: args,
                                     tool_call_id: None,
+                                    thought_signature: None,
                                 });
                             }
                     }

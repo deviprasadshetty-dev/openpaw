@@ -100,7 +100,7 @@ impl Provider for OllamaProvider {
                 tool_calls.push(ToolCall {
                     id,
                     kind,
-                    function: FunctionCall { name, arguments },
+                    function: FunctionCall { name, arguments, thought_signature: None },
                 });
             }
         }
@@ -118,6 +118,7 @@ impl Provider for OllamaProvider {
             usage,
             model: request.model.to_string(),
             reasoning_content: None,
+            thought_signature: None,
         })
     }
 
@@ -200,6 +201,7 @@ impl Provider for OllamaProvider {
                                     function: FunctionCall {
                                         name: String::new(),
                                         arguments: String::new(),
+                                        thought_signature: None,
                                     },
                                 });
                                 tc_arg_bufs.push(String::new());
@@ -246,6 +248,7 @@ impl Provider for OllamaProvider {
             usage,
             model: request.model.to_string(),
             reasoning_content: None,
+            thought_signature: None,
         })
     }
 }

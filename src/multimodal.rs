@@ -89,7 +89,7 @@ pub fn parse_image_markers(content: &str) -> ParseResult {
 
 fn is_image_kind(kind: &str) -> bool {
     let k = kind.to_lowercase();
-    k == "image" || k == "photo" || k == "img"
+    k == "image" || k == "photo" || k == "img" || k.contains("photo") || k.contains("image") || k.contains("document")
 }
 
 pub fn detect_mime_type(data: &[u8]) -> Option<&'static str> {

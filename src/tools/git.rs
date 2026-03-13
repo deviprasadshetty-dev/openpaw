@@ -21,7 +21,7 @@ impl Tool for GitTool {
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message"},"paths":{"type":"string","description":"File paths"},"branch":{"type":"string","description":"Branch name"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes"},"limit":{"type":"integer","description":"Log entry count"},"cwd":{"type":"string","description":"Repository directory"}},"required":["operation"]}"#.to_string()
+        r#"{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","push","pull","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message"},"paths":{"type":"string","description":"File paths to add (for 'add')"},"branch":{"type":"string","description":"Branch name (for checkout/push/pull)"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes (for diff)"},"limit":{"type":"integer","description":"Log entry count"},"cwd":{"type":"string","description":"Repository directory (absolute path)"},"action":{"type":"string","enum":["push","pop","list"],"description":"Sub-action for stash (default: list)"},"remote":{"type":"string","description":"Remote name for push/pull (default: origin)"},"force":{"type":"boolean","description":"Force push"}},"required":["operation"]}"#.to_string()
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
@@ -131,8 +131,32 @@ impl Tool for GitTool {
                 self.run_git(&effective_cwd, &["checkout", branch]).await
             }
             "stash" => {
-                // stash push/pop/list
-                self.run_git(&effective_cwd, &["stash", "list"]).await // Simplified for now
+                // Sub-action: push (save), pop (restore), list (default)
+                let sub = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+                match sub {
+                    "push" => self.run_git(&effective_cwd, &["stash", "push"]).await,
+                    "pop"  => self.run_git(&effective_cwd, &["stash", "pop"]).await,
+                    _      => self.run_git(&effective_cwd, &["stash", "list"]).await,
+                }
+            }
+            "push" => {
+                let remote = args.get("remote").and_then(|v| v.as_str()).unwrap_or("origin");
+                let branch = args.get("branch").and_then(|v| v.as_str()).unwrap_or("HEAD");
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+                if force {
+                    self.run_git(&effective_cwd, &["push", "--force-with-lease", remote, branch]).await
+                } else {
+                    self.run_git(&effective_cwd, &["push", remote, branch]).await
+                }
+            }
+            "pull" => {
+                let remote = args.get("remote").and_then(|v| v.as_str()).unwrap_or("origin");
+                let branch = args.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+                if branch.is_empty() {
+                    self.run_git(&effective_cwd, &["pull", remote]).await
+                } else {
+                    self.run_git(&effective_cwd, &["pull", remote, branch]).await
+                }
             }
             _ => Ok(ToolResult::fail(format!(
                 "Unknown operation: {}",

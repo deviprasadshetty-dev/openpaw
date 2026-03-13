@@ -51,7 +51,19 @@ pub struct SkillForge;
 
 impl SkillForge {
     pub async fn scout(query: &str) -> Result<Vec<SkillCandidate>> {
-        let mut candidates = Self::scout_github(query).await.unwrap_or_default();
+        let mut candidates = match Self::scout_github(query).await {
+            Ok(c) => c,
+            Err(e) if e.to_string().contains("403") => return Err(e), // Propagate rate limit
+            Err(_) => Vec::new(),
+        };
+
+        // Fallback: If github returned nothing, try with simplified query
+        if candidates.is_empty() && query.contains(' ') {
+            let simple_query = query.split_whitespace().next().unwrap_or(query);
+            if let Ok(c) = Self::scout_github(simple_query).await {
+                candidates = c;
+            }
+        }
 
         if let Ok(clawhub_candidates) = Self::scout_clawhub(query).await {
             for cand in clawhub_candidates {
@@ -203,6 +215,10 @@ impl SkillForge {
             .header(header::ACCEPT, "application/vnd.github.v3+json")
             .send()
             .await?;
+
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(anyhow::anyhow!("GitHub API rate limit exceeded. Please try again later."));
+        }
 
         if !response.status().is_success() {
             return Ok(Vec::new());

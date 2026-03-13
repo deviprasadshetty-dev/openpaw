@@ -1,4 +1,4 @@
-use crate::bus::{Bus, OutboundMessage};
+use crate::bus::{Bus, InboundMessage, OutboundMessage};
 use crate::config::Config;
 use crate::streaming::OutboundStage;
 use anyhow::{Result, anyhow};
@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Cross-platform path to the OpenPaw data directory (~/.openpaw).
+/// Uses HOME on Linux/macOS, USERPROFILE on Windows, falls back to "."
+fn openpaw_data_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".openpaw")
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,7 +138,6 @@ pub struct CronScheduler {
 }
 
 use std::fs;
-use std::path::PathBuf;
 
 impl CronScheduler {
     pub fn init(_allocator: (), _config: &Config, bus: &Arc<Bus>) -> Self {
@@ -144,9 +152,7 @@ impl CronScheduler {
     }
 
     pub fn load(&self) {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let mut path = PathBuf::from(home);
-        path.push(".openpaw");
+        let mut path = openpaw_data_dir();
         path.push("cron.json");
 
         if let Ok(data) = fs::read_to_string(path)
@@ -157,10 +163,13 @@ impl CronScheduler {
     }
 
     pub fn save(&self) {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let mut path = PathBuf::from(home);
-        path.push(".openpaw");
+        let mut path = openpaw_data_dir();
         path.push("cron.json");
+
+        // Ensure the directory exists
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
 
         let guard = self.jobs.lock().unwrap();
         if let Ok(data) = serde_json::to_string_pretty(&*guard) {
@@ -285,28 +294,26 @@ impl CronScheduler {
                 }
             }
             JobType::Agent => {
-                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("openpaw"));
-                let mut cmd = tokio::process::Command::new(exe);
-                cmd.arg("agent");
-                if let Some(m) = &job.model {
-                    cmd.arg("--model").arg(m);
-                }
-                cmd.arg("-m").arg(&job.command);
+                // BUG-CRON-2 FIX: Route through the live in-process bus instead of spawning
+                // a subprocess. This ensures the agent job has access to the existing
+                // session, memory, and all registered tools.
+                let channel = job.delivery.channel.clone().unwrap_or_else(|| "internal".to_string());
+                let chat_id = job.delivery.to.clone().unwrap_or_else(|| "cron".to_string());
+                let content = job.prompt.as_deref().unwrap_or(&job.command).to_string();
+                let session_key = format!("{channel}:{chat_id}");
 
-                let output = cmd.output().await;
-
-                match output {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                        let combined = if stderr.is_empty() {
-                            stdout
-                        } else {
-                            format!("{}\n{}", stdout, stderr)
-                        };
-                        (out.status.success(), combined)
-                    }
-                    Err(e) => (false, format!("Failed to execute agent job: {}", e)),
+                let inbound = InboundMessage {
+                    channel,
+                    sender_id: "cron".to_string(),
+                    chat_id: chat_id.clone(),
+                    content,
+                    session_key,
+                    media: Vec::new(),
+                    metadata_json: None,
+                };
+                match self.bus.publish_inbound(inbound) {
+                    Ok(()) => (true, format!("Agent job '{}' dispatched via bus to chat {}", job.id, chat_id)),
+                    Err(e) => (false, format!("Failed to dispatch agent job via bus: {}", e)),
                 }
             }
         };

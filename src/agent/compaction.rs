@@ -2,10 +2,10 @@ use super::Provider;
 use crate::providers::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-static LAST_COMPACTION: AtomicU64 = AtomicU64::new(0);
+// NOTE: Cooldown is now tracked per-agent via Agent::last_compaction (u64, unix secs).
+// The old process-global static is removed — it blocked all agents when one compacted.
 const COMPACTION_COOLDOWN_SECS: u64 = 300; // 5 minutes
 
 pub const DEFAULT_COMPACTION_KEEP_RECENT: u32 = 20;
@@ -105,20 +105,23 @@ pub fn trim_history(history: &mut Vec<ChatMessage>, max_history_messages: u32) {
     *history = new_history;
 }
 
+/// `last_compaction` is a per-agent timestamp (unix secs) tracking when this agent
+/// last compacted. Callers must pass `&mut agent.last_compaction` so the cooldown
+/// is isolated per agent rather than process-global.
 pub fn auto_compact_history(
     history: &mut Vec<ChatMessage>,
     provider: &Arc<dyn Provider>,
     model_name: &str,
     config: &CompactionConfig,
+    last_compaction: &mut u64,
 ) -> bool {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let last = LAST_COMPACTION.load(Ordering::Relaxed);
-    if now - last < COMPACTION_COOLDOWN_SECS {
-        return false; // Cooldown active
+    if now - *last_compaction < COMPACTION_COOLDOWN_SECS {
+        return false; // Per-agent cooldown active
     }
 
     let has_system = !history.is_empty() && history[0].role == "system";
@@ -154,7 +157,7 @@ pub fn auto_compact_history(
     let summary = summarize_slice(provider, model_name, history, start, compact_end, config)
         .unwrap_or_else(|| "Context summarized due to length.".to_string());
 
-    LAST_COMPACTION.store(now, Ordering::Relaxed);
+    *last_compaction = now; // Update per-agent cooldown timestamp
 
     // Construct the final summary message content
     // Potentially read workspace context here (AGENTS.md)
@@ -193,6 +196,7 @@ pub fn auto_compact_history(
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+                    thought_signature: None,
         });
     }
 
@@ -226,6 +230,7 @@ fn summarize_slice(
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+                    thought_signature: None,
         },
         ChatMessage {
             role: "user".to_string(),
@@ -234,31 +239,42 @@ fn summarize_slice(
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+                    thought_signature: None,
         },
     ];
 
-    let request = crate::providers::ChatRequest {
-        messages: &messages,
-        model: model_name,
-        temperature: 0.2,
-        max_tokens: Some(512),
-        tools: None,
-        timeout_secs: 60,
-        reasoning_effort: None,
-    };
+    // DESIGN-3: Use block_in_place so the blocking provider.chat() call does not
+    // starve the tokio thread pool. Compaction is called from async context.
+    let provider_clone = provider.clone();
+    let model_name_owned = model_name.to_string();
+    let max_summary_chars = config.max_summary_chars;
 
-    match provider.chat(&request) {
-        Ok(resp) => resp.content,
-        Err(_) => {
-            // Fallback: truncate transcript
-            let safe_len = transcript
-                .char_indices()
-                .nth(config.max_summary_chars as usize)
-                .map(|(i, _)| i)
-                .unwrap_or(transcript.len());
-            Some(transcript[..safe_len].to_string())
+    // Build an owned request for use inside block_in_place
+    let messages_owned = messages;
+    let result: Option<String> = tokio::task::block_in_place(|| {
+        let request = crate::providers::ChatRequest {
+            messages: &messages_owned,
+            model: &model_name_owned,
+            temperature: 0.2,
+            max_tokens: Some(512),
+            tools: None,
+            timeout_secs: 60,
+            reasoning_effort: None,
+        };
+        match provider_clone.chat(&request) {
+            Ok(resp) => resp.content,
+            Err(_) => {
+                // Fallback: truncate transcript
+                let safe_len = transcript
+                    .char_indices()
+                    .nth(max_summary_chars as usize)
+                    .map(|(i, _)| i)
+                    .unwrap_or(transcript.len());
+                Some(transcript[..safe_len].to_string())
+            }
         }
-    }
+    });
+    result
 }
 
 fn build_compaction_transcript(

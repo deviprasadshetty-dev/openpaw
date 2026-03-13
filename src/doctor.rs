@@ -142,6 +142,12 @@ impl Doctor {
         } else {
             items.push(DiagItem::warn(cat, "curl not found"));
         }
+        // Check agent-browser
+        if which::which("agent-browser").is_ok() {
+            items.push(DiagItem::ok(cat, "agent-browser found"));
+        } else {
+            items.push(DiagItem::warn(cat, "agent-browser not found (required for browser tool)"));
+        }
         Ok(())
     }
 }

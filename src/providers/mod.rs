@@ -29,7 +29,6 @@ pub enum ContentPart {
 }
 
 impl ChatMessage {
-    /// Create a user message with text content
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
@@ -38,6 +37,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+            thought_signature: None,
         }
     }
 
@@ -50,6 +50,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+            thought_signature: None,
         }
     }
 
@@ -62,6 +63,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+            thought_signature: None,
         }
     }
 
@@ -74,6 +76,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             content_parts: Some(parts),
+            thought_signature: None,
         }
     }
 }
@@ -110,6 +113,8 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub content_parts: Option<Vec<ContentPart>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -124,6 +129,8 @@ pub struct ToolCall {
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -140,6 +147,7 @@ pub struct ChatResponse {
     pub usage: TokenUsage,
     pub model: String,
     pub reasoning_content: Option<String>,
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

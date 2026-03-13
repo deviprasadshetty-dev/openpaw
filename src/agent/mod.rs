@@ -14,6 +14,7 @@ pub use routing::{
 };
 
 use anyhow::Result;
+use base64::Engine;
 use regex::Regex;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -54,6 +55,13 @@ pub struct Agent {
     pub last_tool_hash: u64,
     pub cost_tracker: Option<crate::cost::CostTracker>,
     pub response_cache: response_cache::ResponseCache,
+    pub multimodal_config: crate::multimodal::MultimodalConfig,
+    /// Per-agent compaction cooldown timestamp (unix secs). Replaces the old
+    /// process-global AtomicU64 so multiple concurrent agents don’t block each other.
+    pub last_compaction: u64,
+    /// Channel/sender context injected per-turn so the system prompt can activate
+    /// group-chat logic, channel-specific behaviour etc. (BUG-5 fix)
+    pub conversation_context: Option<prompt::ConversationContext>,
 }
 
 /// QW-6: Conditional follow-through detection.
@@ -87,12 +95,46 @@ pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]
     ];
     // Action verbs
     const VERBS: &[&str] = &[
-        "try", "check", "run", "do", "get", "execute", "look", "apply", "fix", "start", "use",
-        "search", "fetch", "read", "write", "list", "ls", "edit", "update", "modify", "patch",
-        "delete", "remove", "create", "make", "find",
+        "try",
+        "check",
+        "run",
+        "do",
+        "get",
+        "execute",
+        "look",
+        "apply",
+        "fix",
+        "start",
+        "use",
+        "search",
+        "fetch",
+        "read",
+        "write",
+        "list",
+        "ls",
+        "edit",
+        "update",
+        "modify",
+        "patch",
+        "delete",
+        "remove",
+        "create",
+        "make",
+        "find",
+        "investigate",
+        "analyze",
+        "explore",
+        "install",
     ];
     // Immediacy indicators
-    const IMMEDIACY: &[&str] = &["now", "again", "immediately", "straight away", "instead"];
+    const IMMEDIACY: &[&str] = &[
+        "now",
+        "again",
+        "immediately",
+        "straight away",
+        "instead",
+        "briefly",
+    ];
 
     let has_starter = STARTERS.iter().any(|s| lower.contains(s));
 
@@ -111,10 +153,17 @@ pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]
     });
 
     let has_immediacy = IMMEDIACY.iter().any(|a| lower.contains(a));
-    let ends_with_colon = trimmed.ends_with(':');
+    let ends_with_colon = trimmed.ends_with(':') || trimmed.ends_with("...");
 
-    // 1. High confidence trigger: Starter + Verb + (Immediacy OR Colon)
-    if has_starter && has_verb && (has_immediacy || ends_with_colon) {
+    // 1. High confidence trigger: (Starter + Verb OR Verb-ing) + (Immediacy OR Colon/Ellipsis)
+    let is_acting_present = lower.starts_with("checking")
+        || lower.starts_with("investigating")
+        || lower.starts_with("searching")
+        || lower.starts_with("analyzing")
+        || lower.starts_with("installing");
+    if (has_starter && has_verb && (has_immediacy || ends_with_colon))
+        || (is_acting_present && (has_immediacy || ends_with_colon))
+    {
         return true;
     }
 
@@ -145,27 +194,26 @@ pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]
                 || n.contains("tool")
         });
 
-        if has_relevant_tool
-            && let Some(last_line) = trimmed.lines().last() {
-                let last_lower = last_line.to_lowercase();
-                let last_words: Vec<&str> = last_lower
-                    .split(|c: char| !c.is_alphanumeric() && c != '\'')
-                    .filter(|s| !s.is_empty())
-                    .collect();
+        if has_relevant_tool && let Some(last_line) = trimmed.lines().last() {
+            let last_lower = last_line.to_lowercase();
+            let last_words: Vec<&str> = last_lower
+                .split(|c: char| !c.is_alphanumeric() && c != '\'')
+                .filter(|s| !s.is_empty())
+                .collect();
 
-                let last_has_starter = STARTERS.iter().any(|s| last_lower.contains(s));
-                let last_has_verb = VERBS.iter().any(|&v| {
-                    if v.len() <= 2 {
-                        last_words.contains(&v)
-                    } else {
-                        last_lower.contains(v)
-                    }
-                });
-
-                if last_has_starter && last_has_verb {
-                    return true;
+            let last_has_starter = STARTERS.iter().any(|s| last_lower.contains(s));
+            let last_has_verb = VERBS.iter().any(|&v| {
+                if v.len() <= 2 {
+                    last_words.contains(&v)
+                } else {
+                    last_lower.contains(v)
                 }
+            });
+
+            if last_has_starter && last_has_verb {
+                return true;
             }
+        }
     }
 
     false
@@ -177,7 +225,7 @@ pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]
 ///   - `[tool_call]...[/tool_call]` and `[TOOL_CALL]...[/TOOL_CALL]` bracket blocks
 ///   - `` ```tool_call...``` `` fenced code blocks
 ///   - `` ```tool_code...``` `` fenced blocks that look like Python/JSON dumps
-///     Returns a trimmed result; falls back to "✅ Done." if everything was stripped.
+///     Returns a trimmed result; may be empty if everything was stripped.
 pub fn strip_tool_call_markup(text: &str) -> String {
     use std::sync::OnceLock;
 
@@ -207,11 +255,45 @@ pub fn strip_tool_call_markup(text: &str) -> String {
     let out = fenced_py2_re.replace_all(&out, "");
 
     let trimmed = out.trim().to_string();
+    trimmed
+}
+
+/// Checks if a response is "low-value" or a placeholder (e.g. "✅ Done.", "ok", etc.)
+/// that should be replaced by a proper summary if tools were called.
+pub fn is_low_value_response(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let trimmed = lower.trim();
+
     if trimmed.is_empty() {
-        "\u{2705} Done.".to_string()
-    } else {
-        trimmed
+        return true;
     }
+
+    // Common placeholders
+    const PLACEHOLDERS: &[&str] = &[
+        "✅ done.",
+        "done.",
+        "ok.",
+        "task complete.",
+        "finished.",
+        "ready.",
+        "all done.",
+        "fixed.",
+        "submitted.",
+    ];
+
+    if PLACEHOLDERS.iter().any(|&p| trimmed == p) {
+        return true;
+    }
+
+    // Only punctuation or symbols
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_punctuation() || !c.is_alphanumeric())
+    {
+        return true;
+    }
+
+    false
 }
 
 impl Agent {
@@ -259,6 +341,15 @@ impl Agent {
                 80,
             )),
             response_cache: response_cache::ResponseCache::new(3600), // 1 hour TTL
+            multimodal_config: crate::multimodal::MultimodalConfig {
+                allowed_dirs: vec![
+                    workspace_dir.clone(),
+                    std::env::temp_dir().to_string_lossy().to_string(),
+                ],
+                ..Default::default()
+            },
+            last_compaction: 0,
+            conversation_context: None,
         };
 
         if context_tokens_resolver::is_small_model_context(token_limit) {
@@ -285,6 +376,43 @@ impl Agent {
         self.workspace_prompt_fingerprint = None;
         self.cached_system_prompt = OnceLock::new();
         self.last_tool_hash = 0;
+        self.conversation_context = None;
+    }
+
+    fn parse_multimodal_message(
+        &self,
+        content: &str,
+    ) -> (String, Option<Vec<crate::providers::ContentPart>>) {
+        let parse_result = crate::multimodal::parse_image_markers(content);
+        if parse_result.refs.is_empty() {
+            return (content.to_string(), None);
+        }
+
+        let mut parts = Vec::new();
+        parts.push(crate::providers::ContentPart::Text(
+            parse_result.cleaned_text.clone(),
+        ));
+
+        for ref_path in parse_result.refs {
+            match crate::multimodal::read_local_image(&ref_path, &self.multimodal_config) {
+                Ok(img_data) => {
+                    parts.push(crate::providers::ContentPart::ImageBase64 {
+                        data: base64::engine::general_purpose::STANDARD.encode(&img_data.data),
+                        media_type: img_data.mime_type,
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to read multimodal image {}: {}", ref_path, e);
+                    // Add a placeholder text so the model knows an image was intended but failed
+                    parts.push(crate::providers::ContentPart::Text(format!(
+                        "\n[Error loading image: {}]",
+                        ref_path
+                    )));
+                }
+            }
+        }
+
+        (parse_result.cleaned_text, Some(parts))
     }
 
     fn compute_tool_hash(&self) -> u64 {
@@ -304,10 +432,10 @@ impl Agent {
 
         if let Some(cached) = self.cached_system_prompt.get()
             && current_tool_hash == self.last_tool_hash
-                && Some(workspace_fp) == self.workspace_prompt_fingerprint
-            {
-                return Ok(cached.clone());
-            }
+            && Some(workspace_fp) == self.workspace_prompt_fingerprint
+        {
+            return Ok(cached.clone());
+        }
 
         let prompt = self.build_system_prompt()?;
         self.cached_system_prompt = OnceLock::new();
@@ -363,7 +491,19 @@ impl Agent {
 
         // R-3: System Prompt Management (Cached)
         if !self.has_system_prompt || self.cached_system_prompt.get().is_none() {
-            let system_prompt = self.build_system_prompt_cached()?;
+            let mut system_prompt = self.build_system_prompt_cached()?;
+
+            // Always ensure the time is fresh in the prompt
+            if let Some(start_idx) = system_prompt.find("## Current Date & Time") {
+                let mut fresh_time = String::new();
+                prompt::append_date_time_section(&mut fresh_time);
+                
+                let end_idx = system_prompt[start_idx + 22..].find("##")
+                    .map(|i| i + start_idx + 22)
+                    .unwrap_or(system_prompt.len());
+                
+                system_prompt.replace_range(start_idx..end_idx, &fresh_time);
+            }
 
             // Insert or replace system prompt at index 0
             if !self.history.is_empty() && self.history[0].role == "system" {
@@ -385,10 +525,26 @@ impl Agent {
                         tool_calls: None,
                         tool_call_id: None,
                         content_parts: None,
+                        thought_signature: None,
                     },
                 );
             }
             self.has_system_prompt = true;
+        } else if !self.history.is_empty() && self.history[0].role == "system" {
+            // Even if the system prompt was set manually or is already present,
+            // try to refresh the time section if it exists.
+            let mut content = self.history[0].content.clone();
+            if let Some(start_idx) = content.find("## Current Date & Time") {
+                let mut fresh_time = String::new();
+                prompt::append_date_time_section(&mut fresh_time);
+                
+                let end_idx = content[start_idx + 22..].find("##")
+                    .map(|i| i + start_idx + 22)
+                    .unwrap_or(content.len());
+                
+                content.replace_range(start_idx..end_idx, &fresh_time);
+                self.history[0].content = content;
+            }
         }
 
         // R-6 & QW-2: Enrich user message with memory context (only if substantive)
@@ -411,14 +567,17 @@ impl Agent {
             user_message.clone()
         };
 
+        let (final_content, content_parts) = self.parse_multimodal_message(&enriched_msg);
+
         // Append user message
         self.history.push(ChatMessage {
             role: "user".to_string(),
-            content: enriched_msg.clone(),
+            content: final_content,
             name: None,
             tool_calls: None,
             tool_call_id: None,
-            content_parts: None,
+            content_parts,
+            thought_signature: None,
         });
 
         // Enforce history limits
@@ -440,12 +599,9 @@ impl Agent {
                 &self.provider,
                 &self.model_name,
                 &compaction_config,
+                &mut self.last_compaction,
             );
         }
-
-        // QW-6: Conditional follow-through detection
-        let current_max_tokens =
-            max_tokens_resolver::resolve_max_tokens(Some(self.history.len()), &model_to_use);
 
         // Prepare ToolSpecs once
         let tool_specs: Vec<ToolSpec> = self
@@ -462,29 +618,26 @@ impl Agent {
             })
             .collect();
 
-        // B-3: Context window slicing
-        let history_slice = if enriched_msg.len() < 100 && !enriched_msg.contains("actually") {
-            // Short message, potentially a follow-up. Use last 10 + system.
-            if self.history.len() > 11 {
-                let mut slice = vec![self.history[0].clone()];
-                slice.extend(self.history[self.history.len() - 10..].iter().cloned());
-                slice
-            } else {
-                self.history.clone()
-            }
-        } else {
-            self.history.clone()
-        };
+        // BUG-3 FIX: history_slice is built INSIDE the loop (see below).
+        // The old short-message heuristic that sliced to 10 messages is removed —
+        // it caused the model to lose all prior context on short follow-ups.
 
-        // Loop for tools
-        let mut iterations = 0;
+        // Tool loop
+        let mut iterations = 0u32;
         let mut accumulated_text = String::new();
+        // BUG-2 FIX: Independent counters for each nudge type so they cannot
+        // compound into an infinite loop.
+        let mut follow_through_nudge_count = 0u32;
+        let mut empty_response_nudge_count = 0u32;
 
         loop {
             if iterations >= self.max_tool_iterations {
                 warn!("Max tool iterations reached");
+                // BUG-4 FIX: Clone the live history so the summary uses all current context.
+                // We clone to satisfy Rust's borrow rules (&mut self + &self.history conflict).
+                let history_for_summary = self.history.clone();
                 let summary = self
-                    .iterations_exhausted_summary(&history_slice, &model_to_use)
+                    .iterations_exhausted_summary(&history_for_summary, &model_to_use)
                     .await?;
                 if !accumulated_text.is_empty() {
                     return Ok(format!("{}\n\n{}", accumulated_text.trim(), summary));
@@ -492,9 +645,23 @@ impl Agent {
                 return Ok(summary);
             }
 
-            // M-2: Check LLM response cache
-            if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
-                return Ok(strip_tool_call_markup(&cached));
+            // BUG-1 FIX: Rebuild fresh slice every iteration so the provider always
+            // sees the latest tool results, assistant messages, and nudges.
+            let history_slice = self.history.clone();
+
+            // Resolve adaptive max tokens using fresh history length
+            let current_max_tokens =
+                max_tokens_resolver::resolve_max_tokens(Some(history_slice.len()), &model_to_use);
+
+            // DESIGN-1 FIX: Only check the cache on the first iteration and only
+            // return cached if the cached value has no tool calls embedded.
+            if iterations == 0 {
+                if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
+                    // Only use cached response if it is a plain-text final response
+                    if !cached.contains("<tool_call") && !cached.contains("[TOOL_CALL]") {
+                        return Ok(strip_tool_call_markup(&cached));
+                    }
+                }
             }
 
             let request = ChatRequest {
@@ -547,16 +714,27 @@ impl Agent {
                 }
             };
 
-            // M-2: Store in cache
-            if let Some(ref content) = response.content {
-                self.response_cache
-                    .insert(&self.history, &model_to_use, content.clone());
+            // DESIGN-1 FIX: Only cache when there are no tool calls in the response.
+            let has_native_tool_calls = !response.tool_calls.is_empty();
+            let response_content_str = response.content.clone().unwrap_or_default();
+            let has_xml_tool_calls = response_content_str.contains("<tool_call")
+                || response_content_str.contains("[TOOL_CALL]");
+
+            if !has_native_tool_calls && !has_xml_tool_calls {
+                if let Some(ref content) = response.content {
+                    self.response_cache
+                        .insert(&self.history, &model_to_use, content.clone());
+                }
             }
 
             // Extract any text present in this iteration (outside tool calls)
-            let current_text =
-                strip_tool_call_markup(&response.content.clone().unwrap_or_default());
-            if current_text != "✅ Done." && !current_text.is_empty() {
+            // BUG-3 guard: only run strip if there is actual markup to strip
+            let current_text = if has_xml_tool_calls {
+                strip_tool_call_markup(&response_content_str)
+            } else {
+                response_content_str.trim().to_string()
+            };
+            if !is_low_value_response(&current_text) {
                 if !accumulated_text.is_empty() {
                     accumulated_text.push_str("\n\n");
                 }
@@ -575,7 +753,7 @@ impl Agent {
                 let _ = tracker.record_usage(token_usage);
             }
 
-            // Append assistant response
+            // Append assistant response to live history
             let assistant_msg = ChatMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone().unwrap_or_default(),
@@ -585,14 +763,15 @@ impl Agent {
                 } else {
                     Some(response.tool_calls.clone())
                 },
+                thought_signature: response.thought_signature.clone(),
                 tool_call_id: None,
                 content_parts: None,
             };
             self.history.push(assistant_msg);
 
-            // R-4: Handle tool calls (prioritize native, strip markup)
-            let tool_calls_to_execute: Vec<ParsedToolCall> = if !response.tool_calls.is_empty() {
-                // Native tool format
+            // R-4: Handle tool calls (prioritize native, then XML)
+            let tool_calls_to_execute: Vec<ParsedToolCall> = if has_native_tool_calls {
+                // Native tool format (OpenAI/Anthropic function-calling)
                 response
                     .tool_calls
                     .iter()
@@ -600,40 +779,29 @@ impl Agent {
                         name: tc.function.name.clone(),
                         arguments_json: tc.function.arguments.clone(),
                         tool_call_id: Some(tc.id.clone()),
+                        thought_signature: tc.function.thought_signature.clone(),
                     })
                     .collect()
             } else {
                 // Parse XML tool calls from content
-                let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
+                let parse_result = parse_tool_calls(&response_content_str);
                 if parse_result.calls.is_empty() {
-                    let display_text = response.content.clone().unwrap_or_default();
+                    let display_text = response_content_str.clone();
 
                     // QW-6: Conditional follow-through guardrail
-                    if iterations < self.max_tool_iterations.saturating_sub(1)
+                    // BUG-2 FIX: Cap nudge retries at 2 to prevent infinite loops.
+                    if follow_through_nudge_count < 2
+                        && iterations < self.max_tool_iterations.saturating_sub(1)
                         && should_force_follow_through(&display_text, &self.tools)
                     {
-                        // BREAK REPETITION LOOP: Check if we just sent this exact nudge 
-                        // OR if the model is just repeating the exact same text.
-                        let is_repeating = if self.history.len() >= 2 {
-                            let prev_msg = &self.history[self.history.len() - 2];
-                            // If history[len-1] is the current response (pushed above), 
-                            // history[len-2] is the previous SYSTEM nudge or user message.
-                            // If we want to check the PREVIOUS assistant message, it's history[len-3].
-                            let prev_assistant = if self.history.len() >= 3 {
-                                Some(&self.history[self.history.len() - 3])
-                            } else {
-                                None
-                            };
-
-                            let nudge_already_sent = prev_msg.role == "user" && prev_msg.content.contains("SYSTEM: You promised to take action now");
-                            let text_repeated = prev_assistant.map(|m| m.role == "assistant" && m.content == display_text).unwrap_or(false);
-                            
-                            nudge_already_sent || text_repeated
-                        } else {
-                            false
+                        // Extra guard: don't nudge if the model just repeated itself verbatim
+                        let text_repeated = self.history.len() >= 3 && {
+                            let prev_assistant = &self.history[self.history.len() - 3];
+                            prev_assistant.role == "assistant"
+                                && prev_assistant.content == display_text
                         };
 
-                        if !is_repeating {
+                        if !text_repeated {
                             self.history.push(ChatMessage {
                                 role: "user".to_string(),
                                 content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
@@ -641,40 +809,84 @@ impl Agent {
                                 tool_calls: None,
                                 tool_call_id: None,
                                 content_parts: None,
+                    thought_signature: None,
                             });
+                            follow_through_nudge_count += 1;
                             iterations += 1;
                             continue;
                         }
                     }
 
-                    // No tool calls, no promise — genuine final response
+                    // No tool calls — genuine (or forced) final response
                     if accumulated_text.is_empty() {
-                        return Ok(current_text);
+                        let final_text = strip_tool_call_markup(&display_text);
+                        if is_low_value_response(&final_text) {
+                            let has_tool_results = self.history.iter().any(|m| m.role == "tool");
+
+                            // BUG-2 FIX: Cap empty-response nudge at 1 attempt
+                            if empty_response_nudge_count < 1 {
+                                let nudge_content = if has_tool_results {
+                                    "SYSTEM: You have finished calling tools. Now, provide a concise final response to the user summarizing the results or answering their question based on the tool outputs above. Do NOT use placeholder text like \"Done.\".".to_string()
+                                } else {
+                                    "SYSTEM: Your response was empty or too brief. Please provide a clear and concise answer or explanation to the user.".to_string()
+                                };
+
+                                self.history.push(ChatMessage {
+                                    role: "user".to_string(),
+                                    content: nudge_content,
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    content_parts: None,
+                                    thought_signature: None,
+                                });
+                                empty_response_nudge_count += 1;
+                                iterations += 1;
+                                continue;
+                            } else {
+                                // Nudge was already sent once; return a meaningful fallback
+                                if has_tool_results {
+                                    return Ok("I have completed the requested actions. [Detailed summary unavailable]".to_string());
+                                }
+                            }
+                        }
+                        return Ok(final_text);
                     }
                     return Ok(accumulated_text);
                 }
                 parse_result.calls
             };
 
+            // Tool call deduplication: prevent the same (name, args) from being dispatched
+            // twice in the same iteration (e.g. if the model emits duplicate blocks).
+            let mut seen_calls = std::collections::HashSet::new();
+            let deduped_calls: Vec<&ParsedToolCall> = tool_calls_to_execute
+                .iter()
+                .filter(|tc| {
+                    let key = format!("{}:{}", tc.name, tc.arguments_json);
+                    seen_calls.insert(key)
+                })
+                .collect();
+
             let mut handles = Vec::new();
-            for tool_call in &tool_calls_to_execute {
+            for tool_call in &deduped_calls {
                 let tool = self
                     .tools
                     .iter()
                     .find(|t| t.name() == tool_call.name)
                     .cloned();
-                let call = tool_call.clone();
+                let call = (*tool_call).clone();
                 let cache = self.tool_cache.clone();
                 let ctx_clone = context.clone();
                 let handle = tokio::spawn(async move {
                     if let Some(tool) = tool {
                         if tool.cacheable()
                             && let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
-                            {
-                                let mut res = cached_result;
-                                res.tool_call_id = call.tool_call_id.clone();
-                                return res;
-                            }
+                        {
+                            let mut res = cached_result;
+                            res.tool_call_id = call.tool_call_id.clone();
+                            return res;
+                        }
 
                         match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
                             Ok(args) => match tool.execute(args, &ctx_clone).await {
@@ -684,6 +896,7 @@ impl Agent {
                                         output: output.content,
                                         success: true,
                                         tool_call_id: call.tool_call_id.clone(),
+                                        thought_signature: call.thought_signature.clone(),
                                     };
                                     if tool.cacheable() {
                                         cache.insert(&call.name, &call.arguments_json, res.clone());
@@ -695,6 +908,7 @@ impl Agent {
                                     output: format!("Error executing tool: {}", e),
                                     success: false,
                                     tool_call_id: call.tool_call_id.clone(),
+                                    thought_signature: call.thought_signature.clone(),
                                 },
                             },
                             Err(e) => ToolExecutionResult {
@@ -702,6 +916,7 @@ impl Agent {
                                 output: format!("Error parsing arguments: {}", e),
                                 success: false,
                                 tool_call_id: call.tool_call_id.clone(),
+                                thought_signature: call.thought_signature.clone(),
                             },
                         }
                     } else {
@@ -710,6 +925,7 @@ impl Agent {
                             output: format!("Tool not found: {}", call.name),
                             success: false,
                             tool_call_id: call.tool_call_id.clone(),
+                            thought_signature: call.thought_signature.clone(),
                         }
                     }
                 });
@@ -724,12 +940,17 @@ impl Agent {
                 }
             }
 
-            // Append tool results to history with reflection prompt
+            // Append tool results to live history.
+            // DESIGN-4 FIX: No "reflection prompt" injection — modern LLMs natively
+            // understand tool result turns and will continue reasoning without it.
+            // The old injection wasted tokens and caused premature "final answer" responses.
             for result in execution_results {
+                // Use clean content (no emoji prefix) for strict-schema providers
+                // (Anthropic/Gemini reject tool messages with unexpected formatting).
                 let formatted_output = if result.success {
                     result.output
                 } else {
-                    format!("❌ Tool Error ({}): {}", result.name, result.output)
+                    format!("Error: {}", result.output)
                 };
 
                 self.history.push(ChatMessage {
@@ -739,20 +960,11 @@ impl Agent {
                     tool_calls: None,
                     tool_call_id: result.tool_call_id,
                     content_parts: None,
+                    thought_signature: result.thought_signature,
                 });
             }
 
-            // Add reflection prompt for the next iteration
-            self.history.push(ChatMessage {
-                role: "user".to_string(),
-                content: "Reflect on the tool results above and decide your next steps. If a tool failed, try a different approach or fix the parameters. If you have enough info, provide a final answer.".to_string(),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-                content_parts: None,
-            });
-
-            // ── CRITICAL: re-enter loop so the provider sees tool results ──
+            // BUG-1 FIX: self.history is always current; next iteration clones fresh.
             iterations += 1;
         }
     }
@@ -773,6 +985,7 @@ impl Agent {
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
+            thought_signature: None,
         });
 
         let request = ChatRequest {
@@ -865,7 +1078,19 @@ impl Agent {
 
         // R-3: System Prompt Management (Cached)
         if !self.has_system_prompt || self.cached_system_prompt.get().is_none() {
-            let system_prompt = self.build_system_prompt_cached()?;
+            let mut system_prompt = self.build_system_prompt_cached()?;
+
+            // Always ensure the time is fresh in the prompt
+            if let Some(start_idx) = system_prompt.find("## Current Date & Time") {
+                let mut fresh_time = String::new();
+                prompt::append_date_time_section(&mut fresh_time);
+                
+                let end_idx = system_prompt[start_idx + 22..].find("##")
+                    .map(|i| i + start_idx + 22)
+                    .unwrap_or(system_prompt.len());
+                
+                system_prompt.replace_range(start_idx..end_idx, &fresh_time);
+            }
 
             // Insert or replace system prompt at index 0
             if !self.history.is_empty() && self.history[0].role == "system" {
@@ -887,20 +1112,39 @@ impl Agent {
                         tool_calls: None,
                         tool_call_id: None,
                         content_parts: None,
+                        thought_signature: None,
                     },
                 );
             }
             self.has_system_prompt = true;
+        } else if !self.history.is_empty() && self.history[0].role == "system" {
+            // Even if the system prompt was set manually or is already present,
+            // try to refresh the time section if it exists.
+            let mut content = self.history[0].content.clone();
+            if let Some(start_idx) = content.find("## Current Date & Time") {
+                let mut fresh_time = String::new();
+                prompt::append_date_time_section(&mut fresh_time);
+                
+                let end_idx = content[start_idx + 22..].find("##")
+                    .map(|i| i + start_idx + 22)
+                    .unwrap_or(content.len());
+                
+                content.replace_range(start_idx..end_idx, &fresh_time);
+                self.history[0].content = content;
+            }
         }
+
+        let (final_content, content_parts) = self.parse_multimodal_message(&enriched_msg);
 
         // Append user message
         self.history.push(ChatMessage {
             role: "user".to_string(),
-            content: enriched_msg.clone(),
+            content: final_content,
             name: None,
             tool_calls: None,
             tool_call_id: None,
-            content_parts: None,
+            content_parts,
+            thought_signature: None,
         });
 
         // Enforce history limits
@@ -921,14 +1165,11 @@ impl Agent {
                 &self.provider,
                 &self.model_name,
                 &compaction_config,
+                &mut self.last_compaction,
             );
         }
 
-        // B-1: Resolve adaptive max tokens
-        let current_max_tokens =
-            max_tokens_resolver::resolve_max_tokens(Some(self.history.len()), &model_to_use);
-
-        // Prepare ToolSpecs once
+        // Prepare ToolSpecs once (outside the loop)
         let tool_specs: Vec<ToolSpec> = self
             .tools
             .iter()
@@ -943,32 +1184,42 @@ impl Agent {
             })
             .collect();
 
-        // B-3: Context window slicing
-        let history_slice = if enriched_msg.len() < 100 && !enriched_msg.contains("actually") {
-            if self.history.len() > 11 {
-                let mut slice = vec![self.history[0].clone()];
-                slice.extend(self.history[self.history.len() - 10..].iter().cloned());
-                slice
-            } else {
-                self.history.clone()
-            }
-        } else {
-            self.history.clone()
-        };
+        // BUG-3 FIX: Removed short-message history slicing heuristic.
+        // BUG-1 FIX: history_slice is rebuilt fresh INSIDE the loop each iteration.
 
         // Tool loop with streaming
-        let mut iterations = 0;
+        let mut iterations = 0u32;
+        // BUG-2 FIX: Independent counters per nudge type to prevent infinite loops.
+        let mut follow_through_nudge_count = 0u32;
+        let mut empty_response_nudge_count = 0u32;
+
         loop {
             if iterations >= self.max_tool_iterations {
                 warn!("Max tool iterations reached");
+                // BUG-4 FIX: Clone live history to satisfy borrow checker
+                // (&mut self cannot coexist with &self.history in a method call).
+                let history_for_summary = self.history.clone();
                 return self
-                    .iterations_exhausted_summary(&history_slice, &model_to_use)
+                    .iterations_exhausted_summary(&history_for_summary, &model_to_use)
                     .await;
             }
 
-            // M-2: Check LLM response cache
-            if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
-                return Ok(strip_tool_call_markup(&cached));
+            // BUG-1 FIX: Rebuild fresh every iteration so the model always
+            // sees the latest tool results and assistant messages.
+            let history_slice = self.history.clone();
+
+            // Resolve adaptive max tokens with fresh history length
+            let current_max_tokens =
+                max_tokens_resolver::resolve_max_tokens(Some(history_slice.len()), &model_to_use);
+
+            // DESIGN-1 FIX: Only check cache on first iteration, and skip if cached
+            // response contains tool calls (which would be garbled if returned raw).
+            if iterations == 0 {
+                if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
+                    if !cached.contains("<tool_call") && !cached.contains("[TOOL_CALL]") {
+                        return Ok(strip_tool_call_markup(&cached));
+                    }
+                }
             }
 
             let request = ChatRequest {
@@ -996,9 +1247,10 @@ impl Agent {
                 let stream_cb: crate::providers::StreamCallback =
                     Box::new(move |chunk: StreamChunk| {
                         if let StreamChunk::Delta(ref text) = chunk
-                            && let Ok(mut acc) = acc_retry.lock() {
-                                acc.push_str(text);
-                            }
+                            && let Ok(mut acc) = acc_retry.lock()
+                        {
+                            acc.push_str(text);
+                        }
                         if let Ok(mut cb) = cb_retry.lock() {
                             cb(chunk);
                         }
@@ -1037,10 +1289,17 @@ impl Agent {
                 }
             };
 
-            // M-2: Store in cache
-            if let Some(ref content) = response.content {
-                self.response_cache
-                    .insert(&self.history, &model_to_use, content.clone());
+            // DESIGN-1 FIX: Only cache final text responses, not tool-call responses.
+            let has_native_tool_calls_s = !response.tool_calls.is_empty();
+            let response_content_str_s = response.content.clone().unwrap_or_default();
+            let has_xml_tool_calls_s = response_content_str_s.contains("<tool_call")
+                || response_content_str_s.contains("[TOOL_CALL]");
+
+            if !has_native_tool_calls_s && !has_xml_tool_calls_s {
+                if let Some(ref content) = response.content {
+                    self.response_cache
+                        .insert(&self.history, &model_to_use, content.clone());
+                }
             }
 
             // B-6: Record cost usage
@@ -1065,13 +1324,14 @@ impl Agent {
                 } else {
                     Some(response.tool_calls.clone())
                 },
+                thought_signature: response.thought_signature.clone(),
                 tool_call_id: None,
                 content_parts: None,
             };
             self.history.push(assistant_msg);
 
-            // Handle tool calls (same as turn())
-            let tool_calls_to_execute: Vec<ParsedToolCall> = if !response.tool_calls.is_empty() {
+            // Handle tool calls (prioritize native, then XML)
+            let tool_calls_to_execute: Vec<ParsedToolCall> = if has_native_tool_calls_s {
                 response
                     .tool_calls
                     .iter()
@@ -1079,39 +1339,25 @@ impl Agent {
                         name: tc.function.name.clone(),
                         arguments_json: tc.function.arguments.clone(),
                         tool_call_id: Some(tc.id.clone()),
+                        thought_signature: tc.function.thought_signature.clone(),
                     })
                     .collect()
             } else {
-                let parse_result = parse_tool_calls(&response.content.clone().unwrap_or_default());
+                let parse_result = parse_tool_calls(&response_content_str_s);
                 if parse_result.calls.is_empty() {
-                    let display_text = response.content.clone().unwrap_or_default();
+                    let display_text = response_content_str_s.clone();
 
-                    // QW-6: Conditional follow-through guardrail
-                    if iterations < self.max_tool_iterations.saturating_sub(1)
+                    // BUG-2 FIX: Cap nudge retries at 2
+                    if follow_through_nudge_count < 2
+                        && iterations < self.max_tool_iterations.saturating_sub(1)
                         && should_force_follow_through(&display_text, &self.tools)
                     {
-                        // BREAK REPETITION LOOP: Check if we just sent this exact nudge 
-                        // OR if the model is just repeating the exact same text.
-                        let is_repeating = if self.history.len() >= 2 {
-                            let prev_msg = &self.history[self.history.len() - 2];
-                            // If history[len-1] is the current response (pushed above), 
-                            // history[len-2] is the previous SYSTEM nudge or user message.
-                            // If we want to check the PREVIOUS assistant message, it's history[len-3].
-                            let prev_assistant = if self.history.len() >= 3 {
-                                Some(&self.history[self.history.len() - 3])
-                            } else {
-                                None
-                            };
-
-                            let nudge_already_sent = prev_msg.role == "user" && prev_msg.content.contains("SYSTEM: You promised to take action now");
-                            let text_repeated = prev_assistant.map(|m| m.role == "assistant" && m.content == display_text).unwrap_or(false);
-                            
-                            nudge_already_sent || text_repeated
-                        } else {
-                            false
+                        let text_repeated = self.history.len() >= 3 && {
+                            let prev_assistant = &self.history[self.history.len() - 3];
+                            prev_assistant.role == "assistant"
+                                && prev_assistant.content == display_text
                         };
-
-                        if !is_repeating {
+                        if !text_repeated {
                             self.history.push(ChatMessage {
                                 role: "user".to_string(),
                                 content: "SYSTEM: You promised to take action now (e.g. \"I'll check now\" or \"Let me try\"). Do it in this turn by issuing the appropriate tool call(s). If no tool can perform it, explain the limitation clearly and do not promise a future attempt.".to_string(),
@@ -1119,37 +1365,75 @@ impl Agent {
                                 tool_calls: None,
                                 tool_call_id: None,
                                 content_parts: None,
+                    thought_signature: None,
                             });
+                            follow_through_nudge_count += 1;
                             iterations += 1;
                             continue;
                         }
                     }
 
-                    // No tool calls — return final text
-                    return Ok(strip_tool_call_markup(&display_text));
+                    let final_text = strip_tool_call_markup(&display_text);
+                    if is_low_value_response(&final_text) {
+                        let has_tool_results = self.history.iter().any(|m| m.role == "tool");
+                        if empty_response_nudge_count < 1 {
+                            let nudge_content = if has_tool_results {
+                                "SYSTEM: You have finished calling tools. Now, provide a concise final response to the user summarizing the results or answering their question based on the tool outputs above. Do NOT use placeholder text like \"Done.\"." .to_string()
+                            } else {
+                                "SYSTEM: Your response was empty or too brief. Please provide a clear and concise answer or explanation to the user.".to_string()
+                            };
+                            self.history.push(ChatMessage {
+                                role: "user".to_string(),
+                                content: nudge_content,
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                content_parts: None,
+                                thought_signature: None,
+                            });
+                            empty_response_nudge_count += 1;
+                            iterations += 1;
+                            continue;
+                        } else {
+                            if has_tool_results {
+                                return Ok("I have completed the requested actions. [Detailed summary unavailable]".to_string());
+                            }
+                        }
+                    }
+                    return Ok(final_text);
                 }
                 parse_result.calls
             };
 
+            // Tool call deduplication for turn_stream
+            let mut seen_calls_s = std::collections::HashSet::new();
+            let deduped_calls_s: Vec<&ParsedToolCall> = tool_calls_to_execute
+                .iter()
+                .filter(|tc| {
+                    let key = format!("{}:{}", tc.name, tc.arguments_json);
+                    seen_calls_s.insert(key)
+                })
+                .collect();
+
             let mut handles = Vec::new();
-            for tool_call in &tool_calls_to_execute {
+            for tool_call in &deduped_calls_s {
                 let tool = self
                     .tools
                     .iter()
                     .find(|t| t.name() == tool_call.name)
                     .cloned();
-                let call = tool_call.clone();
+                let call = (*tool_call).clone();
                 let cache = self.tool_cache.clone();
                 let ctx_clone = context.clone();
                 let handle = tokio::spawn(async move {
                     if let Some(tool) = tool {
                         if tool.cacheable()
                             && let Some(cached_result) = cache.get(&call.name, &call.arguments_json)
-                            {
-                                let mut res = cached_result;
-                                res.tool_call_id = call.tool_call_id.clone();
-                                return res;
-                            }
+                        {
+                            let mut res = cached_result;
+                            res.tool_call_id = call.tool_call_id.clone();
+                            return res;
+                        }
 
                         match serde_json::from_str::<serde_json::Value>(&call.arguments_json) {
                             Ok(args) => match tool.execute(args, &ctx_clone).await {
@@ -1159,6 +1443,7 @@ impl Agent {
                                         output: output.content,
                                         success: true,
                                         tool_call_id: call.tool_call_id.clone(),
+                                        thought_signature: call.thought_signature.clone(),
                                     };
                                     if tool.cacheable() {
                                         cache.insert(&call.name, &call.arguments_json, res.clone());
@@ -1170,6 +1455,7 @@ impl Agent {
                                     output: format!("Error executing tool: {}", e),
                                     success: false,
                                     tool_call_id: call.tool_call_id.clone(),
+                                    thought_signature: call.thought_signature.clone(),
                                 },
                             },
                             Err(e) => ToolExecutionResult {
@@ -1177,6 +1463,7 @@ impl Agent {
                                 output: format!("Error parsing arguments: {}", e),
                                 success: false,
                                 tool_call_id: call.tool_call_id.clone(),
+                                thought_signature: call.thought_signature.clone(),
                             },
                         }
                     } else {
@@ -1185,6 +1472,7 @@ impl Agent {
                             output: format!("Tool not found: {}", call.name),
                             success: false,
                             tool_call_id: call.tool_call_id.clone(),
+                            thought_signature: call.thought_signature.clone(),
                         }
                     }
                 });
@@ -1199,13 +1487,14 @@ impl Agent {
                 }
             }
 
+            // DESIGN-4 FIX: No reflection prompt; modern LLMs handle tool result turns natively.
+            // BUG-1 FIX: self.history is always current; next iteration clones fresh.
             for result in execution_results {
                 let formatted_output = if result.success {
                     result.output
                 } else {
-                    format!("❌ Tool Error ({}): {}", result.name, result.output)
+                    format!("Error: {}", result.output)
                 };
-
                 self.history.push(ChatMessage {
                     role: "tool".to_string(),
                     content: formatted_output,
@@ -1213,20 +1502,10 @@ impl Agent {
                     tool_calls: None,
                     tool_call_id: result.tool_call_id,
                     content_parts: None,
+                    thought_signature: result.thought_signature,
                 });
             }
 
-            // Add reflection prompt for the next iteration
-            self.history.push(ChatMessage {
-                role: "user".to_string(),
-                content: "Reflect on the tool results above and decide your next steps. If a tool failed, try a different approach or fix the parameters. If you have enough info, provide a final answer.".to_string(),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-                content_parts: None,
-            });
-
-            // ── CRITICAL: re-enter loop so the provider sees tool results ──
             iterations += 1;
         }
     }
@@ -1263,7 +1542,7 @@ mod tests {
     fn test_strip_tool_call_markup_empty_fallback() {
         let input = "<tool_call>everything</tool_call>";
         let out = strip_tool_call_markup(input);
-        assert_eq!(out, "\u{2705} Done.");
+        assert_eq!(out, "");
     }
 
     #[test]
@@ -1328,5 +1607,22 @@ mod tests {
             "Let me know if you need anything else.",
             &tools
         ));
+    }
+
+    #[test]
+    fn test_is_low_value_response() {
+        assert!(is_low_value_response(""));
+        assert!(is_low_value_response("   "));
+        assert!(is_low_value_response("✅ Done."));
+        assert!(is_low_value_response("Done."));
+        assert!(is_low_value_response("ok."));
+        assert!(is_low_value_response("!!!"));
+        assert!(is_low_value_response("..."));
+        assert!(is_low_value_response("  \n  "));
+
+        assert!(!is_low_value_response(
+            "I have completed the task and found that everything is in order."
+        ));
+        assert!(!is_low_value_response("The sum of 2 and 2 is 4."));
     }
 }

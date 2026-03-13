@@ -400,6 +400,19 @@ impl GeminiProvider {
             );
         }
 
+        // Windows global npm path fallback
+        if cfg!(windows) {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                cli_dirs.push(
+                    PathBuf::from(appdata)
+                        .join("npm")
+                        .join("node_modules")
+                        .join("@google")
+                        .join("gemini-cli"),
+                );
+            }
+        }
+
         for cli_dir in Self::dedupe_paths(cli_dirs) {
             let known_paths = [
                 cli_dir
@@ -697,11 +710,17 @@ impl GeminiProvider {
         };
 
         if Self::uses_code_assist_endpoint(auth) {
-            let ctx = self.resolve_code_assist_context(auth.credential(), request.timeout_secs)?;
-            return Ok((
-                format!("{}:{}", ctx.base_url, action),
-                self.build_code_assist_request_body(request, &ctx.project)?,
-            ));
+            match self.resolve_code_assist_context(auth.credential(), request.timeout_secs) {
+                Ok(ctx) => {
+                    return Ok((
+                        format!("{}:{}", ctx.base_url, action),
+                        self.build_code_assist_request_body(request, &ctx.project)?,
+                    ));
+                }
+                Err(err) => {
+                    tracing::debug!("Code Assist context resolution failed, falling back to standard API: {}", err);
+                }
+            }
         }
 
         let url = if auth.is_api_key() {
@@ -753,15 +772,17 @@ impl GeminiProvider {
 
             // Handle native tool results (functionResponse)
             if msg.role == "tool" {
-                if let Some(_tool_call_id) = &msg.tool_call_id {
-                    parts.push(json!({
+                if msg.tool_call_id.is_some() {
+                    let part = json!({
                         "functionResponse": {
                             "name": msg.name.as_deref().unwrap_or("unknown"),
                             "response": {
                                 "content": msg.content
                             }
                         }
-                    }));
+                    });
+
+                    parts.push(part);
                 } else {
                     // Fallback for non-native tool results
                     parts.push(json!({"text": format!("[Tool Result]:\n{}", msg.content)}));
@@ -769,22 +790,28 @@ impl GeminiProvider {
             } else if let Some(tool_calls) = &msg.tool_calls {
                 // Handle assistant native tool calls (functionCall)
                 if !msg.content.is_empty() {
-                    parts.push(json!({"text": msg.content}));
+                    let text_part = json!({"text": msg.content});
+                    parts.push(text_part);
                 }
                 for tc in tool_calls {
-                    parts.push(json!({
-                        "functionCall": {
-                            "name": tc.function.name,
-                            "args": serde_json::from_str::<serde_json::Value>(&tc.function.arguments).unwrap_or(json!({}))
-                        }
-                    }));
+                    let fc_obj = json!({
+                        "name": tc.function.name,
+                        "args": serde_json::from_str::<serde_json::Value>(&tc.function.arguments).unwrap_or(json!({}))
+                    });
+
+                    let part = json!({
+                        "functionCall": fc_obj
+                    });
+
+                    parts.push(part);
                 }
             } else if let Some(content_parts) = msg.content_parts.as_ref() {
                 // Multimodal support
                 for part in content_parts {
                     match part {
                         ContentPart::Text(text) => {
-                            parts.push(json!({"text": text}));
+                            let p = json!({"text": text});
+                            parts.push(p);
                         }
                         ContentPart::ImageBase64 { data, media_type } => {
                             parts.push(json!({
@@ -800,7 +827,8 @@ impl GeminiProvider {
                     }
                 }
             } else {
-                parts.push(json!({"text": msg.content}));
+                let p = json!({"text": msg.content});
+                parts.push(p);
             }
 
             if let Some(last) = grouped_messages.last_mut() {
@@ -935,10 +963,11 @@ impl GeminiProvider {
         let mut content = String::new();
         let mut reasoning_content = String::new();
         let mut tool_calls = Vec::new();
+        let mut turn_thought_signature: Option<String> = None;
 
         if let Some(candidates) = response_root.get("candidates")
             && let Some(candidate) = candidates.get(0) {
-                if let Some(finish_reason) = candidate.get("finishReason") {
+                if let Some(finish_reason) = candidate.get("finish_reason") {
                     let reason = finish_reason.as_str().unwrap_or("unknown");
                     if reason != "STOP" && reason != "MAX_TOKENS" {
                         tracing::warn!("Gemini finish reason: {}", reason);
@@ -946,28 +975,40 @@ impl GeminiProvider {
                 }
 
                 if let Some(cand_content) = candidate.get("content")
-                    && let Some(parts) = cand_content.get("parts") {
-                        for part in parts.as_array().unwrap_or(&vec![]) {
-                            // Support for "thought" (reasoning) parts in newer Gemini models
-                            let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                    && let Some(parts) = cand_content.get("parts")
+                    && let Some(parts_array) = parts.as_array() {
+                        // First pass: find ANY thought_signature in the whole turn
+                        for part in parts_array {
+                            if let Some(sig) = part.get("thought_signature").and_then(|v| v.as_str()) {
+                                turn_thought_signature = Some(sig.to_string());
+                                break;
+                            }
+                        }
 
-                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                if is_thought {
-                                    reasoning_content.push_str(text);
-                                } else {
-                                    content.push_str(text);
-                                }
+                        for part in parts_array {
+                            // Support for "thought" (reasoning) parts in newer Gemini models
+                            if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
+                                reasoning_content.push_str(thought);
+                            } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                content.push_str(text);
                             }
                             if let Some(fc) = part.get("functionCall")
                                 && let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
                                     let args = fc.get("args").cloned().unwrap_or(json!({}));
                                     let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                                    
+                                    // thought_signature is a sibling to functionCall in the Part
+                                    // If missing on this part, use the turn-level one we found
+                                    let part_signature = part.get("thought_signature").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let final_signature = part_signature.or_else(|| turn_thought_signature.clone());
+
                                     tool_calls.push(crate::providers::ToolCall {
                                         id: call_id,
                                         kind: "function".to_string(),
                                         function: crate::providers::FunctionCall {
                                             name: name.to_string(),
                                             arguments: args.to_string(),
+                                            thought_signature: final_signature,
                                         },
                                     });
                                 }
@@ -1000,6 +1041,7 @@ impl GeminiProvider {
             } else {
                 Some(reasoning_content)
             },
+            thought_signature: turn_thought_signature,
         })
     }
 }
@@ -1106,6 +1148,7 @@ impl Provider for GeminiProvider {
         let mut sse_reader = SseReader::new(res);
         let mut full_content = String::new();
         let mut tool_calls = Vec::new();
+        let mut turn_thought_signature: Option<String> = None;
 
         while let Some(data) = sse_reader.next_data() {
             if data == "[DONE]" {
@@ -1117,9 +1160,22 @@ impl Provider for GeminiProvider {
                 if let Some(candidates) = response_root.get("candidates")
                     && let Some(candidate) = candidates.get(0)
                         && let Some(cand_content) = candidate.get("content")
-                            && let Some(parts) = cand_content.get("parts") {
-                                for part in parts.as_array().unwrap_or(&vec![]) {
-                                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            && let Some(parts) = cand_content.get("parts")
+                            && let Some(parts_array) = parts.as_array() {
+                                // Capture any thought_signature seen in the stream
+                                for part in parts_array {
+                                    if let Some(sig) = part.get("thought_signature").and_then(|ts| ts.as_str()) {
+                                        turn_thought_signature = Some(sig.to_string());
+                                    }
+                                }
+
+                                for part in parts_array {
+                                    if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
+                                        // TODO: Should we pipe reasoning to callback differently?
+                                        // For now, we collect it and it will be in the final response
+                                        full_content.push_str(thought);
+                                        // callback(StreamChunk::Delta(thought.to_string())); // Don't pipe reasoning to text delta yet
+                                    } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                         full_content.push_str(text);
                                         callback(StreamChunk::Delta(text.to_string()));
                                     }
@@ -1127,16 +1183,20 @@ impl Provider for GeminiProvider {
                                         && let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
                                             let args = fc.get("args").cloned().unwrap_or(json!({}));
                                             let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                                            
+                                            let part_signature = part.get("thought_signature").and_then(|ts| ts.as_str()).map(|s| s.to_string());
+                                            let final_signature = part_signature.or_else(|| turn_thought_signature.clone());
+
                                             let tc = crate::providers::ToolCall {
                                                 id: call_id,
                                                 kind: "function".to_string(),
                                                 function: crate::providers::FunctionCall {
                                                     name: name.to_string(),
                                                     arguments: args.to_string(),
+                                                    thought_signature: final_signature,
                                                 },
                                             };
                                             tool_calls.push(tc);
-                                            // For streaming, we don't delta tool calls in the same way, but we could
                                         }
                                 }
                             }
@@ -1161,6 +1221,7 @@ impl Provider for GeminiProvider {
             usage,
             model: request.model.to_string(),
             reasoning_content: None,
+            thought_signature: turn_thought_signature,
         })
     }
 }
@@ -1267,5 +1328,33 @@ mod tests {
 
         let parsed = provider.parse_response(body).unwrap();
         assert_eq!(parsed.content, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_parse_response_with_reasoning() {
+        let provider = GeminiProvider::new(None);
+        let body = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"thought": "I should say hello"},
+                            {"text": "Hello!"}
+                        ]
+                    },
+                    "finishReason": "STOP"
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 20,
+                "totalTokenCount": 30
+            }
+        }"#;
+
+        let parsed = provider.parse_response(body).unwrap();
+        assert_eq!(parsed.content, Some("Hello!".to_string()));
+        assert_eq!(parsed.reasoning_content, Some("I should say hello".to_string()));
+        assert_eq!(parsed.usage.total_tokens, 30);
     }
 }

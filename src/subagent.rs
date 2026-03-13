@@ -24,6 +24,8 @@ pub struct TaskState {
     pub error_msg: Option<String>,
     pub started_at: u64,
     pub completed_at: Option<u64>,
+    pub last_heartbeat: u64,
+    pub iteration_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +116,11 @@ impl SubagentManager {
                 .unwrap()
                 .as_secs(),
             completed_at: None,
+            last_heartbeat: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            iteration_count: 0,
         };
 
         tasks.insert(task_id, state);
@@ -157,7 +164,7 @@ impl SubagentManager {
 
             // Instantiate isolated tools and provider
             let provider = create_provider(&sub_config);
-            let subagent_tools = build_tools(&sub_config, None, None, None).await; // None avoids adding 'spawn' tool again
+            let subagent_tools = build_tools(&sub_config, None, None, None, None).await; // None avoids adding 'spawn' tool again
 
             let mut agent = Agent::new(
                 provider,
@@ -170,24 +177,46 @@ impl SubagentManager {
             if let Some(prompt) = custom_system_prompt {
                 // If a custom prompt is provided, we inject it directly
                 agent.has_system_prompt = true;
+                let mut content = format!("{}\n\nYou are running as a background subagent.\n\n", prompt);
+                crate::agent::prompt::append_date_time_section(&mut content);
                 agent.history.push(crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: format!("{}\n\nYou are running as a background subagent.", prompt),
+                    thought_signature: None,
+                    content,
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
                     content_parts: None,
                 });
             } else {
-                // Default subagent prompt
+                // BUG-7 FIX: The old 1-line prompt was too vague. A subagent gets
+                // exactly one turn() call, so it must complete the ENTIRE task —
+                // including all tool calls, reasoning steps, and final synthesis —
+                // within that single turn. The prompt now makes this explicit.
                 agent.has_system_prompt = true;
+                let mut subagent_prompt = concat!(
+                    "You are an autonomous background subagent. ",
+                    "Your job is to FULLY complete the assigned task in a single response ",
+                    "using whatever tools are available to you.\n\n",
+                    "## Critical Rules\n",
+                    "1. **Never stop mid-task.** Keep calling tools until the work is 100% done.\n",
+                    "2. **Do not promise future action.** You will not get another turn — if you cannot ",
+                    "complete something, explain why clearly in your final response.\n",
+                    "3. **Use tools proactively.** Read files, run commands, search the web — ",
+                    "do not guess when you can verify with a tool.\n",
+                    "4. **Always finish with a clear summary** of what you did, what succeeded, ",
+                    "and what (if anything) could not be completed and why.\n",
+                    "5. **Be concise in your final output.** The person who assigned this task wants results, not narration.\n\n"
+                ).to_string();
+                crate::agent::prompt::append_date_time_section(&mut subagent_prompt);
                 agent.history.push(crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: "You are a background subagent. Complete the assigned task concisely and accurately. Use available tools when they materially improve correctness.".to_string(),
+                    content: subagent_prompt,
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
                     content_parts: None,
+                    thought_signature: None,
                 });
             }
 
@@ -255,5 +284,34 @@ impl SubagentManager {
     pub fn get_task_result(&self, task_id: u64) -> Option<String> {
         let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         tasks.get(&task_id).and_then(|t| t.result.clone())
+    }
+
+    pub fn monitor_tick(&self) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        for (id, state) in tasks.iter_mut() {
+            if state.status == TaskStatus::Running {
+                // Check for timeout (1 hour)
+                if now > state.started_at + 3600 {
+                    state.status = TaskStatus::Failed;
+                    state.error_msg = Some("Task timed out (exceeded 1 hour)".to_string());
+                    state.completed_at = Some(now);
+
+                    let report = format!(
+                        "⚠️ Subagent watchdog: Task '{}' (ID {}) has timed out after 1 hour and was terminated.",
+                        state.label, id
+                    );
+                    
+                    // We can't easily get the origin from TaskState yet, but we can log it
+                    // and publish to a general system channel if we had one.
+                    // For now, let's just log it and rely on the user checking status.
+                    tracing::warn!("{}", report);
+                }
+            }
+        }
     }
 }

@@ -322,6 +322,7 @@ impl Provider for OpenAiCompatibleProvider {
                     function: FunctionCall {
                         name: tc["function"]["name"].as_str().unwrap_or_default().to_string(),
                         arguments: tc["function"]["arguments"].as_str().unwrap_or_default().to_string(),
+                        thought_signature: None,
                     },
                 });
             }
@@ -340,6 +341,7 @@ impl Provider for OpenAiCompatibleProvider {
             usage,
             model: request.model.to_string(),
             reasoning_content,
+            thought_signature: None,
         })
     }
 
@@ -422,7 +424,11 @@ impl Provider for OpenAiCompatibleProvider {
                             tool_calls.push(ToolCall {
                                 id: String::new(),
                                 kind: "function".to_string(),
-                                function: FunctionCall { name: String::new(), arguments: String::new() },
+                                function: FunctionCall {
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                    thought_signature: None,
+                                },
                             });
                             tc_arg_bufs.push(String::new());
                         }
@@ -461,6 +467,7 @@ impl Provider for OpenAiCompatibleProvider {
             usage,
             model: request.model.to_string(),
             reasoning_content: if full_reasoning.is_empty() { None } else { Some(full_reasoning) },
+            thought_signature: None,
         })
     }
 }

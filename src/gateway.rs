@@ -27,14 +27,14 @@ pub async fn serve(config: Config) -> Result<()> {
     };
 
     let app = Router::new()
-        // Static files (must be first to catch all static routes)
-        .nest_service("/", ServeDir::new("static"))
         // API routes
         .route("/api/health", get(health_check))
         .route("/api/config", get(get_config))
         .route("/api/config", post(save_config))
         .route("/api/chat", post(chat_handler))
         .route("/ws/chat", get(websocket_handler))
+        // Static files (must be first to catch all static routes)
+        .fallback_service(ServeDir::new("static"))
         .with_state(state);
 
     let local_bind = if config.gateway.allow_public_bind.unwrap_or(false) {

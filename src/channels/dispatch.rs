@@ -209,9 +209,12 @@ fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &D
                 info!("Dispatched chunk to {} ({})", msg.channel, msg.chat_id);
             }
             OutboundStage::Final => {
+                let is_empty = msg.content.trim().is_empty() && msg.media.is_empty();
                 info!(
-                    "Dispatched final message to {} ({})",
-                    msg.channel, msg.chat_id
+                    "Dispatched final message to {} ({}){}",
+                    msg.channel, 
+                    msg.chat_id,
+                    if is_empty { " (empty)" } else { "" }
                 );
             }
         }

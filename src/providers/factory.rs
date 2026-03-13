@@ -56,7 +56,13 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
             let fallback_models: Vec<String> = if api_key.is_empty() {
                 DEFAULT_FREE_MODELS.iter().map(|s| s.to_string()).collect()
             } else {
-                match fetch_kilocode_free_models(&api_key) {
+                let models_res = if tokio::runtime::Handle::try_current().is_ok() {
+                    tokio::task::block_in_place(|| fetch_kilocode_free_models(&api_key))
+                } else {
+                    fetch_kilocode_free_models(&api_key)
+                };
+
+                match models_res {
                     Ok(models) if !models.is_empty() => {
                         tracing::debug!(
                             "[kilocode] Loaded {} free fallback model(s)",

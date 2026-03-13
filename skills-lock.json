@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-browser": {
+      "source": "vercel-labs/agent-browser",
+      "sourceType": "github",
+      "computedHash": "d03d74fbe6e3db1398c6cea9b9725d6e7d2602306c0cf3a4212668ce09d4882d"
+    }
+  }
+}

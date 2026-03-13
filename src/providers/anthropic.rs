@@ -188,7 +188,7 @@ fn parse_response(v: Value, model: &str) -> Result<ChatResponse> {
                 tool_calls.push(ToolCall {
                     id,
                     kind: "function".to_string(),
-                    function: FunctionCall { name, arguments },
+                    function: FunctionCall { name, arguments, thought_signature: None },
                 });
             }
             _ => {}
@@ -218,5 +218,6 @@ fn parse_response(v: Value, model: &str) -> Result<ChatResponse> {
         usage,
         model: model_str,
         reasoning_content: None,
+        thought_signature: None,
     })
 }

@@ -1175,6 +1175,11 @@ impl Channel for TelegramChannel {
         let (cleaned_text, attachments) = self.parse_outbound_attachments(text);
         let text_to_send = cleaned_text.trim();
 
+        // Handle [NO_REPLY] marker
+        if text_to_send.to_lowercase().contains("[no_reply]") {
+            return Ok(());
+        }
+
         if !text_to_send.is_empty() {
             if let Some(msg_id) = stream_msg_id {
                 // If the final text is too long, we edit the first part and split the rest
@@ -1200,10 +1205,10 @@ impl Channel for TelegramChannel {
             } else {
                 self.send_message_with_splitting(chat_id, text_to_send, None)?;
             }
-        }
- else if attachments.is_empty() {
-            // Fallback for empty messages
-            self.send_message_with_splitting(chat_id, "✅ Done.", None)?;
+        } else if attachments.is_empty() {
+            // No message and no attachments? Log it but don't send a confusing "✅ Done." 
+            // The agent loop should have nudged for a summary.
+            tracing::warn!("Telegram channel received empty response from agent with no attachments.");
         }
 
         for attachment in &attachments {

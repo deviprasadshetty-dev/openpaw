@@ -166,7 +166,7 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         out.push_str("## Reasoning and Execution\n\n");
         out.push_str("- Think step-by-step before acting. Formulate a clear plan, break it down into steps, and reflect on the results of each step.\n");
         out.push_str("- **Efficiency & Batching**: Aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources.\n");
-        out.push_str("- **Final Synthesis**: Once you have gathered all necessary information or completed the requested actions via tools, you MUST provide a comprehensive final response to the user summarizing your findings or confirming the task completion. Never end a turn with only tool results.\n");
+        out.push_str("- **Final Synthesis**: Once you have gathered all necessary information or completed the requested actions via tools, you MUST provide a comprehensive final response to the user. This response should summarize your findings, explain what was done, and confirm task completion in a way that is informative and helpful. **Never end a turn with only tool results or a brief placeholder like \"Done.\" or \"✅ Done.\" if tools were used.**\n");
         out.push_str("- Use `<thought>` tags or general text to explain your reasoning before executing any tools.\n");
         out.push_str("- If a task is complex, outline an explicit multi-step plan first, then execute the steps sequentially, reviewing the outcomes along the way.\n\n");
 
@@ -312,7 +312,7 @@ fn append_skills_section(out: &mut String, workspace_dir: &str) {
     }
 }
 
-fn append_date_time_section(out: &mut String) {
+pub fn append_date_time_section(out: &mut String) {
     let now = chrono::Utc::now();
     out.push_str("## Current Date & Time\n\n");
     out.push_str(&format!("{} UTC\n\n", now.format("%Y-%m-%d %H:%M")));
@@ -347,6 +347,15 @@ fn append_safety_and_group_logic(out: &mut String, conversation_context: Option<
     out.push_str("- ALWAYS use double quotes (\") for the command string\n");
     out.push_str("- Example: `echo \"Time is up!\"`\n");
     out.push_str("- For Telegram chats, results can be auto-delivered when chat context is available\n\n");
+
+    // Long-Term Autonomy
+    out.push_str("## Long-Term Autonomy & Proactivity\n\n");
+    out.push_str("1. **Goal Management:** Use `goal_add`, `goal_list`, and `goal_update` to manage long-term projects and objectives. \
+        This allows you to track progress across different chat sessions and background tasks. \
+        Check your goals periodically to ensure you're on track.\n");
+    out.push_str("2. **Proactive Heartbeat:** You have a Heartbeat Engine that periodically triggers tasks from `HEARTBEAT.md`. \
+        When you receive a message starting with `PROACTIVE TASK CHECK:`, it is an internal nudge to perform a recurring duty. \
+        Respond to these by performing the task and reporting the outcome.\n\n");
 }
 
 fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) {

@@ -17,8 +17,10 @@ pub mod cost;
 pub mod cron;
 pub mod daemon;
 pub mod doctor;
-mod gateway;
+pub mod gateway;
+pub mod goals;
 pub mod hardware;
+
 pub mod health;
 pub mod heartbeat;
 pub mod http_util;
@@ -108,6 +110,12 @@ enum Commands {
         /// Optional message to send (one-shot mode)
         #[arg(short, long)]
         message: Option<String>,
+    },
+    /// Run environment diagnostics
+    Doctor {
+        /// Automatically fix common issues
+        #[arg(short, long)]
+        fix: bool,
     },
 }
 
@@ -227,6 +235,10 @@ async fn main() -> Result<()> {
                 daemon::run_daemon(config).await?;
             }
         }
+        Some(Commands::Doctor { fix: _ }) => {
+            let mut stdout = std::io::stdout();
+            doctor::Doctor::run(&config, &mut stdout, true)?;
+        }
     }
 
     Ok(())
@@ -250,10 +262,19 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
             _ => "gpt-4o".to_string(),
         });
 
-    // Create agent with empty tools (one-shot mode doesn't need tools for now)
+    // Initialize Tools
+    let tools = crate::daemon::build_tools(
+        &config,
+        None, // No subagent manager for one-shot for now to avoid complexity
+        None, // No persistent memory for one-shot check
+        None, // No scheduler
+        None, // No goal manager
+    ).await;
+
+    // Create agent with tools
     let mut agent = Agent::new(
         provider,
-        vec![], // Empty tools for one-shot
+        tools,
         model_name,
         config.workspace_dir,
     );

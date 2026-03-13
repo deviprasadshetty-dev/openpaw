@@ -311,22 +311,96 @@ impl ComposioTool {
                 .await;
         }
 
-        let Some(toolkit_slug) = toolkit_slug else {
+        let Some(mut slug) = toolkit_slug else {
             return Ok(ToolResult::fail(
                 "Connect requires either 'auth_config_id' or app/toolkit_slug (for example app='gmail').",
             ));
         };
 
-        let candidates = self.discover_auth_configs(Some(&toolkit_slug)).await?;
+        let mut candidates = self.discover_auth_configs(Some(&slug)).await?;
+
+        // Fallback 1: If no candidates, try to find the correct toolkit slug via discovery
+        if candidates.is_empty() {
+            if let Some(actual_slug) = self.find_toolkit_slug(&slug).await? {
+                if actual_slug != slug {
+                    slug = actual_slug;
+                    candidates = self.discover_auth_configs(Some(&slug)).await?;
+                }
+            }
+        }
+
+        // Fallback 2: If still no candidates, try to create a managed auth config automatically
+        if candidates.is_empty() {
+            if let Some(new_cfg) = self.create_managed_auth_config(&slug).await? {
+                candidates.push(new_cfg);
+            }
+        }
+
         let Some(best) = choose_best_auth_config(&candidates) else {
             return Ok(ToolResult::fail(format!(
-                "No auth configs found for toolkit '{}'. Create one in Composio dashboard or pass auth_config_id explicitly.",
-                toolkit_slug
+                "No auth configs found for toolkit '{}' and I couldn't create a default one. Please go to the Composio dashboard to enable this app manually.",
+                slug
             )));
         };
 
-        self.create_link_session(&best.id, user_id, args, Some(&toolkit_slug))
+        self.create_link_session(&best.id, user_id, args, Some(&slug))
             .await
+    }
+
+    async fn find_toolkit_slug(&self, query: &str) -> Result<Option<String>> {
+        let params = vec![("query", query.to_string()), ("limit", "1".to_string())];
+        let resp = self.api_request(Method::GET, "/tools", &params, None).await?;
+        if !is_success(resp.status) {
+            return Ok(None);
+        }
+
+        let Some(items) = resp.body_json.as_ref().and_then(extract_array_entries) else {
+            return Ok(None);
+        };
+
+        if let Some(item) = items.first() {
+            return Ok(item
+                .get("toolkit_slug")
+                .or_else(|| {
+                    item.get("toolkit")
+                        .and_then(|v| v.as_object())
+                        .and_then(|o| o.get("slug"))
+                })
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()));
+        }
+        Ok(None)
+    }
+
+    async fn create_managed_auth_config(&self, toolkit: &str) -> Result<Option<AuthConfigSummary>> {
+        // Try uppercase first as some older/inconsistent slugs prefer it
+        let payload = json!({
+            "toolkit": toolkit.to_ascii_uppercase(),
+            "name": format!("Managed {} Config", toolkit),
+            "type": "use_composio_managed_auth"
+        });
+
+        let mut resp = self
+            .api_request(Method::POST, "/auth_configs", &[], Some(&payload))
+            .await?;
+
+        if !is_success(resp.status) {
+            // Try lowercase if uppercase failed
+            let payload_lower = json!({
+                "toolkit": toolkit.to_ascii_lowercase(),
+                "name": format!("Managed {} Config", toolkit),
+                "type": "use_composio_managed_auth"
+            });
+            resp = self
+                .api_request(Method::POST, "/auth_configs", &[], Some(&payload_lower))
+                .await?;
+        }
+
+        if !is_success(resp.status) {
+            return Ok(None);
+        }
+
+        Ok(resp.body_json.as_ref().and_then(parse_auth_config))
     }
 
     async fn create_link_session(

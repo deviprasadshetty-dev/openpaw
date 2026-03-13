@@ -6,6 +6,9 @@ use std::path::Path;
 
 const SAFE_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "USER", "SHELL", "TMPDIR",
+    // Windows support
+    "APPDATA", "LOCALAPPDATA", "SystemRoot", "SystemDrive", "TEMP", "TMP",
+    "USERPROFILE", "PUBLIC", "ProgramData", "COMSPEC", "PATHEXT",
 ];
 
 pub struct ShellTool {

@@ -235,11 +235,22 @@ pub fn heartbeat_thread(
             }
         }
 
-        if let Err(e) = engine.tick(()) {
+        if let Err(e) = engine.tick() {
             warn!("Heartbeat tick failed: {}", e);
         }
 
         thread::sleep(Duration::from_secs(STATUS_FLUSH_SECONDS));
+    }
+}
+
+pub fn supervisor_thread(
+    subagent_manager: Arc<crate::subagent::SubagentManager>,
+) {
+    let _name = "supervisor";
+    info!("Supervisor thread started");
+    while !is_shutdown_requested() {
+        subagent_manager.monitor_tick();
+        thread::sleep(Duration::from_secs(60)); // Check every minute
     }
 }
 
@@ -512,8 +523,21 @@ pub async fn build_tools(
     subagent_manager: Option<Arc<crate::subagent::SubagentManager>>,
     memory: Option<Arc<dyn crate::agent::memory_loader::Memory>>,
     cron: Option<Arc<crate::cron::CronScheduler>>,
+    goal_manager: Option<Arc<crate::goals::GoalManager>>,
 ) -> Vec<Arc<dyn crate::tools::Tool>> {
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+
+    if let Some(gm) = goal_manager {
+        tools.push(Arc::new(crate::tools::goals::GoalAddTool {
+            manager: gm.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::goals::GoalListTool {
+            manager: gm.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::goals::GoalUpdateTool {
+            manager: gm.clone(),
+        }));
+    }
 
     let _raw_memory_store: Option<Arc<dyn crate::memory::MemoryStore>> =
         match config.memory.backend.as_str() {
@@ -570,7 +594,9 @@ pub async fn build_tools(
     tools.push(Arc::new(crate::tools::shell::ShellTool {
         workspace_dir: config.workspace_dir.clone(),
         allowed_paths: vec![config.workspace_dir.clone()],
-        timeout_ns: 30_000_000_000,
+        // BUG-8 FIX: 30s was too short for compilations, npm installs, git operations.
+        // Increased to 120s. Users can override via config if needed.
+        timeout_ns: 120_000_000_000, // 120 seconds
         max_output_bytes: 1024 * 1024,
     }));
 
@@ -654,6 +680,9 @@ pub async fn build_tools(
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
+    // BUG-CRON-4 FIX: Register the notify_telegram tool so the agent can send
+    // proactive Telegram messages to the user without creating a cron job.
+    tools.push(Arc::new(crate::tools::notify_telegram::NotifyTelegramTool {}));
 
     tools.push(Arc::new(crate::tools::hardware_info::HardwareInfoTool {}));
     tools.push(Arc::new(crate::tools::hardware_memory::HardwareMemoryTool {
@@ -820,12 +849,16 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let bus_handle = bus.clone();
     let scheduler = Arc::new(CronScheduler::init((), &config, &bus_handle));
 
+    // Initialize Goal Manager
+    let goal_manager = Arc::new(crate::goals::GoalManager::new(PathBuf::from(&config.workspace_dir)));
+
     // Initialize Tools
     let tools = build_tools(
         &config,
         Some(subagent_manager.clone()),
         memory.clone(),
         Some(scheduler.clone()),
+        Some(goal_manager.clone()),
     )
     .await;
 
@@ -873,10 +906,14 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let dispatcher_handle = start_outbound_dispatcher(bus.clone(), registry.clone(), ds_clone);
 
     // Start Heartbeat
-    let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, None);
+    let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, bus.clone());
     let ds_clone = daemon_state.clone();
     let config_clone = config.clone();
     thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine));
+
+    // Start Supervisor
+    let sm_clone = subagent_manager.clone();
+    thread::spawn(move || supervisor_thread(sm_clone));
 
     let config_clone2 = config.clone();
     let sched_clone = scheduler.clone();
