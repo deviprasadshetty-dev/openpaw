@@ -31,6 +31,10 @@ const OAUTH_CLIENT_SECRET_KEYS: &[&str] = &[
 ];
 const GEMINI_CLI_OAUTH_SEARCH_DEPTH: usize = 10;
 
+// Public client credentials from the Gemini CLI (not secret)
+const GEMINI_CLI_CLIENT_ID: &str = "936475272427.apps.googleusercontent.com";
+const GEMINI_CLI_CLIENT_SECRET: &str = "KWaLJfKpIyrGyVOIF2t66XCO";
+
 #[derive(Debug, Clone)]
 struct OAuthClientCandidate {
     client_id: String,
@@ -157,30 +161,35 @@ impl GeminiProvider {
         }
 
         // 2. Environment API keys (only if no explicit key and not forced CLI OAuth mode)
-        if auth.is_none() && !force_cli_oauth
-            && let Ok(value) = std::env::var("GEMINI_API_KEY") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    auth = Some(GeminiAuth::EnvGeminiKey(trimmed.to_string()));
-                }
+        if auth.is_none()
+            && !force_cli_oauth
+            && let Ok(value) = std::env::var("GEMINI_API_KEY")
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                auth = Some(GeminiAuth::EnvGeminiKey(trimmed.to_string()));
             }
+        }
 
-        if auth.is_none() && !force_cli_oauth
-            && let Ok(value) = std::env::var("GOOGLE_API_KEY") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    auth = Some(GeminiAuth::EnvGoogleKey(trimmed.to_string()));
-                }
+        if auth.is_none()
+            && !force_cli_oauth
+            && let Ok(value) = std::env::var("GOOGLE_API_KEY")
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                auth = Some(GeminiAuth::EnvGoogleKey(trimmed.to_string()));
             }
+        }
 
         // 2b. GEMINI_OAUTH_TOKEN env var (explicit OAuth token)
         if auth.is_none()
-            && let Ok(value) = std::env::var("GEMINI_OAUTH_TOKEN") {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    auth = Some(GeminiAuth::EnvOAuthToken(trimmed.to_string()));
-                }
+            && let Ok(value) = std::env::var("GEMINI_OAUTH_TOKEN")
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                auth = Some(GeminiAuth::EnvOAuthToken(trimmed.to_string()));
             }
+        }
 
         // 3. Gemini CLI OAuth token (~/.gemini/oauth_creds.json) as final fallback
         if auth.is_none() {
@@ -209,50 +218,46 @@ impl GeminiProvider {
         let path = home.join(".gemini").join("oauth_creds.json");
 
         let content = std::fs::read_to_string(&path).ok()?;
-        let trimmed = content.trim();
-
-        // Very basic attempt to find the JSON object if there's trailing junk
-        let json_start = trimmed.find('{')?;
-        let json_end = trimmed.rfind('}')?;
-        let json_str = &trimmed[json_start..=json_end];
+        let json_str = content.trim();
 
         let mut creds: GeminiCliCredentials = serde_json::from_str(json_str).ok()?;
 
         if creds.is_expired() {
             if let Some(refresh_token) = &creds.refresh_token
-                && let Some(refreshed) = Self::refresh_oauth_token(refresh_token) {
-                    // Update credentials with new access token and expiry
-                    creds.access_token = refreshed.access_token;
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-                    creds.expires_at = Some(now + refreshed.expires_in);
+                && let Some(refreshed) = Self::refresh_oauth_token(refresh_token)
+            {
+                // Update credentials with new access token and expiry
+                creds.access_token = refreshed.access_token;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                creds.expires_at = Some(now + refreshed.expires_in);
 
-                    // Persist back to file (best effort)
-                    if let Ok(new_json) = serde_json::to_string(&creds) {
-                        // Use 0o600 permissions if possible (unix)
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::OpenOptionsExt;
-                            let _ = std::fs::OpenOptions::new()
-                                .write(true)
-                                .create(true)
-                                .truncate(true)
-                                .mode(0o600)
-                                .open(&path)
-                                .and_then(|mut f| {
-                                    std::io::Write::write_all(&mut f, new_json.as_bytes())
-                                });
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            let _ = std::fs::write(&path, new_json);
-                        }
+                // Persist back to file (best effort)
+                if let Ok(new_json) = serde_json::to_string(&creds) {
+                    // Use 0o600 permissions if possible (unix)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        let _ = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .mode(0o600)
+                            .open(&path)
+                            .and_then(|mut f| {
+                                std::io::Write::write_all(&mut f, new_json.as_bytes())
+                            });
                     }
-
-                    return Some(creds);
+                    #[cfg(not(unix))]
+                    {
+                        let _ = std::fs::write(&path, new_json);
+                    }
                 }
+
+                return Some(creds);
+            }
             // Refresh failed or unavailable
             return None;
         }
@@ -289,12 +294,20 @@ impl GeminiProvider {
             && !out
                 .iter()
                 .any(|c| c.client_id == client_id && c.client_secret == client_secret)
-            {
-                out.push(OAuthClientCandidate {
-                    client_id,
-                    client_secret,
-                });
-            }
+        {
+            out.push(OAuthClientCandidate {
+                client_id,
+                client_secret,
+            });
+        }
+
+        // Always include the public fallback if not already present
+        if !out.iter().any(|c| c.client_id == GEMINI_CLI_CLIENT_ID) {
+            out.push(OAuthClientCandidate {
+                client_id: GEMINI_CLI_CLIENT_ID.to_string(),
+                client_secret: GEMINI_CLI_CLIENT_SECRET.to_string(),
+            });
+        }
 
         out
     }
@@ -356,9 +369,10 @@ impl GeminiProvider {
                 }
                 if file_type.is_dir() {
                     if let Some(name) = path.file_name().and_then(|v| v.to_str())
-                        && name.starts_with('.') {
-                            continue;
-                        }
+                        && name.starts_with('.')
+                    {
+                        continue;
+                    }
                     queue.push_back((path, depth + 1));
                 }
             }
@@ -436,17 +450,19 @@ impl GeminiProvider {
                     continue;
                 }
                 if let Ok(content) = std::fs::read_to_string(&path)
-                    && let Some(parsed) = Self::parse_oauth_client_from_js(&content) {
-                        return Some(parsed);
-                    }
+                    && let Some(parsed) = Self::parse_oauth_client_from_js(&content)
+                {
+                    return Some(parsed);
+                }
             }
 
             if let Some(found) =
                 Self::find_file_recursive(&cli_dir, "oauth2.js", GEMINI_CLI_OAUTH_SEARCH_DEPTH)
                 && let Ok(content) = std::fs::read_to_string(found)
-                    && let Some(parsed) = Self::parse_oauth_client_from_js(&content) {
-                        return Some(parsed);
-                    }
+                && let Some(parsed) = Self::parse_oauth_client_from_js(&content)
+            {
+                return Some(parsed);
+            }
         }
         None
     }
@@ -718,7 +734,10 @@ impl GeminiProvider {
                     ));
                 }
                 Err(err) => {
-                    tracing::debug!("Code Assist context resolution failed, falling back to standard API: {}", err);
+                    tracing::debug!(
+                        "Code Assist context resolution failed, falling back to standard API: {}",
+                        err
+                    );
                 }
             }
         }
@@ -793,15 +812,33 @@ impl GeminiProvider {
                     let text_part = json!({"text": msg.content});
                     parts.push(text_part);
                 }
-                for tc in tool_calls {
+                for (idx, tc) in tool_calls.iter().enumerate() {
                     let fc_obj = json!({
                         "name": tc.function.name,
                         "args": serde_json::from_str::<serde_json::Value>(&tc.function.arguments).unwrap_or(json!({}))
                     });
 
-                    let part = json!({
+                    let mut part = json!({
                         "functionCall": fc_obj
                     });
+
+                    // Gemini 3.x models require thought_signature for all functionCall parts.
+                    // The signature should be on the first functionCall in a turn (idx == 0).
+                    // If we have a real signature from the model, use it; otherwise use a dummy
+                    // signature for compatibility (required for Gemini 3.x strict validation).
+                    let sig = if idx == 0 {
+                        tc.function.thought_signature.as_deref().or_else(|| {
+                            // Dummy signature for function calls not generated by this API turn
+                            // This prevents 400 errors on Gemini 3.x models
+                            Some("skip_thought_signature_validator")
+                        })
+                    } else {
+                        tc.function.thought_signature.as_deref()
+                    };
+
+                    if let Some(signature) = sig {
+                        part["thought_signature"] = json!(signature);
+                    }
 
                     parts.push(part);
                 }
@@ -856,22 +893,29 @@ impl GeminiProvider {
 
         // Handle reasoning/thinking models
         if let Some(effort) = request.reasoning_effort
-            && effort != "none" {
-                let model_lower = request.model.to_lowercase();
-                if model_lower.contains("gemini-2.0") || model_lower.contains("flash-thinking") {
-                    // Newer Gemini models use thinkingConfig
-                    generation_config["thinkingConfig"] = json!({
-                        "includeThoughts": true,
-                        // Mapping "low/medium/high" to budget tokens
-                        "thinkingBudget": match effort {
-                            "low" => 4096,
-                            "medium" => 12288,
-                            "high" => 32768,
-                            _ => 16384,
-                        }
-                    });
-                }
+            && effort != "none"
+        {
+            let model_lower = request.model.to_lowercase();
+
+            if model_lower.contains("gemini-3.") || model_lower.contains("flash-thinking") {
+                // Gemini 3.x and specific models use thinkingLevel: "low", "medium", "high"
+                generation_config["thinkingConfig"] = json!({
+                    "thinkingLevel": effort
+                });
+            } else {
+                // Gemini 2.x and others use thinkingBudget: integer
+                let budget = match effort {
+                    "low" => 4096,
+                    "medium" => 12288,
+                    "high" => 24576,
+                    _ => 12288,
+                };
+                generation_config["thinkingConfig"] = json!({
+                    "includeThoughts": true,
+                    "thinkingBudget": budget
+                });
             }
+        }
 
         let mut body = json!({
             "contents": contents,
@@ -884,22 +928,10 @@ impl GeminiProvider {
             });
         }
 
-        // Add native tools if provided
-        if let Some(tools) = request.tools {
-            let gemini_tools: Vec<serde_json::Value> = tools
-                .iter()
-                .map(|t| {
-                    json!({
-                        "function_declarations": [{
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters
-                        }]
-                    })
-                })
-                .collect();
-            body["tools"] = json!(gemini_tools);
-        }
+        // Don't send tools to Gemini API - it requires strict function calling
+        // which causes 400 errors. We use XML-style tool calls instead.
+        // See: https://ai.google.dev/api/generate-content#functionresponse
+        // NOTE: Tools are described in the system prompt instead.
 
         Ok(body.to_string())
     }
@@ -955,10 +987,11 @@ impl GeminiProvider {
         let response_root = parsed.get("response").unwrap_or(&parsed);
 
         if let Some(feedback) = response_root.get("promptFeedback")
-            && let Some(block_reason) = feedback.get("blockReason") {
-                let reason = block_reason.as_str().unwrap_or("unknown");
-                anyhow::bail!("Gemini blocked the prompt: {}", reason);
-            }
+            && let Some(block_reason) = feedback.get("blockReason")
+        {
+            let reason = block_reason.as_str().unwrap_or("unknown");
+            anyhow::bail!("Gemini blocked the prompt: {}", reason);
+        }
 
         let mut content = String::new();
         let mut reasoning_content = String::new();
@@ -966,55 +999,62 @@ impl GeminiProvider {
         let mut turn_thought_signature: Option<String> = None;
 
         if let Some(candidates) = response_root.get("candidates")
-            && let Some(candidate) = candidates.get(0) {
-                if let Some(finish_reason) = candidate.get("finish_reason") {
-                    let reason = finish_reason.as_str().unwrap_or("unknown");
-                    if reason != "STOP" && reason != "MAX_TOKENS" {
-                        tracing::warn!("Gemini finish reason: {}", reason);
+            && let Some(candidate) = candidates.get(0)
+        {
+            if let Some(finish_reason) = candidate.get("finish_reason") {
+                let reason = finish_reason.as_str().unwrap_or("unknown");
+                if reason != "STOP" && reason != "MAX_TOKENS" {
+                    tracing::warn!("Gemini finish reason: {}", reason);
+                }
+            }
+
+            if let Some(cand_content) = candidate.get("content")
+                && let Some(parts) = cand_content.get("parts")
+                && let Some(parts_array) = parts.as_array()
+            {
+                // First pass: find ANY thought_signature in the whole turn
+                for part in parts_array {
+                    if let Some(sig) = part.get("thought_signature").and_then(|v| v.as_str()) {
+                        turn_thought_signature = Some(sig.to_string());
+                        break;
                     }
                 }
 
-                if let Some(cand_content) = candidate.get("content")
-                    && let Some(parts) = cand_content.get("parts")
-                    && let Some(parts_array) = parts.as_array() {
-                        // First pass: find ANY thought_signature in the whole turn
-                        for part in parts_array {
-                            if let Some(sig) = part.get("thought_signature").and_then(|v| v.as_str()) {
-                                turn_thought_signature = Some(sig.to_string());
-                                break;
-                            }
-                        }
-
-                        for part in parts_array {
-                            // Support for "thought" (reasoning) parts in newer Gemini models
-                            if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
-                                reasoning_content.push_str(thought);
-                            } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                content.push_str(text);
-                            }
-                            if let Some(fc) = part.get("functionCall")
-                                && let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
-                                    let args = fc.get("args").cloned().unwrap_or(json!({}));
-                                    let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                                    
-                                    // thought_signature is a sibling to functionCall in the Part
-                                    // If missing on this part, use the turn-level one we found
-                                    let part_signature = part.get("thought_signature").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                    let final_signature = part_signature.or_else(|| turn_thought_signature.clone());
-
-                                    tool_calls.push(crate::providers::ToolCall {
-                                        id: call_id,
-                                        kind: "function".to_string(),
-                                        function: crate::providers::FunctionCall {
-                                            name: name.to_string(),
-                                            arguments: args.to_string(),
-                                            thought_signature: final_signature,
-                                        },
-                                    });
-                                }
-                        }
+                for part in parts_array {
+                    // Support for "thought" (reasoning) parts in newer Gemini models
+                    if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
+                        reasoning_content.push_str(thought);
+                    } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                        content.push_str(text);
                     }
+                    if let Some(fc) = part.get("functionCall")
+                        && let Some(name) = fc.get("name").and_then(|n| n.as_str())
+                    {
+                        let args = fc.get("args").cloned().unwrap_or(json!({}));
+                        let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+
+                        // thought_signature is a sibling to functionCall in the Part
+                        // If missing on this part, use the turn-level one we found
+                        let part_signature = part
+                            .get("thought_signature")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let final_signature =
+                            part_signature.or_else(|| turn_thought_signature.clone());
+
+                        tool_calls.push(crate::providers::ToolCall {
+                            id: call_id,
+                            kind: "function".to_string(),
+                            function: crate::providers::FunctionCall {
+                                name: name.to_string(),
+                                arguments: args.to_string(),
+                                thought_signature: final_signature,
+                            },
+                        });
+                    }
+                }
             }
+        }
 
         let mut usage = response_root
             .get("usageMetadata")
@@ -1046,12 +1086,12 @@ impl GeminiProvider {
     }
 }
 
-
 impl Provider for GeminiProvider {
     fn chat(&self, request: &ChatRequest) -> Result<ChatResponse> {
-        let mut auth = self.auth.clone().ok_or_else(|| {
-            anyhow::anyhow!("No Gemini credentials configured.")
-        })?;
+        let mut auth = self
+            .auth
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No Gemini credentials configured."))?;
 
         let (url, body) = self.build_request_target(request, &auth, false)?;
 
@@ -1070,27 +1110,28 @@ impl Provider for GeminiProvider {
 
         if res.status() == reqwest::StatusCode::UNAUTHORIZED
             && matches!(auth, GeminiAuth::OAuthToken(_))
-            && let Some(creds) = Self::try_load_gemini_cli_token() {
-                auth = GeminiAuth::OAuthToken(creds.access_token);
-                let (retry_url, body_retry) = self.build_request_target(request, &auth, false)?;
+            && let Some(creds) = Self::try_load_gemini_cli_token()
+        {
+            auth = GeminiAuth::OAuthToken(creds.access_token);
+            let (retry_url, body_retry) = self.build_request_target(request, &auth, false)?;
 
-                let retry_builder = self
-                    .client
-                    .post(&retry_url)
-                    .timeout(Duration::from_secs(request.timeout_secs))
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", format!("Bearer {}", auth.credential()));
+            let retry_builder = self
+                .client
+                .post(&retry_url)
+                .timeout(Duration::from_secs(request.timeout_secs))
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {}", auth.credential()));
 
-                let res_retry = retry_builder.body(body_retry).send()?;
-                if !res_retry.status().is_success() {
-                    let status = res_retry.status();
-                    let text = res_retry.text().unwrap_or_default();
-                    anyhow::bail!("Gemini API error after refresh {}: {}", status, text);
-                }
-
-                let resp_text = res_retry.text()?;
-                return self.parse_response(&resp_text);
+            let res_retry = retry_builder.body(body_retry).send()?;
+            if !res_retry.status().is_success() {
+                let status = res_retry.status();
+                let text = res_retry.text().unwrap_or_default();
+                anyhow::bail!("Gemini API error after refresh {}: {}", status, text);
             }
+
+            let resp_text = res_retry.text()?;
+            return self.parse_response(&resp_text);
+        }
 
         if !res.status().is_success() {
             let status = res.status();
@@ -1105,7 +1146,12 @@ impl Provider for GeminiProvider {
     }
 
     fn supports_native_tools(&self) -> bool {
-        true
+        // Gemini's API requires strict alternation: functionResponse must come IMMEDIATELY
+        // after functionCall with no intervening messages. Our agent loop may insert
+        // nudges or other messages, violating this requirement and causing 400 errors.
+        // Use XML-style tool calls (more robust) instead of native function calling.
+        // See: https://ai.google.dev/api/generate-content#functionresponse
+        false
     }
 
     fn get_name(&self) -> &str {
@@ -1149,6 +1195,8 @@ impl Provider for GeminiProvider {
         let mut full_content = String::new();
         let mut tool_calls = Vec::new();
         let mut turn_thought_signature: Option<String> = None;
+        let mut stream_usage = TokenUsage::default();
+        let mut reasoning_content = String::new();
 
         while let Some(data) = sse_reader.next_data() {
             if data == "[DONE]" {
@@ -1159,55 +1207,66 @@ impl Provider for GeminiProvider {
                 let response_root = parsed.get("response").unwrap_or(&parsed);
                 if let Some(candidates) = response_root.get("candidates")
                     && let Some(candidate) = candidates.get(0)
-                        && let Some(cand_content) = candidate.get("content")
-                            && let Some(parts) = cand_content.get("parts")
-                            && let Some(parts_array) = parts.as_array() {
-                                // Capture any thought_signature seen in the stream
-                                for part in parts_array {
-                                    if let Some(sig) = part.get("thought_signature").and_then(|ts| ts.as_str()) {
-                                        turn_thought_signature = Some(sig.to_string());
-                                    }
-                                }
+                    && let Some(cand_content) = candidate.get("content")
+                    && let Some(parts) = cand_content.get("parts")
+                    && let Some(parts_array) = parts.as_array()
+                {
+                    // Capture any thought_signature and usage metadata seen in the stream
+                    if let Some(usage_val) = response_root.get("usageMetadata") {
+                        if let Some(parsed_usage) = Self::parse_usage_metadata(usage_val) {
+                            stream_usage = parsed_usage;
+                        }
+                    }
 
-                                for part in parts_array {
-                                    if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
-                                        // TODO: Should we pipe reasoning to callback differently?
-                                        // For now, we collect it and it will be in the final response
-                                        full_content.push_str(thought);
-                                        // callback(StreamChunk::Delta(thought.to_string())); // Don't pipe reasoning to text delta yet
-                                    } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                        full_content.push_str(text);
-                                        callback(StreamChunk::Delta(text.to_string()));
-                                    }
-                                    if let Some(fc) = part.get("functionCall")
-                                        && let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
-                                            let args = fc.get("args").cloned().unwrap_or(json!({}));
-                                            let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                                            
-                                            let part_signature = part.get("thought_signature").and_then(|ts| ts.as_str()).map(|s| s.to_string());
-                                            let final_signature = part_signature.or_else(|| turn_thought_signature.clone());
+                    for part in parts_array {
+                        if let Some(sig) = part.get("thought_signature").and_then(|ts| ts.as_str())
+                        {
+                            turn_thought_signature = Some(sig.to_string());
+                        }
+                    }
 
-                                            let tc = crate::providers::ToolCall {
-                                                id: call_id,
-                                                kind: "function".to_string(),
-                                                function: crate::providers::FunctionCall {
-                                                    name: name.to_string(),
-                                                    arguments: args.to_string(),
-                                                    thought_signature: final_signature,
-                                                },
-                                            };
-                                            tool_calls.push(tc);
-                                        }
-                                }
-                            }
+                    for part in parts_array {
+                        if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
+                            reasoning_content.push_str(thought);
+                        } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            full_content.push_str(text);
+                            callback(StreamChunk::Delta(text.to_string()));
+                        }
+                        if let Some(fc) = part.get("functionCall")
+                            && let Some(name) = fc.get("name").and_then(|n| n.as_str())
+                        {
+                            let args = fc.get("args").cloned().unwrap_or(json!({}));
+                            let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+
+                            let part_signature = part
+                                .get("thought_signature")
+                                .and_then(|ts| ts.as_str())
+                                .map(|s| s.to_string());
+                            let final_signature =
+                                part_signature.or_else(|| turn_thought_signature.clone());
+
+                            let tc = crate::providers::ToolCall {
+                                id: call_id,
+                                kind: "function".to_string(),
+                                function: crate::providers::FunctionCall {
+                                    name: name.to_string(),
+                                    arguments: args.to_string(),
+                                    thought_signature: final_signature,
+                                },
+                            };
+                            tool_calls.push(tc);
+                        }
+                    }
+                }
             }
         }
 
-        let usage = TokenUsage {
-            prompt_tokens: 0,
-            completion_tokens: (full_content.len() as u32).div_ceil(4),
-            total_tokens: (full_content.len() as u32).div_ceil(4),
-        };
+        let mut usage = stream_usage;
+        if usage.total_tokens == 0 {
+            usage.prompt_tokens = 0;
+            usage.completion_tokens = (full_content.len() as u32).div_ceil(4);
+            usage.total_tokens = usage.completion_tokens;
+        }
 
         callback(StreamChunk::Done(usage.clone()));
 
@@ -1220,12 +1279,15 @@ impl Provider for GeminiProvider {
             tool_calls,
             usage,
             model: request.model.to_string(),
-            reasoning_content: None,
+            reasoning_content: if reasoning_content.is_empty() {
+                None
+            } else {
+                Some(reasoning_content)
+            },
             thought_signature: turn_thought_signature,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1354,7 +1416,186 @@ mod tests {
 
         let parsed = provider.parse_response(body).unwrap();
         assert_eq!(parsed.content, Some("Hello!".to_string()));
-        assert_eq!(parsed.reasoning_content, Some("I should say hello".to_string()));
+        assert_eq!(
+            parsed.reasoning_content,
+            Some("I should say hello".to_string())
+        );
         assert_eq!(parsed.usage.total_tokens, 30);
+    }
+
+    #[test]
+    fn test_thinking_config_mapping() {
+        let mut messages = Vec::new();
+        messages.push(crate::providers::ChatMessage::user("hello"));
+
+        // Test Gemini 3.x thinkingLevel
+        let req_g3 = ChatRequest {
+            messages: &messages,
+            model: "gemini-3.1-flash",
+            temperature: 0.7,
+            max_tokens: None,
+            tools: None,
+            timeout_secs: 30,
+            reasoning_effort: Some("medium"),
+        };
+        let provider = GeminiProvider::new(None);
+        let body_g3 = provider.build_request_body(&req_g3).unwrap();
+        let json_g3: serde_json::Value = serde_json::from_str(&body_g3).unwrap();
+        assert_eq!(
+            json_g3["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "medium"
+        );
+        assert!(
+            json_g3["generationConfig"]["thinkingConfig"]
+                .get("thinkingBudget")
+                .is_none()
+        );
+
+        // Test Gemini 2.x thinkingBudget
+        let req_g2 = ChatRequest {
+            messages: &messages,
+            model: "gemini-2.0-flash",
+            temperature: 0.7,
+            max_tokens: None,
+            tools: None,
+            timeout_secs: 30,
+            reasoning_effort: Some("high"),
+        };
+        let body_g2 = provider.build_request_body(&req_g2).unwrap();
+        let json_g2: serde_json::Value = serde_json::from_str(&body_g2).unwrap();
+        assert_eq!(
+            json_g2["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            24576
+        );
+        assert_eq!(
+            json_g2["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
+    }
+
+    #[test]
+    fn test_function_call_includes_thought_signature() {
+        use crate::providers::{ChatMessage, FunctionCall, ToolCall};
+
+        let mut messages = Vec::new();
+        messages.push(ChatMessage::user("Check the weather"));
+
+        // Assistant response with tool call (no thought_signature - simulating initial call)
+        let tool_call_no_sig = ToolCall {
+            id: "call_1".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "get_weather".to_string(),
+                arguments: r#"{"location": "Paris"}"#.to_string(),
+                thought_signature: None,
+            },
+        };
+        let mut assistant_msg = ChatMessage::assistant("");
+        assistant_msg.tool_calls = Some(vec![tool_call_no_sig]);
+        messages.push(assistant_msg);
+
+        // Tool response
+        let tool_msg = ChatMessage {
+            role: "tool".to_string(),
+            content: r#"{"temperature": 22}"#.to_string(),
+            name: Some("get_weather".to_string()),
+            tool_call_id: Some("call_1".to_string()),
+            tool_calls: None,
+            content_parts: None,
+            thought_signature: None,
+        };
+        messages.push(tool_msg);
+
+        let req = ChatRequest {
+            messages: &messages,
+            model: "gemini-3.1-flash",
+            temperature: 0.7,
+            max_tokens: None,
+            tools: None,
+            timeout_secs: 30,
+            reasoning_effort: None,
+        };
+        let provider = GeminiProvider::new(None);
+        let body = provider.build_request_body(&req).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // Verify the functionCall has a thought_signature (dummy fallback)
+        let contents = json["contents"].as_array().unwrap();
+
+        // Find ANY part with functionCall across all contents
+        let mut found_sig = false;
+        let mut found_dummy = false;
+        for content in contents {
+            if let Some(parts) = content.get("parts").and_then(|p| p.as_array()) {
+                for part in parts {
+                    if part.get("functionCall").is_some() {
+                        found_sig = part.get("thought_signature").is_some();
+                        if let Some(sig) = part.get("thought_signature").and_then(|s| s.as_str()) {
+                            found_dummy = sig == "skip_thought_signature_validator";
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            found_sig,
+            "functionCall should always include thought_signature"
+        );
+        assert!(found_dummy, "Should use dummy signature for initial call");
+    }
+
+    #[test]
+    fn test_function_call_preserves_real_thought_signature() {
+        use crate::providers::{ChatMessage, FunctionCall, ToolCall};
+
+        let mut messages = Vec::new();
+        messages.push(ChatMessage::user("Check the weather"));
+
+        // Assistant response with tool call that HAS a real thought_signature
+        let tool_call_with_sig = ToolCall {
+            id: "call_1".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "get_weather".to_string(),
+                arguments: r#"{"location": "Paris"}"#.to_string(),
+                thought_signature: Some("real_signature_abc123".to_string()),
+            },
+        };
+        let mut assistant_msg = ChatMessage::assistant("");
+        assistant_msg.tool_calls = Some(vec![tool_call_with_sig]);
+        messages.push(assistant_msg);
+
+        let req = ChatRequest {
+            messages: &messages,
+            model: "gemini-3.1-flash",
+            temperature: 0.7,
+            max_tokens: None,
+            tools: None,
+            timeout_secs: 30,
+            reasoning_effort: None,
+        };
+        let provider = GeminiProvider::new(None);
+        let body = provider.build_request_body(&req).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // Verify the functionCall has the real thought_signature
+        let contents = json["contents"].as_array().unwrap();
+
+        // Find ANY part with functionCall across all contents
+        let mut found_real_sig = false;
+        for content in contents {
+            if let Some(parts) = content.get("parts").and_then(|p| p.as_array()) {
+                for part in parts {
+                    if part.get("functionCall").is_some() {
+                        if let Some(sig) = part.get("thought_signature").and_then(|s| s.as_str()) {
+                            found_real_sig = sig == "real_signature_abc123";
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(found_real_sig, "Should preserve real thought_signature");
     }
 }

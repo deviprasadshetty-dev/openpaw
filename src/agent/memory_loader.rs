@@ -149,6 +149,31 @@ pub fn enrich_message(
         return Ok(user_message.to_string());
     }
 
+    // Skip enrichment for conversational/follow-up messages to prevent
+    // agent confusion between past and current instructions
+    let lower = trimmed.to_lowercase();
+    if lower.contains("where")
+        || lower.contains("what")
+        || lower.contains("when")
+        || lower.contains("why")
+        || lower.contains("how")
+        || lower.contains("?")
+        || lower.starts_with("did ")
+        || lower.starts_with("do ")
+        || lower.starts_with("does ")
+        || lower.starts_with("is ")
+        || lower.starts_with("are ")
+        || lower.starts_with("was ")
+        || lower.starts_with("were ")
+        || lower.starts_with("can ")
+        || lower.starts_with("could ")
+        || lower.starts_with("should ")
+        || lower.starts_with("would ")
+    {
+        // Conversational question - don't enrich with old task memories
+        return Ok(user_message.to_string());
+    }
+
     let entries = memory.recall(user_message, 5, session_id)?;
     if entries.is_empty() {
         return Ok(user_message.to_string());

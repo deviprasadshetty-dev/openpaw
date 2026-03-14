@@ -497,11 +497,12 @@ impl Agent {
             if let Some(start_idx) = system_prompt.find("## Current Date & Time") {
                 let mut fresh_time = String::new();
                 prompt::append_date_time_section(&mut fresh_time);
-                
-                let end_idx = system_prompt[start_idx + 22..].find("##")
+
+                let end_idx = system_prompt[start_idx + 22..]
+                    .find("##")
                     .map(|i| i + start_idx + 22)
                     .unwrap_or(system_prompt.len());
-                
+
                 system_prompt.replace_range(start_idx..end_idx, &fresh_time);
             }
 
@@ -537,11 +538,12 @@ impl Agent {
             if let Some(start_idx) = content.find("## Current Date & Time") {
                 let mut fresh_time = String::new();
                 prompt::append_date_time_section(&mut fresh_time);
-                
-                let end_idx = content[start_idx + 22..].find("##")
+
+                let end_idx = content[start_idx + 22..]
+                    .find("##")
                     .map(|i| i + start_idx + 22)
                     .unwrap_or(content.len());
-                
+
                 content.replace_range(start_idx..end_idx, &fresh_time);
                 self.history[0].content = content;
             }
@@ -944,23 +946,65 @@ impl Agent {
             // DESIGN-4 FIX: No "reflection prompt" injection — modern LLMs natively
             // understand tool result turns and will continue reasoning without it.
             // The old injection wasted tokens and caused premature "final answer" responses.
-            for result in execution_results {
-                // Use clean content (no emoji prefix) for strict-schema providers
-                // (Anthropic/Gemini reject tool messages with unexpected formatting).
-                let formatted_output = if result.success {
-                    result.output
-                } else {
-                    format!("Error: {}", result.output)
-                };
+
+            // For non-native tool providers (Gemini, etc.), format as XML to avoid
+            // strict API requirements for functionResponse turn ordering.
+            // See: https://ai.google.dev/api/generate-content#functionresponse
+            let use_native_tool_results = self.provider.supports_native_tools();
+
+            if use_native_tool_results {
+                // Native tool results: separate message per tool (OpenAI/Anthropic style)
+                for result in execution_results {
+                    // Use clean content (no emoji prefix) for strict-schema providers
+                    // (Anthropic/Gemini reject tool messages with unexpected formatting).
+                    let formatted_output = if result.success {
+                        result.output
+                    } else {
+                        format!("Error: {}", result.output)
+                    };
+
+                    self.history.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: formatted_output,
+                        name: Some(result.name),
+                        tool_calls: None,
+                        tool_call_id: result.tool_call_id,
+                        content_parts: None,
+                        thought_signature: result.thought_signature,
+                    });
+                }
+            } else {
+                // XML-style tool results (Gemini, Ollama, etc.) - single user message
+                // This avoids Gemini's strict requirement that functionResponse must
+                // come IMMEDIATELY after functionCall with no intervening messages.
+                let mut combined_output = String::from("[Tool results]\n");
+                for result in execution_results {
+                    let status = if result.success { "ok" } else { "error" };
+                    let output_text = if result.success {
+                        result.output.as_str()
+                    } else {
+                        // Create binding to avoid temporary lifetime issue in Rust 1.92+
+                        let error_output = format!("Error: {}", result.output);
+                        combined_output.push_str(&format!(
+                            "<tool_result name=\"{}\" status=\"{}\">\n{}\n</tool_result>\n",
+                            result.name, status, error_output
+                        ));
+                        continue;
+                    };
+                    combined_output.push_str(&format!(
+                        "<tool_result name=\"{}\" status=\"{}\">\n{}\n</tool_result>\n",
+                        result.name, status, output_text
+                    ));
+                }
 
                 self.history.push(ChatMessage {
-                    role: "tool".to_string(),
-                    content: formatted_output,
-                    name: Some(result.name),
+                    role: "user".to_string(),
+                    content: combined_output,
+                    name: None,
                     tool_calls: None,
-                    tool_call_id: result.tool_call_id,
+                    tool_call_id: None,
                     content_parts: None,
-                    thought_signature: result.thought_signature,
+                    thought_signature: None,
                 });
             }
 
@@ -1064,16 +1108,30 @@ impl Agent {
         };
 
         // R-1 & QW-2: Auto-save user message (only if substantive)
+        // Skip saving imperative/task messages to prevent agent confusion
         if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
-            let key = format!(
-                "autosave_user_{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_nanos()
-            );
-            let _ = self
-                .memory
-                .store(&key, &user_message, self.memory_session_id.as_deref());
+            let lower = user_message.to_lowercase();
+            // Don't save imperative commands (create, delete, run, etc.) - only save facts/preferences
+            let is_imperative = lower.contains("create")
+                || lower.contains("delete")
+                || lower.contains("run")
+                || lower.contains("execute")
+                || lower.contains("send")
+                || lower.contains("write")
+                || lower.contains("build")
+                || lower.contains("generate");
+
+            if !is_imperative {
+                let key = format!(
+                    "autosave_user_{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_nanos()
+                );
+                let _ = self
+                    .memory
+                    .store(&key, &user_message, self.memory_session_id.as_deref());
+            }
         }
 
         // R-3: System Prompt Management (Cached)
@@ -1084,11 +1142,12 @@ impl Agent {
             if let Some(start_idx) = system_prompt.find("## Current Date & Time") {
                 let mut fresh_time = String::new();
                 prompt::append_date_time_section(&mut fresh_time);
-                
-                let end_idx = system_prompt[start_idx + 22..].find("##")
+
+                let end_idx = system_prompt[start_idx + 22..]
+                    .find("##")
                     .map(|i| i + start_idx + 22)
                     .unwrap_or(system_prompt.len());
-                
+
                 system_prompt.replace_range(start_idx..end_idx, &fresh_time);
             }
 
@@ -1124,11 +1183,12 @@ impl Agent {
             if let Some(start_idx) = content.find("## Current Date & Time") {
                 let mut fresh_time = String::new();
                 prompt::append_date_time_section(&mut fresh_time);
-                
-                let end_idx = content[start_idx + 22..].find("##")
+
+                let end_idx = content[start_idx + 22..]
+                    .find("##")
                     .map(|i| i + start_idx + 22)
                     .unwrap_or(content.len());
-                
+
                 content.replace_range(start_idx..end_idx, &fresh_time);
                 self.history[0].content = content;
             }
@@ -1489,20 +1549,59 @@ impl Agent {
 
             // DESIGN-4 FIX: No reflection prompt; modern LLMs handle tool result turns natively.
             // BUG-1 FIX: self.history is always current; next iteration clones fresh.
-            for result in execution_results {
-                let formatted_output = if result.success {
-                    result.output
-                } else {
-                    format!("Error: {}", result.output)
-                };
+
+            // For non-native tool providers (Gemini, etc.), format as XML to avoid
+            // strict API requirements for functionResponse turn ordering.
+            let use_native_tool_results_stream = self.provider.supports_native_tools();
+
+            if use_native_tool_results_stream {
+                // Native tool results: separate message per tool (OpenAI/Anthropic style)
+                for result in execution_results {
+                    let formatted_output = if result.success {
+                        result.output
+                    } else {
+                        format!("Error: {}", result.output)
+                    };
+                    self.history.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: formatted_output,
+                        name: Some(result.name),
+                        tool_calls: None,
+                        tool_call_id: result.tool_call_id,
+                        content_parts: None,
+                        thought_signature: result.thought_signature,
+                    });
+                }
+            } else {
+                // XML-style tool results (Gemini, Ollama, etc.) - single user message
+                let mut combined_output_s = String::from("[Tool results]\n");
+                for result in execution_results {
+                    let status = if result.success { "ok" } else { "error" };
+                    let output_text_s = if result.success {
+                        result.output.as_str()
+                    } else {
+                        // Create binding to avoid temporary lifetime issue in Rust 1.92+
+                        let error_output_s = format!("Error: {}", result.output);
+                        combined_output_s.push_str(&format!(
+                            "<tool_result name=\"{}\" status=\"{}\">\n{}\n</tool_result>\n",
+                            result.name, status, error_output_s
+                        ));
+                        continue;
+                    };
+                    combined_output_s.push_str(&format!(
+                        "<tool_result name=\"{}\" status=\"{}\">\n{}\n</tool_result>\n",
+                        result.name, status, output_text_s
+                    ));
+                }
+
                 self.history.push(ChatMessage {
-                    role: "tool".to_string(),
-                    content: formatted_output,
-                    name: Some(result.name),
+                    role: "user".to_string(),
+                    content: combined_output_s,
+                    name: None,
                     tool_calls: None,
-                    tool_call_id: result.tool_call_id,
+                    tool_call_id: None,
                     content_parts: None,
-                    thought_signature: result.thought_signature,
+                    thought_signature: None,
                 });
             }
 

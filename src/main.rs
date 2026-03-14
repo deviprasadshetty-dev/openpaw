@@ -44,6 +44,7 @@ pub mod porting;
 pub mod providers;
 pub mod rag;
 pub mod runtime;
+pub mod secrets;
 pub mod service;
 pub mod session;
 pub mod skillforge;
@@ -144,8 +145,8 @@ async fn main() -> Result<()> {
     let mut config = if let Some(path) = config_path {
         info!("Loading config from {}", path);
         let content = std::fs::read_to_string(&path)?;
-        let mut cfg: config::Config = serde_json::from_str(&content)?;
-        cfg.config_path = path;
+        // Enable secret encryption by default
+        let mut cfg = config_parse::parse_config(&content, &path, true)?;
         // Set workspace dir to current dir if not specified
         if cfg.workspace_dir.is_empty() {
             cfg.workspace_dir = ".".to_string();
@@ -153,7 +154,7 @@ async fn main() -> Result<()> {
         cfg
     } else {
         info!("No config file found, using defaults");
-        config::Config {
+        let mut cfg = config::Config {
             default_temperature: Some(0.7),
             models: None,
             gateway: config::GatewayConfig::default(),
@@ -174,7 +175,11 @@ async fn main() -> Result<()> {
             workspace_dir: ".".to_string(),
             default_model: None,
             default_provider: "openai".to_string(),
-        }
+            secret_store: None,
+        };
+        // Initialize secret store even for default config (will create key on first save)
+        cfg.init_secret_store(true)?;
+        cfg
     };
 
     match &args.command {
@@ -264,20 +269,15 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
 
     // Initialize Tools
     let tools = crate::daemon::build_tools(
-        &config,
-        None, // No subagent manager for one-shot for now to avoid complexity
+        &config, None, // No subagent manager for one-shot for now to avoid complexity
         None, // No persistent memory for one-shot check
         None, // No scheduler
         None, // No goal manager
-    ).await;
+    )
+    .await;
 
     // Create agent with tools
-    let mut agent = Agent::new(
-        provider,
-        tools,
-        model_name,
-        config.workspace_dir,
-    );
+    let mut agent = Agent::new(provider, tools, model_name, config.workspace_dir);
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {
