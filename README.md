@@ -12,7 +12,7 @@
 
 OpenPaw is a high-performance, unapologetically modular AI Agent Runtime. Inspired by the legendary **OpenClaw**, OpenPaw is a spiritual successor written from the ground up in Rust for those who need a domestic AI that's as fast as a feline and twice as sharp.
 
-Whether it's prowling through your file system, sniffing out data in technical datasheets, or pouncing on complex web automation tasks, OpenPaw is designed to be your most loyal—and technically superior—digital companion.
+Whether it's prowling through your file system, or sniffing out data in technical datasheets, OpenPaw is designed to be your most loyal—and technically superior—digital companion.
 
 ## 🚀 Why OpenPaw?
 *   **Rust-Native Instincts 🦀:** Zero-cost abstractions and thread-safe concurrency for "purr-formance" that never lags.
@@ -66,7 +66,6 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 ### 🛠️ Sharpening the Claws (The Toolbelt)
 *   **MCP Host Implementation**: OpenPaw hosts and orchestrates Model Context Protocol (MCP) servers natively, expanding its "territory" to thousands of standardized tools.
 *   **Hardware-Aware RAG**: A specialized sensory system for technical documentation. It parses markdown pin-aliases and provides the exact board-specific context needed for hardware hacks.
-*   **Deep Web Prowling**: Powered by `browser-use`, OpenPaw navigates the web with human-like precision. Optimized for speed with **headless mode by default** and a specialized `read_page` action for clean Markdown extraction.
 *   **Brave Search Integration**: High-quality web results via Brave's Search API. Returns rich, agent-friendly snippets for superior information gathering.
 *   **Background Sub-agents**: OpenPaw can spawn and manage background workers for long-running tasks, allowing it to multi-task without blocking your main conversation.
 *   **SkillForge Ecosystem**: Automatically scout and integrate community "Skills" from GitHub. Compatible with the NullClaw and OpenClaw ecosystems.
@@ -74,7 +73,7 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 ### 🔌 Multimodal Senses
 *   **Hardware Gateway**: Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer.
 *   **Multimodal Ears (Groq/Whisper)**: Bi-directional voice support. OpenPaw can "hear" Telegram voice notes and transcribe them instantly using ultra-low latency STT.
-*   **Multi-Channel Prowling**: Robust adapters for **Telegram**, **CLI**, and **WhatsApp (Native)**. The WhatsApp integration uses Linked Device emulation (QR code scanning) for stable, official-API-free connectivity.
+*   **Multi-Channel Prowling**: Robust adapters for **Telegram** and **CLI**.
 
 ---
 
@@ -83,7 +82,6 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 ### Prerequisites
 - Rust (latest stable)
 - SQLite (bundled)
-- A modern browser (Chrome/Edge/Brave) for web automation.
 
 ### ⚡ One-Line Install
 **Windows (PowerShell):**
