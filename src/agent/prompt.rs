@@ -355,13 +355,36 @@ fn append_safety_and_group_logic(
     }
 
     // Scheduled tasks guidance
-    out.push_str("## Scheduled Tasks\n\n");
-    out.push_str("When using the `schedule` tool to create reminders:\n");
-    out.push_str("- ALWAYS use double quotes (\") for the command string\n");
-    out.push_str("- Example: `echo \"Time is up!\"`\n");
+    out.push_str("## Scheduled Tasks & Reminders\n\n");
+    out.push_str("When the user asks you to remind them about something:\n\n");
+    out.push_str("**1. Detect reminder requests:** Watch for phrases like:\n");
+    out.push_str("- \"Remind me to...\" / \"Remind me in...\"\n");
+    out.push_str("- \"In X minutes/hours, ...\"\n");
+    out.push_str("- \"Don't forget to...\" / \"Make sure I...\"\n");
+    out.push_str("- \"Alert me when...\" / \"Notify me at...\"\n\n");
+    out.push_str("**2. Use `cron_add` tool:** Create a reminder job:\n");
     out.push_str(
-        "- For Telegram chats, results can be auto-delivered when chat context is available\n\n",
+        "- For time-based: `delay: \"10m\"` (10 min), `\"1h\"` (1 hour), `\"30s\"` (30 sec)\n",
     );
+    out.push_str("- For recurring: `expression: \"0 9 * * *\"` (daily at 9 AM in your timezone)\n");
+    out.push_str("- Set `job_type: \"agent\"` to send yourself a prompt\n");
+    out.push_str("- Set `command: \"Your reminder message here\"` (the prompt you'll receive)\n");
+    out.push_str(
+        "- The system will auto-deliver to the user's chat and show a desktop notification\n\n",
+    );
+    out.push_str(
+        "**3. Timezone awareness:** Cron expressions use the configured timezone (default UTC).\n",
+    );
+    out.push_str("Delays like `\"10m\"` are relative and timezone-agnostic.\n\n");
+    out.push_str("**Example:** User says \"Remind me in 20 minutes to check the oven\"\n");
+    out.push_str("```json\n");
+    out.push_str("{\"tool\": \"cron_add\", \"args\": {\n");
+    out.push_str("  \"delay\": \"20m\",\n");
+    out.push_str("  \"command\": \"⏰ Time to check the oven!\",\n");
+    out.push_str("  \"job_type\": \"agent\",\n");
+    out.push_str("  \"name\": \"oven_check\"\n");
+    out.push_str("}}\n");
+    out.push_str("```\n\n");
 
     // Long-Term Autonomy
     out.push_str("## Long-Term Autonomy & Proactivity\n\n");
@@ -370,24 +393,25 @@ fn append_safety_and_group_logic(
         Check your goals periodically to ensure you're on track.\n");
     out.push_str("2. **Proactive Heartbeat:** You have a Heartbeat Engine that periodically triggers tasks from `HEARTBEAT.md`. \
         When you receive a message starting with `PROACTIVE TASK CHECK:`, it is an internal nudge to perform a recurring duty. \
-        Respond to these by performing the task and reporting the outcome.\n\n");
+        Respond to these by performing the task and reporting the outcome.\n");
+    out.push_str("3. **Multimodal Intelligence:** You can 'see' and 'hear' files. If a user provides a file path or an attachment marker (e.g., [IMAGE:...] or [VIDEO:...]) and asks a question about it, use the `vision` tool immediately. You should also use `vision` proactively if you are troubleshooting a UI issue (via `screenshot`) or need to extract data from a complex PDF/Image.\n\n");
 }
 
 fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) {
-    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename)
-        && let Ok(content) = fs::read_to_string(path)
-    {
-        if content.trim().is_empty() {
-            return;
+    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename) {
+        if let Ok(content) = fs::read_to_string(path) {
+            if content.trim().is_empty() {
+                return;
+            }
+            // Inject the content directly without exposing the source filename
+            if content.len() > BOOTSTRAP_MAX_CHARS {
+                out.push_str(&content[..BOOTSTRAP_MAX_CHARS]);
+                out.push_str("\n...[truncated]...\n");
+            } else {
+                out.push_str(&content);
+            }
+            out.push_str("\n\n");
         }
-        // Inject the content directly without exposing the source filename
-        if content.len() > BOOTSTRAP_MAX_CHARS {
-            out.push_str(&content[..BOOTSTRAP_MAX_CHARS]);
-            out.push_str("\n...[truncated]...\n");
-        } else {
-            out.push_str(&content);
-        }
-        out.push_str("\n\n");
     }
 }
 
@@ -443,19 +467,19 @@ fn inject_workspace_file_limited(
     filename: &str,
     limit: usize,
 ) {
-    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename)
-        && let Ok(content) = fs::read_to_string(path)
-    {
-        if content.trim().is_empty() {
-            return;
+    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename) {
+        if let Ok(content) = fs::read_to_string(path) {
+            if content.trim().is_empty() {
+                return;
+            }
+            if content.len() > limit {
+                out.push_str(&content[..limit]);
+                out.push_str("\n...[truncated]...\n");
+            } else {
+                out.push_str(&content);
+            }
+            out.push_str("\n\n");
         }
-        if content.len() > limit {
-            out.push_str(&content[..limit]);
-            out.push_str("\n...[truncated]...\n");
-        } else {
-            out.push_str(&content);
-        }
-        out.push_str("\n\n");
     }
 }
 
@@ -507,6 +531,7 @@ fn append_channel_attachments_section(out: &mut String) {
     out.push_str("- On marker-aware channels (for example Telegram), you can send real attachments by emitting markers in your final reply.\n");
     out.push_str("- File/document: `[FILE:/absolute/path/to/file.ext]` or `[DOCUMENT:/absolute/path/to/file.ext]`\n");
     out.push_str("- Image/video/audio/voice: `[IMAGE:/abs/path]`, `[VIDEO:/abs/path]`, `[AUDIO:/abs/path]`, `[VOICE:/abs/path]`\n");
+
     out.push_str("- If user gives `~/...`, expand it to the absolute home path before sending.\n");
     out.push_str(
         "- Do not claim attachment sending is unavailable when these markers are supported.\n\n",

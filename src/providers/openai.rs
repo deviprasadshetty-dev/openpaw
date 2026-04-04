@@ -2,6 +2,7 @@ use crate::providers::{
     ChatMessage, ChatRequest, ChatResponse, ContentPart, FunctionCall, Provider, StreamCallback,
     StreamChunk, TokenUsage, ToolCall,
 };
+use base64::Engine;
 use anyhow::Result;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,13 @@ impl OpenAiCompatibleProvider {
                             "type": "image_url",
                             "image_url": { "url": url }
                         }),
+                        ContentPart::Media { mime_type, data } => {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+                            json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{};base64,{}", mime_type, b64) }
+                            })
+                        }
                     })
                     .collect();
                 msg_json["content"] = json!(parts_json);

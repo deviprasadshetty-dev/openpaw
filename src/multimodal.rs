@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultimodalConfig {
@@ -19,7 +20,7 @@ fn default_max_images() -> u32 {
 }
 
 fn default_max_image_size_bytes() -> u64 {
-    5 * 1024 * 1024
+    20 * 1024 * 1024 // Increased to 20MB for video/audio
 }
 
 impl Default for MultimodalConfig {
@@ -33,17 +34,31 @@ impl Default for MultimodalConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultimodalKind {
+    Image,
+    Audio,
+    Video,
+    File,
+}
+
+pub struct MultimodalRef {
+    pub kind: MultimodalKind,
+    pub path: String,
+}
+
 pub struct ParseResult {
     pub cleaned_text: String,
-    pub refs: Vec<String>,
+    pub refs: Vec<MultimodalRef>,
 }
 
-pub struct ImageData {
+pub struct MultimodalData {
     pub data: Vec<u8>,
     pub mime_type: String,
+    pub kind: MultimodalKind,
 }
 
-pub fn parse_image_markers(content: &str) -> ParseResult {
+pub fn parse_multimodal_markers(content: &str) -> ParseResult {
     let mut cleaned_text = String::with_capacity(content.len());
     let mut refs = Vec::new();
     let mut cursor = 0;
@@ -58,17 +73,29 @@ pub fn parse_image_markers(content: &str) -> ParseResult {
                 let marker = &content[open_pos + 1..close_pos];
 
                 if let Some(colon_pos) = marker.find(':') {
-                    let kind_str = &marker[..colon_pos];
+                    let kind_str = marker[..colon_pos].to_lowercase();
                     let target = marker[colon_pos + 1..].trim();
 
-                    if !target.is_empty() && is_image_kind(kind_str) {
-                        refs.push(target.to_string());
-                        cursor = close_pos + 1;
-                        continue;
+                    if !target.is_empty() {
+                        let kind = match kind_str.as_str() {
+                            "image" | "photo" | "img" => Some(MultimodalKind::Image),
+                            "audio" | "voice" | "sound" => Some(MultimodalKind::Audio),
+                            "video" | "vid" | "movie" => Some(MultimodalKind::Video),
+                            "file" | "doc" | "document" => Some(MultimodalKind::File),
+                            _ => None,
+                        };
+
+                        if let Some(k) = kind {
+                            refs.push(MultimodalRef {
+                                kind: k,
+                                path: target.to_string(),
+                            });
+                            cursor = close_pos + 1;
+                            continue;
+                        }
                     }
                 }
 
-                // Not a valid [IMAGE:] marker
                 cleaned_text.push_str(&content[open_pos..=close_pos]);
                 cursor = close_pos + 1;
             } else {
@@ -87,48 +114,65 @@ pub fn parse_image_markers(content: &str) -> ParseResult {
     }
 }
 
-fn is_image_kind(kind: &str) -> bool {
-    let k = kind.to_lowercase();
-    k == "image" || k == "photo" || k == "img" || k.contains("photo") || k.contains("image") || k.contains("document")
+pub fn detect_mime_type(data: &[u8], path: &str) -> String {
+    if data.len() >= 4 {
+        if data.starts_with(&[0x89, b'P', b'N', b'G']) { return "image/png".to_string(); }
+        if data.starts_with(&[0xFF, 0xD8, 0xFF]) { return "image/jpeg".to_string(); }
+        if data.starts_with(b"GIF8") { return "image/gif".to_string(); }
+        if data.starts_with(b"BM") { return "image/bmp".to_string(); }
+        if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" { return "image/webp".to_string(); }
+    }
+
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "mp3" => "audio/mpeg".to_string(),
+        "wav" => "audio/wav".to_string(),
+        "ogg" => "audio/ogg".to_string(),
+        "m4a" => "audio/mp4".to_string(),
+        "mp4" => "video/mp4".to_string(),
+        "mpeg" | "mpg" => "video/mpeg".to_string(),
+        "mov" => "video/quicktime".to_string(),
+        "webm" => "video/webm".to_string(),
+        "pdf" => "application/pdf".to_string(),
+        "txt" => "text/plain".to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
 }
 
-pub fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
-    if data.len() < 4 {
-        return None;
-    }
-
-    // PNG: 89 50 4E 47
-    if data.starts_with(&[0x89, b'P', b'N', b'G']) {
-        return Some("image/png");
-    }
-
-    // JPEG: FF D8 FF
-    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return Some("image/jpeg");
-    }
-
-    // GIF: GIF8
-    if data.starts_with(b"GIF8") {
-        return Some("image/gif");
-    }
-
-    // BMP: BM
-    if data.starts_with(b"BM") {
-        return Some("image/bmp");
-    }
-
-    // WebP: RIFF....WEBP
-    if data.len() >= 12
-        && data.starts_with(b"RIFF")
-        && &data[8..12] == b"WEBP"
-    {
-        return Some("image/webp");
-    }
-
-    None
+pub fn is_gemini_cli_available() -> bool {
+    Command::new("gemini")
+        .arg("--version")
+        .output()
+        .is_ok()
 }
 
-pub fn read_local_image(path: &str, config: &MultimodalConfig) -> Result<ImageData> {
+pub fn process_with_gemini_cli(prompt: &str, files: &[String]) -> Result<String> {
+    let mut cmd = Command::new("gemini");
+    cmd.arg("ask");
+    
+    // Construct the prompt with file references
+    let full_prompt = prompt.to_string();
+    for file in files {
+        // @google/gemini-cli uses @path to reference files
+        cmd.arg(format!("@{}", file));
+    }
+    
+    cmd.arg(full_prompt);
+
+    let output = cmd.output().context("Failed to execute gemini cli")?;
+    if !output.status.success() {
+        return Err(anyhow!("Gemini CLI error: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub fn read_local_file(path: &str, config: &MultimodalConfig) -> Result<MultimodalData> {
     let resolved = fs::canonicalize(path)?;
 
     // Verify path is in allowed_dirs
@@ -138,10 +182,11 @@ pub fn read_local_image(path: &str, config: &MultimodalConfig) -> Result<ImageDa
 
     let mut allowed = false;
     for dir in &config.allowed_dirs {
-        let allowed_path = fs::canonicalize(dir)?;
-        if resolved.starts_with(&allowed_path) {
-            allowed = true;
-            break;
+        if let Ok(allowed_path) = fs::canonicalize(dir) {
+            if resolved.starts_with(&allowed_path) {
+                allowed = true;
+                break;
+            }
         }
     }
 
@@ -152,17 +197,28 @@ pub fn read_local_image(path: &str, config: &MultimodalConfig) -> Result<ImageDa
     let metadata = fs::metadata(&resolved)?;
     if metadata.len() > config.max_image_size_bytes {
         return Err(anyhow!(
-            "Image too large: {} > {}",
+            "File too large: {} > {}",
             metadata.len(),
             config.max_image_size_bytes
         ));
     }
 
     let data = fs::read(&resolved)?;
-    let mime_type = detect_mime_type(&data).ok_or_else(|| anyhow!("Unknown image format"))?;
+    let mime_type = detect_mime_type(&data, path);
+    
+    let kind = if mime_type.starts_with("image/") {
+        MultimodalKind::Image
+    } else if mime_type.starts_with("audio/") {
+        MultimodalKind::Audio
+    } else if mime_type.starts_with("video/") {
+        MultimodalKind::Video
+    } else {
+        MultimodalKind::File
+    };
 
-    Ok(ImageData {
+    Ok(MultimodalData {
         data,
-        mime_type: mime_type.to_string(),
+        mime_type,
+        kind,
     })
 }

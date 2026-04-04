@@ -14,7 +14,6 @@ pub use routing::{
 };
 
 use anyhow::Result;
-use base64::Engine;
 use regex::Regex;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -383,7 +382,7 @@ impl Agent {
         &self,
         content: &str,
     ) -> (String, Option<Vec<crate::providers::ContentPart>>) {
-        let parse_result = crate::multimodal::parse_image_markers(content);
+        let parse_result = crate::multimodal::parse_multimodal_markers(content);
         if parse_result.refs.is_empty() {
             return (content.to_string(), None);
         }
@@ -393,19 +392,20 @@ impl Agent {
             parse_result.cleaned_text.clone(),
         ));
 
-        for ref_path in parse_result.refs {
-            match crate::multimodal::read_local_image(&ref_path, &self.multimodal_config) {
-                Ok(img_data) => {
-                    parts.push(crate::providers::ContentPart::ImageBase64 {
-                        data: base64::engine::general_purpose::STANDARD.encode(&img_data.data),
-                        media_type: img_data.mime_type,
+        for m_ref in parse_result.refs {
+            let ref_path = m_ref.path;
+            match crate::multimodal::read_local_file(&ref_path, &self.multimodal_config) {
+                Ok(data) => {
+                    parts.push(crate::providers::ContentPart::Media {
+                        mime_type: data.mime_type,
+                        data: data.data,
                     });
                 }
                 Err(e) => {
-                    warn!("Failed to read multimodal image {}: {}", ref_path, e);
-                    // Add a placeholder text so the model knows an image was intended but failed
+                    warn!("Failed to read multimodal file {}: {}", ref_path, e);
+                    // Add a placeholder text so the model knows a file was intended but failed
                     parts.push(crate::providers::ContentPart::Text(format!(
-                        "\n[Error loading image: {}]",
+                        "\n[Error loading file: {}]",
                         ref_path
                     )));
                 }
@@ -430,11 +430,12 @@ impl Agent {
         let current_tool_hash = self.compute_tool_hash();
         let workspace_fp = prompt::workspace_prompt_fingerprint(&self.workspace_dir);
 
-        if let Some(cached) = self.cached_system_prompt.get()
-            && current_tool_hash == self.last_tool_hash
-            && Some(workspace_fp) == self.workspace_prompt_fingerprint
-        {
-            return Ok(cached.clone());
+        if let Some(cached) = self.cached_system_prompt.get() {
+            if current_tool_hash == self.last_tool_hash
+                && Some(workspace_fp) == self.workspace_prompt_fingerprint
+            {
+                return Ok(cached.clone());
+            }
         }
 
         let prompt = self.build_system_prompt()?;

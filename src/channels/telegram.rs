@@ -28,6 +28,7 @@ enum AttachmentKind {
     Document,
     Image,
     Audio,
+    Video,
 }
 
 #[derive(Debug, Clone)]
@@ -790,8 +791,8 @@ impl TelegramChannel {
     }
 
     fn parse_outbound_attachments(&self, text: &str) -> (String, Vec<OutboundAttachment>) {
-        // FILE / DOCUMENT / IMAGE / AUDIO markers
-        let marker_re = Regex::new(r"(?i)\[(FILE|DOCUMENT|IMAGE|AUDIO):([^\]]+)\]").unwrap();
+        // FILE / DOCUMENT / IMAGE / AUDIO / VIDEO markers
+        let marker_re = Regex::new(r"(?i)\[(FILE|DOCUMENT|IMAGE|AUDIO|VIDEO):([^\]]+)\]").unwrap();
 
         let mut attachments = Vec::new();
         for caps in marker_re.captures_iter(text) {
@@ -802,6 +803,7 @@ impl TelegramChannel {
             {
                 Some("IMAGE") => AttachmentKind::Image,
                 Some("AUDIO") => AttachmentKind::Audio,
+                Some("VIDEO") => AttachmentKind::Video,
                 Some(_) => AttachmentKind::Document,
                 None => continue,
             };
@@ -936,6 +938,7 @@ impl TelegramChannel {
             AttachmentKind::Image => self.send_photo(chat_id, &attachment.path),
             AttachmentKind::Document => self.send_document(chat_id, &attachment.path),
             AttachmentKind::Audio => self.send_audio(chat_id, &attachment.path),
+            AttachmentKind::Video => self.send_video(chat_id, &attachment.path),
         }
     }
 
@@ -1010,6 +1013,31 @@ impl TelegramChannel {
         if !status.is_success() || !body.contains("\"ok\":true") {
             return Err(anyhow!(
                 "Telegram sendAudio error for {}: {} - {}",
+                path.display(),
+                status,
+                body
+            ));
+        }
+        Ok(())
+    }
+
+    fn send_video(&self, chat_id: &str, path: &Path) -> Result<()> {
+        let url = self.api_url("sendVideo");
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("video.mp4")
+            .to_string();
+        let bytes = std::fs::read(path)?;
+        let form = multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("video", multipart::Part::bytes(bytes).file_name(file_name));
+        let response = self.client.post(&url).multipart(form).send()?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if !status.is_success() || !body.contains("\"ok\":true") {
+            return Err(anyhow!(
+                "Telegram sendVideo error for {}: {} - {}",
                 path.display(),
                 status,
                 body

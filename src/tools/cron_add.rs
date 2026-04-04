@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 pub struct CronAddTool {
     pub cron: Arc<crate::cron::CronScheduler>,
+    pub default_timezone: String,
 }
 
 #[async_trait]
@@ -20,7 +21,7 @@ impl Tool for CronAddTool {
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"expression":{"type":"string","description":"Cron expression (e.g. '*/5 * * * *' = every 5 minutes, '0 9 * * *' = every day at 9am)"},"delay":{"type":"string","description":"One-shot delay before firing (e.g. '30s', '10m', '2h')"},"command":{"type":"string","description":"Shell command to run, or prompt to send to agent (if job_type is 'agent')"},"name":{"type":"string","description":"Human-readable name for the job"},"job_type":{"type":"string","enum":["shell","agent"],"description":"'shell' runs a shell command; 'agent' sends the command as a prompt to the AI agent (default: shell)"},"deliver_output":{"type":"boolean","description":"Whether to send job output back to this chat (default: true)"}},"required":["command"]}"#.to_string()
+        r#"{"type":"object","properties":{"expression":{"type":"string","description":"Cron expression (e.g. '*/5 * * * *' = every 5 minutes, '0 9 * * *' = every day at 9am)"},"delay":{"type":"string","description":"One-shot delay before firing (e.g. '30s', '10m', '2h')"},"command":{"type":"string","description":"Shell command to run, or prompt to send to agent (if job_type is 'agent')"},"name":{"type":"string","description":"Human-readable name for the job"},"job_type":{"type":"string","enum":["shell","agent"],"description":"'shell' runs a shell command; 'agent' sends the command as a prompt to the AI agent (default: shell)"},"deliver_output":{"type":"boolean","description":"Whether to send job output back to this chat (default: true)"},"timezone":{"type":"string","description":"Timezone for cron expression (e.g. 'America/New_York', default: UTC)"}},"required":["command"]}"#.to_string()
     }
 
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
@@ -43,6 +44,13 @@ impl Tool for CronAddTool {
             .get("deliver_output")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+
+        // Get timezone from args or use default
+        let timezone = args
+            .get("timezone")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&self.default_timezone)
+            .to_string();
 
         // BUG-CRON-3 FIX: Use bare chat_id, NOT session_key.
         // session_key has format "telegram:1234567" which Telegram API rejects.
@@ -76,7 +84,13 @@ impl Tool for CronAddTool {
         let base_name = name.unwrap_or("job");
         let slug: String = base_name
             .chars()
-            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let job_id = format!("{}-{}", slug, now_secs);
 
@@ -109,6 +123,7 @@ impl Tool for CronAddTool {
             delete_after_run: delay.is_some(),
             last_output: None,
             history: Vec::new(),
+            timezone,
         };
 
         self.cron.add_job(job);

@@ -43,6 +43,7 @@ pub mod skill_tool;
 pub mod skill_uninstall;
 pub mod spawn;
 pub mod spi;
+pub mod vision;
 pub mod web_fetch;
 pub mod web_search;
 

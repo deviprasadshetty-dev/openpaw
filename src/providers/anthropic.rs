@@ -3,6 +3,7 @@
 /// Supports streaming (SSE) for tool use detection, text generation,
 /// and vision (base64 image blocks).
 use anyhow::{Context, Result};
+use base64::Engine;
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -157,6 +158,14 @@ fn build_content_blocks(parts: &[crate::providers::ContentPart]) -> Value {
                 "source": {
                     "type": "url",
                     "url": url,
+                }
+            }),
+            ContentPart::Media { mime_type, data } => json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": base64::engine::general_purpose::STANDARD.encode(data),
                 }
             }),
         })

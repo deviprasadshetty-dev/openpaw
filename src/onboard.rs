@@ -1,9 +1,5 @@
 use crate::providers::kilocode::{
-    DEFAULT_FREE_MODELS, fetch_kilocode_free_models, preferred_kilocode_model_index,
-};
-use crate::providers::ollama::OllamaProvider;
-use crate::providers::openrouter::{
-    fetch_openrouter_free_models, format_openrouter_model, preferred_openrouter_model_index,
+    fetch_kilocode_free_models, preferred_kilocode_model_index,
 };
 use crate::workspace_templates::*;
 use anyhow::{Context, Result};
@@ -98,6 +94,28 @@ pub struct ProviderConfig {
     pub model: Option<String>,
 }
 
+#[derive(Default)]
+struct PartialConfig {
+    provider: Option<ProviderConfig>,
+    selected_default_model: Option<String>,
+    api_key: Option<String>,
+    telegram: Option<Option<(String, String)>>,
+    whatsapp_native: Option<Option<(String, String)>>,
+    memory_backend: Option<String>,
+    groq_key: Option<String>,
+    embed_provider: Option<Option<String>>,
+    embed_key: Option<Option<String>>,
+    embed_model: Option<Option<String>>,
+    composio_enabled: Option<bool>,
+    composio_api_key: Option<Option<String>>,
+    composio_entity_id: Option<String>,
+    kilocode_fallback_models: Option<Vec<String>>,
+    brave_api_key: Option<Option<String>>,
+    pushover: Option<Option<(String, String)>>,
+    custom_base_url: Option<Option<String>>,
+    custom_model: Option<Option<String>>,
+}
+
 // ── Main onboarding flow ──────────────────────────────────────────
 
 pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
@@ -163,765 +181,81 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     );
     println!();
 
-    // ── Already initialized? ─────────────────────────────────────────
-    if dir.join("config.json").exists() {
-        print!(
-            "  {}  Config already exists. Overwrite? {}: ",
-            warn_icon(),
-            dim("(y/N)")
-        );
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("  {}  Keeping your existing config. Bye! 👋", ok());
+    let mut current_partial = PartialConfig::default();
+    let config_path = dir.join("config.json");
+    let mut is_edit = false;
+
+    if config_path.exists() {
+        println!("  {}  Existing configuration found.", info());
+        println!("    {}  Edit existing configuration", cyan("1"));
+        println!("    {}  Start fresh (overwrite)", cyan("2"));
+        println!("    {}  Cancel", cyan("3"));
+        println!();
+        let choice = prompt_choice("  Action", 3, 1);
+        if choice == 3 {
             return Ok(());
         }
-        println!();
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 1 — AI Provider
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        1,
-        "AI Provider",
-        "Which AI service should power your agent?",
-    );
-
-    let ollama_available = OllamaProvider::new(None).is_available();
-    let lmstudio_available = is_lmstudio_available();
-
-    if ollama_available {
-        println!(
-            "  {}  {} Ollama detected running locally! Recommended for 100% privacy.",
-            ok(),
-            green("Local AI:")
-        );
-    }
-    if lmstudio_available {
-        println!(
-            "  {}  {} LM Studio detected running locally!",
-            ok(),
-            green("Local AI:")
-        );
-    }
-
-    let providers = vec![
-        ProviderConfig {
-            name: "gemini".to_string(),
-            default_model: "gemini-2.0-flash".to_string(),
-            base_url: None,
-            model: None,
-        },
-        ProviderConfig {
-            name: "openai".to_string(),
-            default_model: "gpt-4o".to_string(),
-            base_url: None,
-            model: None,
-        },
-        ProviderConfig {
-            name: "anthropic".to_string(),
-            default_model: "claude-3-5-sonnet-latest".to_string(),
-            base_url: None,
-            model: None,
-        },
-        ProviderConfig {
-            name: "openrouter".to_string(),
-            default_model: "deepseek/deepseek-chat-v3-0324:free".to_string(),
-            base_url: Some("https://openrouter.ai/api/v1".to_string()),
-            model: None,
-        },
-        ProviderConfig {
-            name: "opencode".to_string(),
-            default_model: "minimax-m2.5-free".to_string(),
-            base_url: Some("https://opencode.ai/zen/v1".to_string()),
-            model: None,
-        },
-        ProviderConfig {
-            name: "kilocode".to_string(),
-            default_model: "minimax/minimax-m2.1:free".to_string(),
-            base_url: Some("https://api.kilo.ai/api/gateway".to_string()),
-            model: None,
-        },
-        ProviderConfig {
-            name: "ollama".to_string(),
-            default_model: "llama3.2".to_string(),
-            base_url: Some("http://localhost:11434/v1".to_string()),
-            model: None,
-        },
-        ProviderConfig {
-            name: "lmstudio".to_string(),
-            default_model: "local-model".to_string(),
-            base_url: Some("http://localhost:1234/v1".to_string()),
-            model: None,
-        },
-        ProviderConfig {
-            name: "openai-compatible".to_string(),
-            default_model: "gpt-4o".to_string(),
-            base_url: Some("http://localhost:8080/v1".to_string()),
-            model: None,
-        },
-    ];
-
-    // Provider table
-    println!();
-    println!(
-        "  {}  {:<14}  {:<12}  {}",
-        dim("№"),
-        dim("Provider"),
-        dim("Key"),
-        dim("Notes")
-    );
-    println!("  {}", dim(&"─".repeat(62)));
-    let badges: &[(&str, &str, &str)] = &[
-        (
-            "gemini",
-            "Required",
-            "Free tier — 15 req/min, 1M tokens/day",
-        ),
-        ("openai", "Required", "GPT-4o, o1, o3 — pay-per-use"),
-        ("anthropic", "Required", "Claude 3.5 / 3.7 — pay-per-use"),
-        (
-            "openrouter",
-            "Required",
-            "200+ models, free tier available → live fetch",
-        ),
-        (
-            "opencode",
-            "Optional",
-            "OpenCode Zen — free models auto-detected",
-        ),
-        (
-            "kilocode",
-            "Required",
-            "Kilo.ai Gateway — free + 200+ paid models",
-        ),
-        ("ollama", "None", "100% local, no key needed"),
-        ("lmstudio", "None", "100% local, no key needed"),
-        (
-            "openai-compatible",
-            "Required",
-            "Custom base_url + model name",
-        ),
-    ];
-    for (i, p) in providers.iter().enumerate() {
-        let (_, key_label, note) = badges[i];
-        let key_col = if key_label == "None" {
-            green(key_label)
-        } else if key_label == "Optional" {
-            yellow(key_label)
-        } else {
-            dim(key_label)
-        };
-        println!(
-            "  {}  {:<14}  {:<22}  {}",
-            cyan(&format!("{}", i + 1)),
-            bold(&p.name),
-            key_col,
-            dim(note)
-        );
-    }
-    println!();
-    let provider_idx = prompt_choice("  Select provider", providers.len(), 1) - 1;
-    let provider = &providers[provider_idx];
-    println!();
-
-    // ── API Key ──────────────────────────────────────────────────────
-    let mut api_key = if provider.name == "ollama" || provider.name == "lmstudio" {
-        println!(
-            "  {}  {} runs locally — {}",
-            ok(),
-            capitalize(&provider.name),
-            dim("no API key needed")
-        );
-        String::new()
-    } else if provider.name == "gemini" {
-        println!(
-            "  {}  Get your free key at {}",
-            info(),
-            cyan("https://aistudio.google.com/apikey")
-        );
-        println!();
-        println!("  How would you like to authenticate?");
-        println!(
-            "    {}  API Key    {}",
-            cyan("1"),
-            dim("— standard, recommended")
-        );
-        println!(
-            "    {}  Gemini CLI {}",
-            cyan("2"),
-            dim("— reuse existing ~/.gemini OAuth session")
-        );
-        println!();
-        let auth = prompt_choice("  Choice", 2, 1);
-        if auth == 2 {
-            println!();
-            println!(
-                "  {}  {}",
-                warn_icon(),
-                yellow("Gemini CLI OAuth is an unofficial integration.")
-            );
-            println!(
-                "  {}  Some users have reported account restrictions. Proceed at own risk.",
-                dim("  ")
-            );
-            print!("\n  Continue? {}: ", dim("(y/N)"));
-            io::stdout().flush()?;
-            let mut c = String::new();
-            io::stdin().read_line(&mut c)?;
-            if c.trim().eq_ignore_ascii_case("y") {
-                println!("  {}  Using Gemini CLI OAuth", ok());
-                "cli_oauth".to_string()
-            } else {
-                println!("  {}  Falling back to API key mode", skip());
-                prompt_secret(&format!("  {} API key", bold("Gemini")))?
-            }
-        } else {
-            prompt_secret(&format!("  {} API key", bold("Gemini")))?
-        }
-    } else if provider.name == "openai-compatible" {
-        // We'll prompt for custom base URL, model, and API key later together
-        String::new()
-    } else {
-        println!(
-            "  {}  Get your key at {}",
-            info(),
-            cyan(provider_docs_url(&provider.name))
-        );
-        println!();
-        prompt_secret(&format!("  {} API key", bold(&capitalize(&provider.name))))?
-    };
-    println!();
-
-    // ── Custom Provider Settings ─────────────────────────────────────
-    let mut custom_base_url = provider.base_url.clone();
-    let mut custom_model = provider.model.clone();
-
-    if provider.name == "openai-compatible" {
-        println!(
-            "  {}  Configure your custom OpenAI-compatible provider:",
-            info()
-        );
-        custom_base_url = Some(prompt_with_default(
-            "  Base URL",
-            provider
-                .base_url
-                .as_deref()
-                .unwrap_or("http://localhost:8080/v1"),
-        )?);
-        custom_model = Some(prompt_with_default(
-            "  Model Name",
-            &provider.default_model,
-        )?);
-        println!();
-        api_key = prompt_secret(&format!("  {} API key", bold("Custom Provider")))?;
-        println!();
-    }
-    println!();
-
-    // ── Free model discovery ─────────────────────────────────────────
-    let mut selected_default_model = custom_model
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| provider.default_model.clone());
-    let mut kilocode_fallback_models: Vec<String> = Vec::new();
-
-    if provider.name == "opencode" {
-        spin_start("Fetching OpenCode free models");
-        match fetch_opencode_free_models(&api_key) {
-            Ok(models) if !models.is_empty() => {
-                spin_done(&format!("{} free model(s) found", models.len()));
-                println!();
-                let default_idx = preferred_opencode_model_index(&models);
-                list_models_simple(&models, default_idx);
-                let choice =
-                    prompt_choice("  Select default model", models.len(), default_idx + 1) - 1;
-                selected_default_model = models[choice].clone();
-            }
-            Ok(_) => {
-                spin_warn(&format!(
-                    "No free models found — using {}",
-                    provider.default_model
-                ));
-            }
-            Err(e) => {
-                spin_warn(&format!("Could not reach OpenCode ({})", e));
-            }
-        }
-    } else if provider.name == "openrouter" {
-        spin_start("Fetching OpenRouter free models (≥8K context)");
-        match fetch_openrouter_free_models(&api_key) {
-            Ok(models) if !models.is_empty() => {
-                spin_done(&format!("{} free model(s) found", models.len()));
-                println!();
-                let default_idx = preferred_openrouter_model_index(&models);
-                println!(
-                    "  {}",
-                    dim(&format!("{:<3}  {:<52}  {}", "№", "Model", "Context"))
-                );
-                println!("  {}", dim(&"─".repeat(66)));
-                for (i, m) in models.iter().enumerate() {
-                    let label = format_openrouter_model(m);
-                    let hint = if i == default_idx {
-                        format!("  {}", green("← recommended"))
-                    } else {
-                        String::new()
-                    };
-                    println!(
-                        "  {}  {}{}",
-                        cyan(&format!("{:3}", i + 1)),
-                        label,
-                        dim(&hint)
-                    );
+        if choice == 1 {
+            is_edit = true;
+            // Load existing values into current_partial
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    current_partial.default_values_from_json(&json);
                 }
-                println!();
-                let choice =
-                    prompt_choice("  Select default model", models.len(), default_idx + 1) - 1;
-                selected_default_model = models[choice].id.clone();
-                println!(
-                    "  {}  {} {}",
-                    ok(),
-                    bold(&selected_default_model),
-                    dim(&format!("({}K ctx)", models[choice].context_length / 1_000))
-                );
-            }
-            Ok(_) => {
-                spin_warn(&format!(
-                    "No suitable free models — using {}",
-                    provider.default_model
-                ));
-            }
-            Err(e) => {
-                spin_warn(&format!(
-                    "Could not reach OpenRouter ({}) — using default",
-                    e
-                ));
             }
         }
-    } else if provider.name == "ollama" {
-        spin_start("Fetching Ollama local models");
-        match fetch_ollama_models() {
-            Ok(models) if !models.is_empty() => {
-                spin_done(&format!("{} model(s) found", models.len()));
-                println!();
-                // Find qwen if possible as user requested qwen
-                let default_idx = models.iter().position(|m| m.contains("qwen")).unwrap_or(0);
-                list_models_simple(&models, default_idx);
-                let choice = prompt_choice("  Select model", models.len(), default_idx + 1) - 1;
-                selected_default_model = models[choice].clone();
-            }
-            _ => {
-                spin_warn(
-                    "No local models found — you may need to run `ollama pull llama3.2` first",
-                );
-            }
-        }
-    } else if provider.name == "lmstudio" {
-        spin_start("Fetching LM Studio local models");
-        match fetch_lmstudio_models() {
-            Ok(models) if !models.is_empty() => {
-                spin_done(&format!("{} model(s) found", models.len()));
-                println!();
-                let default_idx = 0;
-                list_models_simple(&models, default_idx);
-                let choice = prompt_choice("  Select model", models.len(), default_idx + 1) - 1;
-                selected_default_model = models[choice].clone();
-            }
-            _ => {
-                spin_warn("No local models found — make sure a model is loaded in LM Studio");
-            }
-        }
-    } else if provider.name == "kilocode" {
-        spin_start("Fetching Kilo.ai free models");
-        let free_models = match fetch_kilocode_free_models(&api_key) {
-            Ok(models) if !models.is_empty() => {
-                spin_done(&format!("{} free model(s) found", models.len()));
-                models
-            }
-            Ok(_) => {
-                spin_warn("No free models found — using built-in list");
-                DEFAULT_FREE_MODELS.iter().map(|s| s.to_string()).collect()
-            }
-            Err(e) => {
-                spin_warn(&format!(
-                    "Could not reach Kilo.ai ({}) — using built-in list",
-                    e
-                ));
-                DEFAULT_FREE_MODELS.iter().map(|s| s.to_string()).collect()
-            }
-        };
-        println!();
-        let default_idx = preferred_kilocode_model_index(&free_models);
-        list_models_simple(&free_models, default_idx);
-        let choice =
-            prompt_choice("  Select default model", free_models.len(), default_idx + 1) - 1;
-        selected_default_model = free_models[choice].clone();
-
-        kilocode_fallback_models = free_models
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != choice)
-            .map(|(_, m)| m.clone())
-            .collect();
-        kilocode_fallback_models.insert(0, selected_default_model.clone());
     }
 
-    println!(
-        "  {}  Provider {}  Model {}",
-        ok(),
-        green(&format!("[{}]", provider.name)),
-        cyan(&selected_default_model)
-    );
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 2 — Memory
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        2,
-        "Memory",
-        "How should your agent remember things between sessions?",
-    );
-    println!();
-    println!(
-        "  {}  {:<12}  {}",
-        cyan("1"),
-        bold("sqlite"),
-        dim("Fast, searchable — recommended")
-    );
-    println!(
-        "  {}  {:<12}  {}",
-        cyan("2"),
-        bold("markdown"),
-        dim("Human-readable MEMORY.md file")
-    );
-    println!(
-        "  {}  {:<12}  {}",
-        cyan("3"),
-        bold("none"),
-        dim("No persistence (ephemeral)")
-    );
-    println!();
-
-    let mem_choice = prompt_choice("  Choice", 3, 1);
-    let memory_backend = match mem_choice {
-        1 => "sqlite",
-        2 => "markdown",
-        3 => "none",
-        _ => "sqlite",
-    };
-    println!(
-        "  {}  Memory backend set to {}",
-        ok(),
-        green(&format!("[{}]", memory_backend))
-    );
-
-    let mut embed_provider = None;
-    let mut embed_key = None;
-    let mut embed_model = None;
-
-    if memory_backend == "sqlite" {
-        println!();
-        print!(
-            "  {}  Enable semantic search with vector embeddings? {}: ",
-            info(),
-            dim("(y/N)")
-        );
-        io::stdout().flush()?;
-        let mut emb_in = String::new();
-        io::stdin().read_line(&mut emb_in)?;
-        if emb_in.trim().eq_ignore_ascii_case("y") {
+    if is_edit {
+        loop {
+            println!("\n  {}  {} What would you like to edit?", info(), bold("Edit Mode"));
+            println!("    {}  AI Provider & Model", cyan("1"));
+            println!("    {}  Memory & Embeddings", cyan("2"));
+            println!("    {}  Voice (Groq Whisper)", cyan("3"));
+            println!("    {}  Telegram Bot", cyan("4"));
+            println!("    {}  Composio Tools", cyan("5"));
+            println!("    {}  Web Search (Brave)", cyan("6"));
+            println!("    {}  WhatsApp Native", cyan("7"));
+            println!("    {}  Pushover", cyan("8"));
+            println!("    {}  Save and Exit", green("9"));
+            println!("    {}  Discard and Exit", yellow("10"));
             println!();
-            println!(
-                "  {}  {:<14}  {}",
-                cyan("1"),
-                bold("huggingface"),
-                dim("Free, local — recommended (Qwen/Qwen3-Embedding-0.6B)")
-            );
-            println!(
-                "  {}  {:<14}  {}",
-                cyan("2"),
-                bold("openai"),
-                dim("$0.02 / 1M tokens (text-embedding-3-small)")
-            );
-            println!(
-                "  {}  {:<14}  {}",
-                cyan("3"),
-                bold("gemini"),
-                dim("Free tier available (text-embedding-004)")
-            );
-            println!();
-            let ep_choice = prompt_choice("  Embedding provider", 3, 1);
-            let (ep_name, ep_model) = match ep_choice {
-                1 => ("huggingface", "Qwen/Qwen3-Embedding-0.6B"),
-                2 => ("openai", "text-embedding-3-small"),
-                3 => ("gemini", "models/text-embedding-004"),
-                _ => ("huggingface", "Qwen/Qwen3-Embedding-0.6B"),
-            };
 
-            let key = if ep_name == provider.name {
-                api_key.clone()
-            } else {
-                println!();
-                prompt_secret(&format!(
-                    "  {} API key for embeddings",
-                    bold(&capitalize(ep_name))
-                ))?
-            };
-
-            embed_provider = Some(ep_name.to_string());
-            embed_key = Some(key);
-            embed_model = Some(ep_model.to_string());
-            println!(
-                "  {}  Embeddings enabled via {}",
-                ok(),
-                green(&format!("[{}]", ep_name))
-            );
-        }
-    }
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 3 — Voice (Groq Whisper)
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        3,
-        "Voice Transcription",
-        "Auto-transcribe voice messages via Groq Whisper",
-    );
-    println!();
-    println!(
-        "  {}  Free API key at {}",
-        info(),
-        cyan("https://console.groq.com")
-    );
-    println!();
-    print!("  Enable voice transcription? {}: ", dim("(y/N)"));
-    io::stdout().flush()?;
-    let mut voice_in = String::new();
-    io::stdin().read_line(&mut voice_in)?;
-
-    let groq_key = if voice_in.trim().eq_ignore_ascii_case("y") {
-        let key = prompt_secret("  Groq API key")?;
-        if key.is_empty() {
-            println!("  {}  No key provided — skipping voice", skip());
-            String::new()
-        } else {
-            println!("  {}  Voice enabled {}", ok(), dim("(whisper-large-v3)"));
-            key
-        }
-    } else {
-        println!("  {}  Skipped — add later via config.json", skip());
-        String::new()
-    };
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 4 — Telegram
-    // ══════════════════════════════════════════════════════════════════
-    section_header(4, "Telegram Bot", "Chat with your agent from your phone");
-    println!();
-    println!(
-        "  {}  Create a bot at {}",
-        info(),
-        cyan("https://t.me/BotFather")
-    );
-    println!();
-    print!("  Set up Telegram? {}: ", dim("(y/N)"));
-    io::stdout().flush()?;
-    let mut tg_in = String::new();
-    io::stdin().read_line(&mut tg_in)?;
-
-    let telegram_config = if tg_in.trim().eq_ignore_ascii_case("y") {
-        let token = prompt_secret("  Bot token (from @BotFather)")?;
-        let username = prompt_with_default("  Your Telegram username", "@you")?;
-        println!("  {}  Telegram bot configured", ok());
-        if groq_key.is_empty() {
-            println!(
-                "  {}  {}",
-                info(),
-                dim("Tip: add a Groq key later to enable voice messages in Telegram!")
-            );
-        } else {
-            println!(
-                "  {}  Voice messages will be auto-transcribed in Telegram",
-                ok()
-            );
-        }
-        Some((token, username))
-    } else {
-        println!("  {}  Skipped", skip());
-        None
-    };
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 5 — Composio
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        5,
-        "Composio Tools",
-        "Connect external apps (Gmail, Slack, GitHub…)",
-    );
-    println!();
-    println!(
-        "  {}  API key at {}",
-        info(),
-        cyan("https://app.composio.dev")
-    );
-    println!();
-    print!("  Enable Composio? {}: ", dim("(y/N)"));
-    io::stdout().flush()?;
-    let mut comp_in = String::new();
-    io::stdin().read_line(&mut comp_in)?;
-
-    let (composio_enabled, composio_api_key, composio_entity_id) =
-        if comp_in.trim().eq_ignore_ascii_case("y") {
-            let key = prompt_secret("  Composio API key")?;
-            if key.is_empty() {
-                println!("  {}  No key provided — skipping Composio", skip());
-                (false, None, "default".to_string())
-            } else {
-                let entity_id = prompt_with_default("  Entity ID", "default")?;
-                println!("  {}  Composio configured", ok());
-                (true, Some(key), entity_id)
+            let edit_choice = prompt_choice("  Choice", 10, 9);
+            match edit_choice {
+                1 => current_partial.step_provider()?,
+                2 => current_partial.step_memory()?,
+                3 => current_partial.step_voice()?,
+                4 => current_partial.step_telegram()?,
+                5 => current_partial.step_composio()?,
+                6 => current_partial.step_brave()?,
+                7 => current_partial.step_whatsapp()?,
+                8 => current_partial.step_pushover()?,
+                9 => break,
+                10 => return Ok(()),
+                _ => break,
             }
-        } else {
-            println!("  {}  Skipped", skip());
-            (false, None, "default".to_string())
-        };
-    println!();
-
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 6 — Brave Search
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        6,
-        "Web Search",
-        "Enable Brave Search for high-quality web results",
-    );
-    println!();
-    println!(
-        "  {}  Get your key at {}",
-        info(),
-        cyan("https://api.search.brave.com/app/keys")
-    );
-    println!();
-    print!("  Enable Brave Search? {}: ", dim("(y/N)"));
-    io::stdout().flush()?;
-    let mut brave_in = String::new();
-    io::stdin().read_line(&mut brave_in)?;
-
-    let brave_api_key = if brave_in.trim().eq_ignore_ascii_case("y") {
-        let key = prompt_secret("  Brave Search API key")?;
-        if key.is_empty() {
-            println!("  {}  No key provided — skipping", skip());
-            None
-        } else {
-            println!("  {}  Brave Search enabled", ok());
-            Some(key)
         }
     } else {
-        println!("  {}  Skipped", skip());
-        None
-    };
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 7 — WhatsApp (Native Bridge)
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        7,
-        "WhatsApp Native",
-        "Chat via local WhatsApp bridge (whatsmeow)",
-    );
-    println!();
-    print!("  Enable WhatsApp? {}: ", dim("(y/N)"));
-    io::stdout().flush()?;
-    let mut wa_in = String::new();
-    io::stdin().read_line(&mut wa_in)?;
-
-    let whatsapp_native_config = if wa_in.trim().eq_ignore_ascii_case("y") {
-        println!(
-            "  {}  OpenPaw will auto-start the bridge. Scan the QR code in your terminal to pair.",
-            info()
-        );
-        let username = prompt_with_default("  Your Phone Number (e.g. +123...)", "+1...")?;
-
-        println!("  {}  WhatsApp Native configured", ok());
-        Some(("http://localhost:18790".to_string(), username))
-    } else {
-        println!("  {}  Skipped", skip());
-        None
-    };
-    println!();
-
-    // ══════════════════════════════════════════════════════════════════
-    // STEP 8 — Pushover
-    // ══════════════════════════════════════════════════════════════════
-    section_header(
-        8,
-        "Pushover Notifications",
-        "Get alerts on your phone when tasks finish",
-    );
-    println!();
-    println!(
-        "  {}  Get your token and user key at {}",
-        info(),
-        cyan("https://pushover.net")
-    );
-    println!();
-    print!("  Enable Pushover? {}: ", dim("(y/N)"));
-    io::stdout().flush()?;
-    let mut push_in = String::new();
-    io::stdin().read_line(&mut push_in)?;
-
-    let pushover_config = if push_in.trim().eq_ignore_ascii_case("y") {
-        let token = prompt_secret("  Pushover Application Token")?;
-        let user_key = prompt_secret("  Pushover User Key")?;
-        if token.is_empty() || user_key.is_empty() {
-            println!("  {}  Missing keys — skipping", skip());
-            None
-        } else {
-            println!("  {}  Pushover enabled", ok());
-            Some((token, user_key))
-        }
-    } else {
-        println!("  {}  Skipped", skip());
-        None
-    };
-    println!();
+        // Full sequence
+        current_partial.step_provider()?;
+        current_partial.step_memory()?;
+        current_partial.step_voice()?;
+        current_partial.step_telegram()?;
+        current_partial.step_composio()?;
+        current_partial.step_brave()?;
+        current_partial.step_whatsapp()?;
+        current_partial.step_pushover()?;
+    }
 
     // ── Write files ──────────────────────────────────────────────────
     if !dir.exists() {
         fs::create_dir_all(dir).context("Failed to create workspace directory")?;
     }
 
-    let config = generate_config(
-        provider,
-        &selected_default_model,
-        &api_key,
-        telegram_config.as_ref(),
-        whatsapp_native_config.as_ref(),
-        memory_backend,
-        &groq_key,
-        embed_provider.as_deref(),
-        embed_key.as_deref(),
-        embed_model.as_deref(),
-        composio_enabled,
-        composio_api_key.as_deref(),
-        &composio_entity_id,
-        &kilocode_fallback_models,
-        brave_api_key.as_deref(),
-        pushover_config.as_ref(),
-        custom_base_url.as_deref(),
-        custom_model.as_deref(),
-    );
-    fs::write(dir.join("config.json"), config)?;
+    // Prepare final config by merging partial with defaults
+    let config_json = current_partial.to_json();
+    fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
     scaffold_workspace(dir, &ProjectContext::default())?;
 
     // ── Done! ────────────────────────────────────────────────────────
@@ -933,8 +267,8 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
     println!(
         "{}  {}  {}",
         cyan("  │"),
-        green("✅  Workspace ready!"),
-        cyan("                                            │")
+        green("✅  Configuration updated!"),
+        cyan("                                      │")
     );
     println!(
         "{}",
@@ -948,168 +282,416 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         .unwrap_or_else(|_| dir.display().to_string());
     println!("  {}  {}", dim("Path"), cyan(&workspace_path));
     println!();
-    println!("  {}  What's configured:", bold("Summary"));
-    summary_row(
-        "AI provider",
-        &format!("{} / {}", provider.name, selected_default_model),
-    );
-    summary_row("Memory", memory_backend);
-    if !groq_key.is_empty() {
-        summary_row("Voice", "Groq Whisper (whisper-large-v3)");
-    }
-    if telegram_config.is_some() {
-        summary_row("Telegram", "bot configured");
-    }
-    if whatsapp_native_config.is_some() {
-        summary_row("WhatsApp Native", "configured");
-    }
-    if composio_enabled {
-        summary_row("Composio", "enabled");
-    }
-    if pushover_config.is_some() {
-        summary_row("Pushover", "enabled");
-    }
-    println!();
+    
+    // Summary
     println!("  {}  Next steps:", bold("→"));
     println!(
-        "     {}  Edit {}  to give your agent a personality",
-        dim("1."),
-        cyan("SOUL.md")
-    );
-    println!(
         "     {}  Run  {}  for interactive chat",
-        dim("2."),
+        dim("1."),
         green("openpaw agent")
-    );
-    println!(
-        "     {}  Run  {}  for a one-shot message",
-        dim("3."),
-        green("openpaw agent -m \"hi\"")
-    );
-    if telegram_config.is_some() {
-        println!(
-            "     {}  Your Telegram bot is live — send it a message!",
-            dim("4.")
-        );
-    }
-    println!();
-    println!(
-        "  {}  Use {} to see all commands.",
-        info(),
-        green("openpaw --help")
     );
     println!();
 
     Ok(())
 }
 
-// ── Config generation ─────────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn generate_config(
-    provider: &ProviderConfig,
-    default_model: &str,
-    api_key: &str,
-    telegram: Option<&(String, String)>,
-    whatsapp_native: Option<&(String, String)>,
-    memory_backend: &str,
-    groq_key: &str,
-    embed_provider: Option<&str>,
-    embed_key: Option<&str>,
-    embed_model: Option<&str>,
-    composio_enabled: bool,
-    composio_api_key: Option<&str>,
-    composio_entity_id: &str,
-    kilocode_fallback_models: &[String],
-    brave_api_key: Option<&str>,
-    pushover: Option<&(String, String)>,
-    custom_base_url: Option<&str>,
-    custom_model: Option<&str>,
-) -> String {
-    use serde_json::json;
-
-    let mut providers = json!({
-        provider.name.clone(): {
-            "api_key": api_key,
-        }
-    });
-
-    if let Some(m) = custom_model {
-        providers[provider.name.clone()]["model"] = json!(m);
-    }
-
-    if let Some(url) = custom_base_url {
-        providers[provider.name.clone()]["base_url"] = json!(url);
-    }
-
-    if !kilocode_fallback_models.is_empty() {
-        providers[provider.name.clone()]["fallback_models"] = json!(kilocode_fallback_models);
-    }
-
-    if let (Some(ep), Some(ek)) = (embed_provider, embed_key)
-        && ep != provider.name {
-            providers[ep] = json!({ "api_key": ek });
+impl PartialConfig {
+    fn default_values_from_json(&mut self, json: &serde_json::Value) {
+        if let Some(p) = json["default_provider"].as_str() {
+            self.provider = Some(ProviderConfig {
+                name: p.to_string(),
+                default_model: json["default_model"].as_str().unwrap_or("").to_string(),
+                base_url: json["models"]["providers"][p]["base_url"].as_str().map(|s| s.to_string()),
+                model: json["models"]["providers"][p]["model"].as_str().map(|s| s.to_string()),
+            });
+            self.selected_default_model = json["default_model"].as_str().map(|s| s.to_string());
+            self.api_key = json["models"]["providers"][p]["api_key"].as_str().map(|s| s.to_string());
+            
+            if let Some(fallbacks) = json["models"]["providers"][p]["fallback_models"].as_array() {
+                self.kilocode_fallback_models = Some(fallbacks.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect());
+            }
         }
 
-    let telegram_vec = match telegram {
-        Some((token, username)) => json!([{
-            "account_id": "main",
-            "bot_token": token,
-            "allow_from": [username],
-            "group_policy": "allowlist"
-        }]),
-        None => json!([]),
-    };
-
-    let whatsapp_vec = match whatsapp_native {
-        Some((url, phone)) => json!([{
-            "account_id": "main",
-            "bridge_url": url,
-            "allow_from": [phone],
-            "auto_start": true
-        }]),
-        None => json!([]),
-    };
-
-    let mut config = json!({
-        "default_provider": provider.name,
-        "default_model": default_model,
-        "models": { "providers": providers },
-        "channels": {
-            "telegram": telegram_vec,
-            "whatsapp_native": whatsapp_vec
-        },
-        "memory": { "backend": memory_backend },
-        "composio": {
-            "enabled": composio_enabled,
-            "api_key": composio_api_key,
-            "entity_id": composio_entity_id
-        },
-        "http_request": {
-            "enabled": true,
-            "search_provider": if brave_api_key.is_some() { "brave" } else { "duckduckgo" },
-            "brave_search_api_key": brave_api_key
-        },
-        "pushover": {
-            "enabled": pushover.is_some(),
-            "token": pushover.map(|p| p.0.clone()),
-            "user_key": pushover.map(|p| p.1.clone())
+        if let Some(backend) = json["memory"]["backend"].as_str() {
+            self.memory_backend = Some(backend.to_string());
         }
-    });
 
-    if let Some(m) = embed_model {
-        config["memory"]["embedding_model"] = json!(m);
+        if let Some(voice) = json.get("voice") {
+             self.groq_key = voice["api_key"].as_str().map(|s| s.to_string());
+        }
+
+        // Telegram (it's a vec in config)
+        if let Some(tg_list) = json["channels"]["telegram"].as_array() {
+            if !tg_list.is_empty() {
+                let tg = &tg_list[0];
+                let token = tg["bot_token"].as_str().unwrap_or("").to_string();
+                let allow = tg["allow_from"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                self.telegram = Some(Some((token, allow)));
+            } else {
+                self.telegram = Some(None);
+            }
+        }
+
+        if let Some(comp) = json.get("composio") {
+            self.composio_enabled = comp["enabled"].as_bool();
+            self.composio_api_key = Some(comp["api_key"].as_str().map(|s| s.to_string()));
+            self.composio_entity_id = comp["entity_id"].as_str().map(|s| s.to_string());
+        }
+
+        if let Some(http) = json.get("http_request") {
+            self.brave_api_key = Some(http["brave_search_api_key"].as_str().map(|s| s.to_string()));
+        }
+
+        if let Some(wa_list) = json["channels"]["whatsapp_native"].as_array() {
+            if !wa_list.is_empty() {
+                let wa = &wa_list[0];
+                let url = wa["bridge_url"].as_str().unwrap_or("").to_string();
+                let allow = wa["allow_from"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                self.whatsapp_native = Some(Some((url, allow)));
+            } else {
+                self.whatsapp_native = Some(None);
+            }
+        }
+
+        if let Some(push) = json.get("pushover") {
+            if push["enabled"].as_bool().unwrap_or(false) {
+                let t = push["token"].as_str().unwrap_or("").to_string();
+                let u = push["user_key"].as_str().unwrap_or("").to_string();
+                self.pushover = Some(Some((t, u)));
+            } else {
+                self.pushover = Some(None);
+            }
+        }
     }
 
-    if !groq_key.is_empty() {
-        config["voice"] = json!({
-            "provider": "groq",
-            "api_key": groq_key,
-            "model": "whisper-large-v3"
+    fn step_provider(&mut self) -> Result<()> {
+        section_header(1, "AI Provider", "Which AI service should power your agent?");
+        
+        let providers = vec![
+            ProviderConfig {
+                name: "gemini".to_string(),
+                default_model: "gemini-2.0-flash".to_string(),
+                base_url: None,
+                model: None,
+            },
+            ProviderConfig {
+                name: "openai".to_string(),
+                default_model: "gpt-4o".to_string(),
+                base_url: None,
+                model: None,
+            },
+            ProviderConfig {
+                name: "anthropic".to_string(),
+                default_model: "claude-3-5-sonnet-latest".to_string(),
+                base_url: None,
+                model: None,
+            },
+            ProviderConfig {
+                name: "openrouter".to_string(),
+                default_model: "deepseek/deepseek-chat-v3-0324:free".to_string(),
+                base_url: Some("https://openrouter.ai/api/v1".to_string()),
+                model: None,
+            },
+            ProviderConfig {
+                name: "opencode".to_string(),
+                default_model: "minimax-m2.5-free".to_string(),
+                base_url: Some("https://opencode.ai/zen/v1".to_string()),
+                model: None,
+            },
+            ProviderConfig {
+                name: "kilocode".to_string(),
+                default_model: "minimax/minimax-m2.1:free".to_string(),
+                base_url: Some("https://api.kilo.ai/api/gateway".to_string()),
+                model: None,
+            },
+            ProviderConfig {
+                name: "ollama".to_string(),
+                default_model: "llama3.2".to_string(),
+                base_url: Some("http://localhost:11434/v1".to_string()),
+                model: None,
+            },
+            ProviderConfig {
+                name: "lmstudio".to_string(),
+                default_model: "local-model".to_string(),
+                base_url: Some("http://localhost:1234/v1".to_string()),
+                model: None,
+            },
+            ProviderConfig {
+                name: "openai-compatible".to_string(),
+                default_model: "gpt-4o".to_string(),
+                base_url: Some("http://localhost:8080/v1".to_string()),
+                model: None,
+            },
+        ];
+
+        let default_prov_idx = self.provider.as_ref().and_then(|p| providers.iter().position(|x| x.name == p.name)).unwrap_or(0);
+        
+        let provider_idx = prompt_choice("  Select provider", providers.len(), default_prov_idx + 1) - 1;
+        let provider = providers[provider_idx].clone();
+
+        // API Key
+        let mut key = if provider.name == "ollama" || provider.name == "lmstudio" {
+            String::new()
+        } else if provider.name == "gemini" {
+            println!("  How would you like to authenticate?");
+            println!("    {}  API Key", cyan("1"));
+            println!("    {}  Gemini CLI OAuth", cyan("2"));
+            let auth = prompt_choice("  Choice", 2, 1);
+            if auth == 2 {
+                 "cli_oauth".to_string()
+            } else {
+                prompt_secret(&format!("  {} API key", bold("Gemini")))?
+            }
+        } else if provider.name == "openai-compatible" {
+            String::new()
+        } else {
+            prompt_secret(&format!("  {} API key", bold(&capitalize(&provider.name))))?
+        };
+
+        let mut custom_base_url = provider.base_url.clone();
+        let mut custom_model = provider.model.clone();
+
+        if provider.name == "openai-compatible" {
+            custom_base_url = Some(prompt_with_default("  Base URL", provider.base_url.as_deref().unwrap_or("http://localhost:8080/v1"))?);
+            custom_model = Some(prompt_with_default("  Model Name", &provider.default_model)?);
+            key = prompt_secret("  Custom Provider API key")?;
+        }
+
+        // Model discovery
+        let mut selected_model = custom_model.clone().unwrap_or_else(|| provider.default_model.clone());
+        
+        if provider.name == "ollama" {
+            if let Ok(models) = fetch_ollama_models() {
+                if !models.is_empty() {
+                    let d_idx = models.iter().position(|m| m.contains("qwen")).unwrap_or(0);
+                    list_models_simple(&models, d_idx);
+                    let c = prompt_choice("  Select model", models.len(), d_idx + 1) - 1;
+                    selected_model = models[c].clone();
+                }
+            }
+        } else if provider.name == "kilocode" {
+             if let Ok(free_models) = fetch_kilocode_free_models(&key) {
+                 if !free_models.is_empty() {
+                     let d_idx = preferred_kilocode_model_index(&free_models);
+                     list_models_simple(&free_models, d_idx);
+                     let c = prompt_choice("  Select model", free_models.len(), d_idx + 1) - 1;
+                     selected_model = free_models[c].clone();
+                     self.kilocode_fallback_models = Some(free_models);
+                 }
+             }
+        }
+
+        self.provider = Some(provider);
+        self.api_key = Some(key);
+        self.selected_default_model = Some(selected_model);
+        self.custom_base_url = Some(custom_base_url);
+        self.custom_model = Some(custom_model);
+        Ok(())
+    }
+
+    fn step_memory(&mut self) -> Result<()> {
+        section_header(2, "Memory", "How should your agent remember things?");
+        println!("    {}  sqlite (Recommended)", cyan("1"));
+        println!("    {}  markdown", cyan("2"));
+        println!("    {}  none", cyan("3"));
+        let choice = prompt_choice("  Choice", 3, 1);
+        self.memory_backend = Some(match choice {
+            1 => "sqlite",
+            2 => "markdown",
+            _ => "none",
+        }.to_string());
+
+        if self.memory_backend.as_deref() == Some("sqlite") {
+             print!("  Enable embeddings? (y/N): ");
+             io::stdout().flush()?;
+             let mut input = String::new();
+             io::stdin().read_line(&mut input)?;
+             if input.trim().eq_ignore_ascii_case("y") {
+                 self.embed_provider = Some(Some("huggingface".to_string()));
+                 self.embed_model = Some(Some("Qwen/Qwen3-Embedding-0.6B".to_string()));
+                 self.embed_key = Some(Some("".to_string()));
+             }
+        }
+        Ok(())
+    }
+
+    fn step_voice(&mut self) -> Result<()> {
+        section_header(3, "Voice", "Groq Whisper Transcription");
+        print!("  Enable voice? (y/N): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            self.groq_key = Some(prompt_secret("  Groq API key")?);
+        } else {
+            self.groq_key = None;
+        }
+        Ok(())
+    }
+
+    fn step_telegram(&mut self) -> Result<()> {
+        section_header(4, "Telegram", "Connect Telegram Bot");
+        print!("  Set up Telegram? (y/N): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            let token = prompt_secret("  Bot token")?;
+            let user = prompt_with_default("  Username", "@you")?;
+            self.telegram = Some(Some((token, user)));
+        } else {
+            self.telegram = Some(None);
+        }
+        Ok(())
+    }
+
+    fn step_composio(&mut self) -> Result<()> {
+        section_header(5, "Composio", "Connect external apps");
+        print!("  Enable Composio? (y/N): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            self.composio_enabled = Some(true);
+            self.composio_api_key = Some(Some(prompt_secret("  Composio API key")?));
+            self.composio_entity_id = Some(prompt_with_default("  Entity ID", "default")?);
+        } else {
+            self.composio_enabled = Some(false);
+        }
+        Ok(())
+    }
+
+    fn step_brave(&mut self) -> Result<()> {
+        section_header(6, "Web Search", "Brave Search API");
+        print!("  Enable Brave Search? (y/N): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            self.brave_api_key = Some(Some(prompt_secret("  Brave API key")?));
+        } else {
+            self.brave_api_key = Some(None);
+        }
+        Ok(())
+    }
+
+    fn step_whatsapp(&mut self) -> Result<()> {
+        section_header(7, "WhatsApp", "WhatsApp Native Bridge");
+        print!("  Enable WhatsApp? (y/N): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            let phone = prompt_with_default("  Phone Number", "+1...")?;
+            self.whatsapp_native = Some(Some(("http://localhost:18790".to_string(), phone)));
+        } else {
+            self.whatsapp_native = Some(None);
+        }
+        Ok(())
+    }
+
+    fn step_pushover(&mut self) -> Result<()> {
+        section_header(8, "Pushover", "Push Notifications");
+        print!("  Enable Pushover? (y/N): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            let token = prompt_secret("  Token")?;
+            let user = prompt_secret("  User Key")?;
+            self.pushover = Some(Some((token, user)));
+        } else {
+            self.pushover = Some(None);
+        }
+        Ok(())
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+
+        let p_name = self.provider.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "gemini".to_string());
+        let mut providers = json!({
+            &p_name: {
+                "api_key": self.api_key.as_ref().cloned().unwrap_or_default(),
+            }
         });
-    }
 
-    serde_json::to_string_pretty(&config).unwrap_or_default()
+        if let Some(Some(m)) = &self.custom_model {
+            providers[&p_name]["model"] = json!(m);
+        }
+        if let Some(Some(url)) = &self.custom_base_url {
+            providers[&p_name]["base_url"] = json!(url);
+        }
+        if let Some(fallbacks) = &self.kilocode_fallback_models {
+            providers[&p_name]["fallback_models"] = json!(fallbacks);
+        }
+
+        if let Some(Some(ep)) = &self.embed_provider && ep != &p_name {
+            providers[ep] = json!({ "api_key": self.embed_key.as_ref().and_then(|k| k.as_ref()).cloned().unwrap_or_default() });
+        }
+
+        let telegram_vec = match &self.telegram {
+            Some(Some((token, user))) => json!([{
+                "account_id": "main",
+                "bot_token": token,
+                "allow_from": [user],
+                "group_policy": "allowlist"
+            }]),
+            _ => json!([]),
+        };
+
+        let whatsapp_vec = match &self.whatsapp_native {
+            Some(Some((url, phone))) => json!([{
+                "account_id": "main",
+                "bridge_url": url,
+                "allow_from": [phone],
+                "auto_start": true
+            }]),
+            _ => json!([]),
+        };
+
+        let mut config = json!({
+            "default_provider": p_name,
+            "default_model": self.selected_default_model.as_ref().cloned().unwrap_or_else(|| "gemini-2.0-flash".to_string()),
+            "models": { "providers": providers },
+            "channels": {
+                "telegram": telegram_vec,
+                "whatsapp_native": whatsapp_vec
+            },
+            "memory": { 
+                "backend": self.memory_backend.as_ref().cloned().unwrap_or_else(|| "sqlite".to_string()) 
+            },
+            "composio": {
+                "enabled": self.composio_enabled.unwrap_or(false),
+                "api_key": self.composio_api_key.as_ref().and_then(|k| k.as_ref()).cloned(),
+                "entity_id": self.composio_entity_id.as_ref().cloned().unwrap_or_else(|| "default".to_string())
+            },
+            "http_request": {
+                "enabled": true,
+                "search_provider": if self.brave_api_key.as_ref().and_then(|k| k.as_ref()).is_some() { "brave" } else { "duckduckgo" },
+                "brave_search_api_key": self.brave_api_key.as_ref().and_then(|k| k.as_ref()).cloned()
+            },
+            "pushover": {
+                "enabled": self.pushover.as_ref().and_then(|p| p.as_ref()).is_some(),
+                "token": self.pushover.as_ref().and_then(|p| p.as_ref()).map(|p| p.0.clone()),
+                "user_key": self.pushover.as_ref().and_then(|p| p.as_ref()).map(|p| p.1.clone())
+            }
+        });
+
+        if let Some(Some(m)) = &self.embed_model {
+            config["memory"]["embedding_model"] = json!(m);
+        }
+
+        if let Some(key) = &self.groq_key {
+            config["voice"] = json!({
+                "provider": "groq",
+                "api_key": key,
+                "model": "whisper-large-v3"
+            });
+        }
+
+        config
+    }
 }
 
 // ── Workspace scaffolding ─────────────────────────────────────────

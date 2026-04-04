@@ -7,6 +7,19 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Send a desktop notification (cross-platform: Windows/macOS/Linux)
+fn send_desktop_notification(title: &str, body: &str) {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = notify_rust::Notification::new()
+            .summary(title)
+            .body(body)
+            .icon("dialog-information")
+            .show();
+    }
+    // On Android (if ever supported), we would use a different mechanism
+}
+
 /// Cross-platform path to the OpenPaw data directory (~/.openpaw).
 /// Uses HOME on Linux/macOS, USERPROFILE on Windows, falls back to "."
 fn openpaw_data_dir() -> std::path::PathBuf {
@@ -25,7 +38,6 @@ pub enum JobType {
     Agent,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -34,7 +46,6 @@ pub enum SessionTarget {
     Isolated,
     Main,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,7 +80,6 @@ pub enum DeliveryMode {
     OnError,
     OnSuccess,
 }
-
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeliveryConfig {
@@ -124,10 +134,16 @@ pub struct CronJob {
     pub delivery: DeliveryConfig,
     #[serde(skip)]
     pub history: Vec<CronRun>,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
 }
 
 pub struct CronScheduler {
@@ -156,10 +172,11 @@ impl CronScheduler {
         path.push("cron.json");
 
         if let Ok(data) = fs::read_to_string(path)
-            && let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data) {
-                let mut guard = self.jobs.lock().unwrap();
-                *guard = jobs;
-            }
+            && let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data)
+        {
+            let mut guard = self.jobs.lock().unwrap();
+            *guard = jobs;
+        }
     }
 
     pub fn save(&self) {
@@ -197,7 +214,7 @@ impl CronScheduler {
 
             // Initialize next_run_secs if it is 0
             if job.next_run_secs == 0 {
-                if let Ok(next) = next_run_for_expression(&job.expression, now) {
+                if let Ok(next) = next_run_for_expression(&job.expression, now, &job.timezone) {
                     job.next_run_secs = next;
                     modified = true;
                 } else {
@@ -213,7 +230,7 @@ impl CronScheduler {
                 modified = true;
 
                 // Advance next_run
-                if let Ok(next) = next_run_for_expression(&job.expression, now) {
+                if let Ok(next) = next_run_for_expression(&job.expression, now, &job.timezone) {
                     job.next_run_secs = next;
                 } else {
                     job.paused = true;
@@ -273,11 +290,20 @@ impl CronScheduler {
 
         let (success, output) = match job.job_type {
             JobType::Shell => {
-                let output = tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&job.command)
-                    .output()
-                    .await;
+                // Cross-platform shell execution
+                let output = if cfg!(windows) {
+                    tokio::process::Command::new("cmd")
+                        .arg("/c")
+                        .arg(&job.command)
+                        .output()
+                        .await
+                } else {
+                    tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&job.command)
+                        .output()
+                        .await
+                };
 
                 match output {
                     Ok(out) => {
@@ -297,8 +323,16 @@ impl CronScheduler {
                 // BUG-CRON-2 FIX: Route through the live in-process bus instead of spawning
                 // a subprocess. This ensures the agent job has access to the existing
                 // session, memory, and all registered tools.
-                let channel = job.delivery.channel.clone().unwrap_or_else(|| "internal".to_string());
-                let chat_id = job.delivery.to.clone().unwrap_or_else(|| "cron".to_string());
+                let channel = job
+                    .delivery
+                    .channel
+                    .clone()
+                    .unwrap_or_else(|| "internal".to_string());
+                let chat_id = job
+                    .delivery
+                    .to
+                    .clone()
+                    .unwrap_or_else(|| "cron".to_string());
                 let content = job.prompt.as_deref().unwrap_or(&job.command).to_string();
                 let session_key = format!("{channel}:{chat_id}");
 
@@ -312,8 +346,17 @@ impl CronScheduler {
                     metadata_json: None,
                 };
                 match self.bus.publish_inbound(inbound) {
-                    Ok(()) => (true, format!("Agent job '{}' dispatched via bus to chat {}", job.id, chat_id)),
-                    Err(e) => (false, format!("Failed to dispatch agent job via bus: {}", e)),
+                    Ok(()) => (
+                        true,
+                        format!(
+                            "Agent job '{}' dispatched via bus to chat {}",
+                            job.id, chat_id
+                        ),
+                    ),
+                    Err(e) => (
+                        false,
+                        format!("Failed to dispatch agent job via bus: {}", e),
+                    ),
                 }
             }
         };
@@ -367,6 +410,25 @@ impl CronScheduler {
 
         // Deliver result
         let _ = Self::deliver_result(&self.bus, &job.delivery, &output, success).await;
+
+        // Send desktop notification for reminders/agent jobs
+        if job.job_type == JobType::Agent || !job.command.is_empty() {
+            let title = if success {
+                "✅ Reminder Completed"
+            } else {
+                "⚠️ Reminder Failed"
+            };
+            let body = if job.name.is_some() {
+                format!(
+                    "{}: {}",
+                    job.name.as_ref().unwrap(),
+                    output.chars().take(100).collect::<String>()
+                )
+            } else {
+                output.chars().take(100).collect::<String>()
+            };
+            send_desktop_notification(title, &body);
+        }
 
         Ok(())
     }
@@ -564,9 +626,16 @@ pub fn parse_cron_expression(expression: &str) -> Result<ParsedCronExpression> {
     Ok(parsed)
 }
 
-fn cron_matches(parsed: &ParsedCronExpression, ts: i64) -> bool {
-    use chrono::{Datelike, TimeZone, Timelike, Utc};
-    let dt = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+fn cron_matches(parsed: &ParsedCronExpression, ts: i64, timezone: &str) -> bool {
+    use chrono::{Datelike, TimeZone, Timelike};
+    use chrono_tz::Tz;
+
+    // Parse timezone string, fallback to UTC if invalid
+    let tz: Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
+    let dt = tz
+        .timestamp_opt(ts, 0)
+        .single()
+        .unwrap_or_else(|| chrono::Utc::now().with_timezone(&tz));
 
     let minute = dt.minute() as usize;
     let hour = dt.hour() as usize;
@@ -598,10 +667,10 @@ fn cron_matches(parsed: &ParsedCronExpression, ts: i64) -> bool {
     }
 }
 
-pub fn next_run_for_expression(expression: &str, from_secs: i64) -> Result<i64> {
+pub fn next_run_for_expression(expression: &str, from_secs: i64, timezone: &str) -> Result<i64> {
     if let Some(delay) = expression.strip_prefix("@once:") {
         let delay_secs = parse_duration(delay)?;
-        return Ok(from_secs + delay_secs);
+        return Ok(from_secs + delay_secs); // Delays are timezone-agnostic (relative)
     }
 
     let parsed = parse_cron_expression(expression)?;
@@ -609,7 +678,7 @@ pub fn next_run_for_expression(expression: &str, from_secs: i64) -> Result<i64> 
 
     // Look ahead 1 year
     for _ in 0..(366 * 24 * 60) {
-        if cron_matches(&parsed, candidate) {
+        if cron_matches(&parsed, candidate, timezone) {
             return Ok(candidate);
         }
         candidate += 60;

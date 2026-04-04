@@ -8,13 +8,17 @@ use tracing::{info, warn};
 pub struct BridgeManager {
     child: Arc<Mutex<Option<Child>>>,
     bridge_dir: String,
+    webhook_url: String,
+    listen_addr: String,
 }
 
 impl BridgeManager {
-    pub fn new(bridge_dir: String) -> Self {
+    pub fn new(bridge_dir: String, webhook_url: String, listen_addr: String) -> Self {
         Self {
             child: Arc::new(Mutex::new(None)),
             bridge_dir,
+            webhook_url,
+            listen_addr,
         }
     }
 
@@ -49,6 +53,8 @@ impl BridgeManager {
         let mut child = Command::new("go")
             .arg("run")
             .arg("main.go")
+            .env("WHATSAPP_WEBHOOK_URL", &self.webhook_url)
+            .env("WHATSAPP_LISTEN_ADDR", &self.listen_addr)
             .current_dir(&self.bridge_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

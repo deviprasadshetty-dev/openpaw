@@ -167,6 +167,11 @@ fn default_base_url(name: &str) -> &'static str {
         "kilocode" => "https://api.kilo.ai/api/gateway",
         "ollama" => "http://localhost:11434/v1",
         "lmstudio" => "http://localhost:1234/v1",
+        "groq" => "https://api.groq.com/openai/v1",
+        "siliconflow" => "https://api.siliconflow.cn/v1",
+        "huggingface" | "hf" => "https://api-inference.huggingface.co/v1",
+        "github" => "https://models.inference.ai.azure.com",
+        "deepseek" => "https://api.deepseek.com",
         "openai-compatible" => "http://localhost:8080/v1",
         _ => "https://api.openai.com/v1",
     }
@@ -178,6 +183,11 @@ fn resolve_env_key(name: &str) -> String {
         "openrouter" => "OPENROUTER_API_KEY",
         "opencode" => "OPENCODE_API_KEY",
         "kilocode" => "KILOCODE_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "siliconflow" => "SILICONFLOW_API_KEY",
+        "huggingface" | "hf" => "HF_API_KEY",
+        "github" => "GITHUB_TOKEN",
+        "deepseek" => "DEEPSEEK_API_KEY",
         "ollama" | "lmstudio" | "openai-compatible" => return String::new(), // no key needed or custom
         _ => "OPENAI_API_KEY",
     };

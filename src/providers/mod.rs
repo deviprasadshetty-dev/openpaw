@@ -26,6 +26,8 @@ pub enum ContentPart {
     /// Image URL (may not be supported by all providers)
     #[serde(rename = "image_url")]
     ImageUrl { url: String },
+    /// Generic media data (multimodal)
+    Media { mime_type: String, data: Vec<u8> },
 }
 
 impl ChatMessage {

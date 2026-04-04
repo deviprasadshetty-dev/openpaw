@@ -13,7 +13,6 @@ pub enum AutonomyLevel {
     Autonomous,
 }
 
-
 // ── Named agent config (for agents map in JSON) ────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,7 +89,6 @@ pub enum DmScope {
     /// One session per (account, channel, peer) triple.
     PerAccountChannelPeer,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -339,7 +337,6 @@ pub enum HardwareTransport {
     Probe,
 }
 
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HardwareConfig {
     #[serde(default)]
@@ -496,23 +493,31 @@ pub struct ReliabilityConfig {
     pub scheduler_poll_secs: u64,
     #[serde(default = "default_heartbeat_interval_minutes")]
     pub heartbeat_interval_minutes: u64,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
 }
 
 impl Default for ReliabilityConfig {
     fn default() -> Self {
         Self {
-            scheduler_poll_secs: 60,
+            // 1s polling for responsive short-delay reminders (e.g. 10s, 1m)
+            scheduler_poll_secs: 1,
             heartbeat_interval_minutes: 30,
+            timezone: "UTC".to_string(),
         }
     }
 }
 
 fn default_scheduler_poll_secs() -> u64 {
-    60
+    1
 }
 
 fn default_heartbeat_interval_minutes() -> u64 {
     30
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
 }
 
 // ── Scheduler config ────────────────────────────────────────────

@@ -3,14 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -44,11 +42,29 @@ type SendRequest struct {
 	Content string `json:"content"`
 }
 
+type TypingRequest struct {
+	ChatID string `json:"chat_id"`
+	IsTyping bool `json:"is_typing"`
+}
+
 func main() {
+	storePath := os.Getenv("WHATSAPP_STORE_PATH")
+	if storePath == "" {
+		storePath = "./sessions"
+	}
+	webhookURL := os.Getenv("WHATSAPP_WEBHOOK_URL")
+	if webhookURL == "" {
+		webhookURL = "http://localhost:3000/whatsapp/webhook"
+	}
+	listenAddr := os.Getenv("WHATSAPP_LISTEN_ADDR")
+	if listenAddr == "" {
+		listenAddr = ":18790"
+	}
+
 	config := Config{
-		StorePath:  "./sessions",
-		WebhookURL: "http://localhost:8080/whatsapp/webhook", // OpenPaw webhook
-		ListenAddr: ":18790",
+		StorePath:  storePath,
+		WebhookURL: webhookURL,
+		ListenAddr: listenAddr,
 	}
 
 	if err := os.MkdirAll(config.StorePath, 0700); err != nil {
@@ -104,8 +120,11 @@ func main() {
 
 	// HTTP Server for OpenPaw to send messages
 	http.HandleFunc("/send", bridge.handleSend)
+	http.HandleFunc("/typing", bridge.handleTyping)
+	http.HandleFunc("/presence", bridge.handlePresence)
+
 	go func() {
-		fmt.Printf("Bridge listening on %s\n", config.ListenAddr)
+		fmt.Printf("Bridge listening on %s, sending to %s\n", config.ListenAddr, config.WebhookURL)
 		if err := http.ListenAndServe(config.ListenAddr, nil); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
@@ -157,6 +176,10 @@ func (b *Bridge) handleIncoming(evt *events.Message) {
 }
 
 func (b *Bridge) handleSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	var req SendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -178,4 +201,51 @@ func (b *Bridge) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "Message sent")
+}
+
+func (b *Bridge) handleTyping(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req TypingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	jid, err := types.ParseJID(req.ChatID)
+	if err != nil {
+		http.Error(w, "Invalid JID", http.StatusBadRequest)
+		return
+	}
+
+	presence := types.ChatPresenceComposing
+	if !req.IsTyping {
+		presence = types.ChatPresencePaused
+	}
+
+	err = b.client.SendChatPresence(jid, presence, types.ChatPresenceMediaText)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "Typing status updated")
+}
+
+func (b *Bridge) handlePresence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Simple online presence
+	err := b.client.SendPresence(types.PresenceAvailable)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "Presence updated")
 }

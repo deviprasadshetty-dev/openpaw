@@ -32,6 +32,7 @@ pub async fn serve(config: Config) -> Result<()> {
         .route("/api/config", get(get_config))
         .route("/api/config", post(save_config))
         .route("/api/chat", post(chat_handler))
+        .route("/whatsapp/webhook", post(whatsapp_webhook_handler))
         .route("/ws/chat", get(websocket_handler))
         // Static files (must be first to catch all static routes)
         .fallback_service(ServeDir::new("static"))
@@ -255,4 +256,39 @@ async fn websocket_handler() -> impl IntoResponse {
     // WebSocket support would be added here in a future iteration
     // For now, return a message indicating it's not yet implemented
     (StatusCode::NOT_IMPLEMENTED, "WebSocket chat coming soon!")
+}
+
+#[derive(Debug, Deserialize)]
+struct WhatsAppWebhookMessage {
+    sender: String,
+    chat_id: String,
+    content: String,
+    platform: String,
+}
+
+async fn whatsapp_webhook_handler(
+    Json(msg): Json<WhatsAppWebhookMessage>,
+) -> impl IntoResponse {
+    use crate::bus::{InboundMessage, global_bus};
+
+    let inbound = InboundMessage {
+        channel: "whatsapp_native".to_string(),
+        sender_id: msg.sender,
+        chat_id: msg.chat_id.clone(),
+        content: msg.content,
+        session_key: format!("whatsapp_native:{}", msg.chat_id),
+        media: Vec::new(),
+        metadata_json: None,
+    };
+
+    if let Some(bus) = global_bus() {
+        if let Err(e) = bus.publish_inbound(inbound) {
+            tracing::error!("Failed to publish WhatsApp message to bus: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        StatusCode::OK
+    } else {
+        tracing::error!("Global bus not initialized");
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
 }

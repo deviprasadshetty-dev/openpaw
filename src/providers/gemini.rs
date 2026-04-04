@@ -1,6 +1,7 @@
 use crate::providers::{
     ChatRequest, ChatResponse, ContentPart, Provider, StreamCallback, TokenUsage,
 };
+use base64::Engine;
 use anyhow::{Context, Result};
 use regex::Regex;
 use reqwest::blocking::Client;
@@ -851,15 +852,27 @@ impl GeminiProvider {
                             parts.push(p);
                         }
                         ContentPart::ImageBase64 { data, media_type } => {
-                            parts.push(json!({
-                                "inlineData": {
-                                    "mimeType": media_type,
+                            let p = json!({
+                                "inline_data": {
+                                    "mime_type": media_type,
                                     "data": data
                                 }
-                            }));
+                            });
+                            parts.push(p);
                         }
-                        ContentPart::ImageUrl { url } => {
-                            parts.push(json!({"text": format!("[Image: {}]", url)}));
+                        ContentPart::Media { mime_type, data } => {
+                            let p = json!({
+                                "inline_data": {
+                                    "mime_type": mime_type,
+                                    "data": base64::engine::general_purpose::STANDARD.encode(data)
+                                }
+                            });
+                            parts.push(p);
+                        }
+                        ContentPart::ImageUrl { .. } => {
+                            // Gemini doesn't support direct image URLs in the same way as OpenAI
+                            // Fallback to text placeholder
+                            parts.push(json!({"text": "[Image via URL - Not supported by Gemini adapter]"}));
                         }
                     }
                 }

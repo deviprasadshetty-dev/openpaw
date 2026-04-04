@@ -1,6 +1,7 @@
 use crate::providers::{
     ChatRequest, ChatResponse, FunctionCall, Provider, StreamCallback, TokenUsage, ToolCall,
 };
+use base64::Engine;
 use anyhow::Result;
 use reqwest::blocking::Client;
 use serde_json::json;
@@ -31,6 +32,44 @@ impl OllamaProvider {
         let tags_url = self.base_url.replace("/v1", "/api/tags");
         self.client.get(&tags_url).timeout(Duration::from_secs(2)).send().is_ok()
     }
+
+    fn prepare_messages(&self, messages: &[crate::providers::ChatMessage]) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        for msg in messages {
+            let mut msg_json = json!({
+                "role": msg.role,
+            });
+
+            if let Some(parts) = &msg.content_parts {
+                let parts_json: Vec<serde_json::Value> = parts
+                    .iter()
+                    .map(|p| match p {
+                        crate::providers::ContentPart::Text(t) => json!({"type": "text", "text": t}),
+                        crate::providers::ContentPart::ImageBase64 { data, media_type } => json!({
+                            "type": "image_url",
+                            "image_url": { "url": format!("data:{};base64,{}", media_type, data) }
+                        }),
+                        crate::providers::ContentPart::ImageUrl { url } => json!({
+                            "type": "image_url",
+                            "image_url": { "url": url }
+                        }),
+                        crate::providers::ContentPart::Media { mime_type, data } => {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+                            json!({
+                                "type": "image_url",
+                                "image_url": { "url": format!("data:{};base64,{}", mime_type, b64) }
+                            })
+                        }
+                    })
+                    .collect();
+                msg_json["content"] = json!(parts_json);
+            } else {
+                msg_json["content"] = json!(msg.content);
+            }
+            out.push(msg_json);
+        }
+        out
+    }
 }
 
 impl Provider for OllamaProvider {
@@ -39,7 +78,7 @@ impl Provider for OllamaProvider {
 
         let mut body = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": self.prepare_messages(request.messages),
             "temperature": request.temperature,
         });
 
@@ -143,7 +182,7 @@ impl Provider for OllamaProvider {
 
         let mut body = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": self.prepare_messages(request.messages),
             "temperature": request.temperature,
             "stream": true,
         });

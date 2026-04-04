@@ -243,9 +243,7 @@ pub fn heartbeat_thread(
     }
 }
 
-pub fn supervisor_thread(
-    subagent_manager: Arc<crate::subagent::SubagentManager>,
-) {
+pub fn supervisor_thread(subagent_manager: Arc<crate::subagent::SubagentManager>) {
     let _name = "supervisor";
     info!("Supervisor thread started");
     while !is_shutdown_requested() {
@@ -312,8 +310,8 @@ pub fn inbound_dispatcher_thread(
             };
 
             // Parse metadata if available
-            if let Some(meta_json) = &msg.metadata_json
-                && let Ok(meta) =
+            if let Some(meta_json) = &msg.metadata_json {
+                if let Ok(meta) =
                     serde_json::from_str::<crate::channel_adapters::InboundMetadata>(meta_json)
                 {
                     input.account_id = meta.account_id.unwrap_or_default();
@@ -323,6 +321,7 @@ pub fn inbound_dispatcher_thread(
                         input.peer = Some(crate::config_types::PeerRef { kind, id });
                     }
                 }
+            }
 
             if input.account_id.is_empty() {
                 // Determine account_id from session_key if not in metadata (legacy logic)
@@ -371,11 +370,12 @@ pub fn inbound_dispatcher_thread(
                         if now.duration_since(*last).as_millis() > 200 {
                             let mut last_len = last_emitted_len.lock().unwrap();
                             let delta = acc[*last_len..].to_string();
-                            
+
                             if !delta.is_empty() {
                                 *last = now;
                                 *last_len = acc.len();
-                                let outbound = bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &delta);
+                                let outbound =
+                                    bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &delta);
                                 let _ = cb_bus.publish_outbound(outbound);
                             }
                         }
@@ -481,6 +481,27 @@ pub fn init_channels(
                 }
             }
         }
+    }
+
+    // Initialize WhatsApp Native channels
+    for wa_config in &config.channels.whatsapp_native {
+        info!(
+            "Initializing WhatsApp Native channel for account: {}",
+            wa_config.account_id
+        );
+
+        let gateway_url = format!(
+            "http://{}:{}/whatsapp/webhook",
+            config.gateway.host, config.gateway.port
+        );
+        let channel = Arc::new(
+            crate::channels::whatsapp_native::WhatsAppNativeChannel::new(
+                wa_config.bridge_url.clone(),
+                gateway_url,
+                wa_config.allow_from.clone(),
+            ),
+        );
+        registry.register_with_account(channel, &wa_config.account_id);
     }
 
     // Initialize CLI channel if enabled
@@ -611,13 +632,14 @@ pub async fn build_tools(
         allowed_domains: config.http_request.allowed_domains.clone(),
     }));
 
-    if config.composio.enabled
-        && let Some(api_key) = &config.composio.api_key {
+    if config.composio.enabled {
+        if let Some(api_key) = &config.composio.api_key {
             tools.push(Arc::new(crate::tools::composio::ComposioTool {
                 api_key: api_key.clone(),
                 entity_id: config.composio.entity_id.clone(),
             }));
         }
+    }
 
     tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
         config.workspace_dir.clone(),
@@ -657,6 +679,7 @@ pub async fn build_tools(
     if let Some(cr) = cron {
         tools.push(Arc::new(crate::tools::cron_add::CronAddTool {
             cron: cr.clone(),
+            default_timezone: config.reliability.timezone.clone(),
         }));
         tools.push(Arc::new(crate::tools::cron_list::CronListTool {
             cron: cr.clone(),
@@ -676,18 +699,21 @@ pub async fn build_tools(
     }
 
     tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
+    tools.push(Arc::new(crate::tools::vision::VisionTool {}));
     tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {}));
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
     // BUG-CRON-4 FIX: Register the notify_telegram tool so the agent can send
     // proactive Telegram messages to the user without creating a cron job.
-    tools.push(Arc::new(crate::tools::notify_telegram::NotifyTelegramTool {}));
+    tools.push(Arc::new(
+        crate::tools::notify_telegram::NotifyTelegramTool {},
+    ));
 
     tools.push(Arc::new(crate::tools::hardware_info::HardwareInfoTool {}));
-    tools.push(Arc::new(crate::tools::hardware_memory::HardwareMemoryTool {
-        boards: Vec::new(),
-    }));
+    tools.push(Arc::new(
+        crate::tools::hardware_memory::HardwareMemoryTool { boards: Vec::new() },
+    ));
     tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
     tools.push(Arc::new(crate::tools::spi::SpiTool {}));
 
@@ -777,51 +803,54 @@ pub async fn run_daemon(config: Config) -> Result<()> {
 
                         // Attach embedder if API key is available
                         let provider_name = &config.default_provider;
-                        if let Some(p_cfg) = config
-                            .models
-                            .as_ref()
-                            .and_then(|m| m.providers.get(provider_name))
-                        {
-                            let provider_key = p_cfg.api_key.trim();
-                            let has_real_provider_key = !(provider_key.is_empty()
-                                || provider_name == "gemini"
-                                    && provider_key.eq_ignore_ascii_case("cli_oauth"));
+                        if let Some(models) = &config.models {
+                            if let Some(p_cfg) = models.providers.get(provider_name) {
+                                let provider_key = p_cfg.api_key.trim();
+                                let has_real_provider_key = !(provider_key.is_empty()
+                                    || provider_name == "gemini"
+                                        && provider_key.eq_ignore_ascii_case("cli_oauth"));
 
-                            if has_real_provider_key {
-                                if provider_name == "openai" {
-                                    m = m.with_embedder(Arc::new(
-                                        crate::memory::embeddings::OpenAiEmbedder::new(
-                                            &p_cfg.api_key,
-                                        ),
-                                    ));
-                                    info!("Attached OpenAI embedder to memory");
-                                } else if provider_name == "gemini" {
-                                    m = m.with_embedder(Arc::new(
-                                        crate::memory::embeddings::GeminiEmbedder::new(
-                                            &p_cfg.api_key,
-                                        ),
-                                    ));
-                                    info!("Attached Gemini embedder to memory");
-                                } else if provider_name == "huggingface" || provider_name == "hf" {
-                                    let model = config
-                                        .memory
-                                        .embedding_model
-                                        .clone()
-                                        .unwrap_or("Qwen/Qwen3-Embedding-0.6B".to_string());
-                                    m = m.with_embedder(Arc::new(
-                                        crate::memory::embeddings::HuggingFaceEmbedder::new(
-                                            &p_cfg.api_key,
-                                            &model,
-                                        ),
-                                    ));
-                                    info!("Attached Hugging Face embedder ({}) to memory", model);
+                                if has_real_provider_key {
+                                    if provider_name == "openai" {
+                                        m = m.with_embedder(Arc::new(
+                                            crate::memory::embeddings::OpenAiEmbedder::new(
+                                                &p_cfg.api_key,
+                                            ),
+                                        ));
+                                        info!("Attached OpenAI embedder to memory");
+                                    } else if provider_name == "gemini" {
+                                        m = m.with_embedder(Arc::new(
+                                            crate::memory::embeddings::GeminiEmbedder::new(
+                                                &p_cfg.api_key,
+                                            ),
+                                        ));
+                                        info!("Attached Gemini embedder to memory");
+                                    } else if provider_name == "huggingface"
+                                        || provider_name == "hf"
+                                    {
+                                        let model = config
+                                            .memory
+                                            .embedding_model
+                                            .clone()
+                                            .unwrap_or("Qwen/Qwen3-Embedding-0.6B".to_string());
+                                        m = m.with_embedder(Arc::new(
+                                            crate::memory::embeddings::HuggingFaceEmbedder::new(
+                                                &p_cfg.api_key,
+                                                &model,
+                                            ),
+                                        ));
+                                        info!(
+                                            "Attached Hugging Face embedder ({}) to memory",
+                                            model
+                                        );
+                                    }
+                                } else if provider_name == "gemini"
+                                    && provider_key.eq_ignore_ascii_case("cli_oauth")
+                                {
+                                    info!(
+                                        "Skipping Gemini embedder: CLI OAuth mode selected and embeddings require an API key"
+                                    );
                                 }
-                            } else if provider_name == "gemini"
-                                && provider_key.eq_ignore_ascii_case("cli_oauth")
-                            {
-                                info!(
-                                    "Skipping Gemini embedder: CLI OAuth mode selected and embeddings require an API key"
-                                );
                             }
                         }
 
@@ -850,7 +879,9 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let scheduler = Arc::new(CronScheduler::init((), &config, &bus_handle));
 
     // Initialize Goal Manager
-    let goal_manager = Arc::new(crate::goals::GoalManager::new(PathBuf::from(&config.workspace_dir)));
+    let goal_manager = Arc::new(crate::goals::GoalManager::new(PathBuf::from(
+        &config.workspace_dir,
+    )));
 
     // Initialize Tools
     let tools = build_tools(
@@ -875,6 +906,11 @@ pub async fn run_daemon(config: Config) -> Result<()> {
 
     // Initialize Channels
     let mut _bridge_manager = None;
+    let gateway_url = format!(
+        "http://{}:{}/whatsapp/webhook",
+        config.gateway.host, config.gateway.port
+    );
+
     for wa_cfg in &config.channels.whatsapp_native {
         if wa_cfg.auto_start {
             let bridge_dir = if let Some(dir) = &wa_cfg.bridge_dir {
@@ -886,7 +922,18 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                 )
             };
 
-            let manager = crate::channels::whatsapp_bridge_manager::BridgeManager::new(bridge_dir);
+            let bridge_listen_addr = if wa_cfg.bridge_url.contains(':') {
+                let parts: Vec<&str> = wa_cfg.bridge_url.split(':').collect();
+                format!(":{}", parts.last().unwrap_or(&"18790"))
+            } else {
+                ":18790".to_string()
+            };
+
+            let manager = crate::channels::whatsapp_bridge_manager::BridgeManager::new(
+                bridge_dir,
+                gateway_url.clone(),
+                bridge_listen_addr,
+            );
             match manager.start() {
                 Ok(_) => {
                     info!("WhatsApp Bridge started automatically.");

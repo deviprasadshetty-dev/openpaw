@@ -18,7 +18,7 @@ impl BrowserTool {
     async fn run_cmd(&self, args: Vec<&str>) -> Result<ToolResult> {
         let is_headless = std::env::var("OPENPAW_BROWSER_HEADLESS")
             .map(|v| v.to_lowercase() == "true")
-            .unwrap_or(true); // Default to headless
+            .unwrap_or(false); // Default to headed (visible)
 
         #[cfg(windows)]
         let mut full_args = vec![
