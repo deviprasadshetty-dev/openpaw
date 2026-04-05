@@ -3,6 +3,12 @@
 **/*.rs.bk
 Cargo.lock
 
+# Generated code
+gen/
+icons/
+desktop/
+capabilities/
+
 # Config & secrets
 config.json
 .env
@@ -32,3 +38,12 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+# Build scripts
+BUILD.bat
+build-desktop.ps1
+
+# IDE
+.claude/
+.kilo/
+.qwen/
