@@ -545,6 +545,16 @@ pub async fn build_tools(
     memory: Option<Arc<dyn crate::agent::memory_loader::Memory>>,
     cron: Option<Arc<crate::cron::CronScheduler>>,
     goal_manager: Option<Arc<crate::goals::GoalManager>>,
+    // Feature 4: bus for subagent progress streaming
+    bus: Option<Arc<Bus>>,
+    // Feature 3: inter-agent mailbox
+    mailbox: Option<Arc<crate::agent_mailbox::AgentMailbox>>,
+    // Feature 5: human-in-the-loop approval
+    approval_manager: Option<Arc<crate::approval::ApprovalManager>>,
+    // Feature 1: reactive event registry (main agent only)
+    event_registry: Option<Arc<crate::events::EventRegistry>>,
+    // Feature 2: dependency-aware task planning (main agent only)
+    plan_manager: Option<Arc<crate::plan::PlanManager>>,
 ) -> Vec<Arc<dyn crate::tools::Tool>> {
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
@@ -675,7 +685,10 @@ pub async fn build_tools(
         allowed_domains: config.http_request.allowed_domains.clone(),
     }));
 
-    tools.push(Arc::new(crate::tools::schedule::ScheduleTool {}));
+    // NOTE: ScheduleTool (cron_utils) is intentionally NOT registered here.
+    // It uses an incompatible CronJob schema with no delivery config, so any jobs
+    // it creates are unreachable by the live CronScheduler's outbound dispatcher.
+    // CronAddTool (below) is the correct tool for scheduling reminders.
     if let Some(cr) = cron {
         tools.push(Arc::new(crate::tools::cron_add::CronAddTool {
             cron: cr.clone(),
@@ -700,7 +713,12 @@ pub async fn build_tools(
 
     tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
     tools.push(Arc::new(crate::tools::vision::VisionTool {}));
-    tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {}));
+    tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::workspace_search::WorkspaceSearchTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
@@ -738,11 +756,66 @@ pub async fn build_tools(
     }
 
     if let Some(sm) = subagent_manager {
-        tools.push(Arc::new(crate::tools::delegate::DelegateTool {}));
+        tools.push(Arc::new(crate::tools::delegate::DelegateTool {
+            subagent_manager: sm.clone(),
+        }));
         tools.push(Arc::new(crate::tools::spawn::SpawnTool {
+            subagent_manager: sm.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::task_cancel::TaskCancelTool {
             subagent_manager: sm,
         }));
         tools.push(Arc::new(crate::tools::message::MessageTool::new()));
+    }
+
+    // Feature 4: Progress streaming — give subagents a way to send heartbeats
+    if let Some(ref b) = bus {
+        tools.push(Arc::new(crate::tools::task_progress::TaskProgressTool {
+            bus: b.clone(),
+        }));
+    }
+
+    // Feature 3: Inter-agent mailbox
+    if let Some(mb) = mailbox {
+        tools.push(Arc::new(crate::tools::agent_post::AgentPostTool {
+            mailbox: mb.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::agent_recv::AgentRecvTool {
+            mailbox: mb,
+        }));
+    }
+
+    // Feature 5: Human-in-the-loop approval
+    if let Some(am) = approval_manager {
+        // request_approval needs the bus to notify the origin channel
+        let approval_bus = bus
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(Bus::new()));
+        tools.push(Arc::new(crate::tools::request_approval::RequestApprovalTool {
+            approval_manager: am.clone(),
+            bus: approval_bus,
+        }));
+        tools.push(Arc::new(crate::tools::approval_respond::ApprovalRespondTool {
+            approval_manager: am,
+        }));
+    }
+
+    // Feature 1: Reactive event triggers (main agent only)
+    if let Some(er) = event_registry {
+        tools.push(Arc::new(crate::tools::event_emit::EventEmitTool {
+            event_registry: er.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::event_watch::EventWatchTool {
+            event_registry: er,
+        }));
+    }
+
+    // Feature 2: Dependency-aware task planning (main agent only)
+    if let Some(pm) = plan_manager {
+        tools.push(Arc::new(crate::tools::plan_create::PlanCreateTool {
+            plan_manager: pm,
+        }));
     }
 
     tools
@@ -867,11 +940,17 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         }
     };
 
+    // Initialize shared resources for the 5 new features (created early so SubagentManager can share them)
+    let mailbox = Arc::new(crate::agent_mailbox::AgentMailbox::new());
+    let approval_manager = Arc::new(crate::approval::ApprovalManager::new());
+
     // Initialize Subagent Manager
     let subagent_manager = Arc::new(crate::subagent::SubagentManager::new(
         bus.clone(),
         crate::subagent::SubagentConfig::default(),
         (*config).clone(),
+        mailbox.clone(),
+        approval_manager.clone(),
     ));
 
     // Start Scheduler
@@ -882,6 +961,14 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let goal_manager = Arc::new(crate::goals::GoalManager::new(PathBuf::from(
         &config.workspace_dir,
     )));
+    let event_registry = Arc::new(crate::events::EventRegistry::new(
+        &config.workspace_dir,
+        bus.clone(),
+    ));
+    let plan_manager = Arc::new(crate::plan::PlanManager::new(
+        subagent_manager.clone(),
+        bus.clone(),
+    ));
 
     // Initialize Tools
     let tools = build_tools(
@@ -890,6 +977,11 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         memory.clone(),
         Some(scheduler.clone()),
         Some(goal_manager.clone()),
+        Some(bus.clone()),
+        Some(mailbox.clone()),
+        Some(approval_manager.clone()),
+        Some(event_registry),
+        Some(plan_manager),
     )
     .await;
 

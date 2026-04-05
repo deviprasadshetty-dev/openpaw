@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::streaming::OutboundStage;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -151,6 +151,8 @@ pub struct CronScheduler {
     pub runs: Arc<Mutex<Vec<CronRun>>>,
     pub bus: Arc<Bus>,
     pub next_run_id: Arc<Mutex<u64>>,
+    /// Tracks IDs of jobs currently executing to prevent concurrent duplicate runs.
+    running_jobs: Arc<Mutex<HashSet<String>>>,
 }
 
 use std::fs;
@@ -162,6 +164,7 @@ impl CronScheduler {
             runs: Arc::new(Mutex::new(Vec::new())),
             bus: bus.clone(),
             next_run_id: Arc::new(Mutex::new(1)),
+            running_jobs: Arc::new(Mutex::new(HashSet::new())),
         };
         scheduler.load();
         scheduler
@@ -195,8 +198,6 @@ impl CronScheduler {
     }
 
     pub fn tick(&self) {
-        self.load();
-
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -255,6 +256,13 @@ impl CronScheduler {
         }
 
         for id in to_fire {
+            // Skip jobs that are already running to prevent concurrent duplicate runs.
+            {
+                let running = self.running_jobs.lock().unwrap();
+                if running.contains(&id) {
+                    continue;
+                }
+            }
             let scheduler = self.clone_with_arcs();
             tokio::spawn(async move {
                 let _ = scheduler.run_job(&id).await;
@@ -268,6 +276,7 @@ impl CronScheduler {
             runs: self.runs.clone(),
             bus: self.bus.clone(),
             next_run_id: self.next_run_id.clone(),
+            running_jobs: self.running_jobs.clone(),
         }
     }
 
@@ -282,6 +291,14 @@ impl CronScheduler {
             Some(j) => j,
             None => return Err(anyhow!("Job not found")),
         };
+
+        // Mark as running; bail if already in progress.
+        {
+            let mut running = self.running_jobs.lock().unwrap();
+            if !running.insert(id_str.clone()) {
+                return Err(anyhow!("Job {} is already running", id_str));
+            }
+        }
 
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -429,6 +446,9 @@ impl CronScheduler {
             };
             send_desktop_notification(title, &body);
         }
+
+        // Deregister from running set.
+        self.running_jobs.lock().unwrap().remove(&id_str);
 
         Ok(())
     }

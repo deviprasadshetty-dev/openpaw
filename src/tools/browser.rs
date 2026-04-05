@@ -118,6 +118,7 @@ impl Tool for BrowserTool {
             "gesture":     { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Swipe gesture direction" },
             "port":        { "type": "integer", "description": "CDP port for connect" },
             "json_output": { "type": "boolean", "description": "Return JSON output for snapshot/get commands" },
+            "use_base64":  { "type": "boolean", "description": "Base64-encode JS for eval (-b flag), use when script contains quotes or special characters" },
             "full_page":   { "type": "boolean", "description": "Full page screenshot" },
             "annotate":    { "type": "boolean", "description": "Annotated screenshot with element labels" },
             "new_tab":     { "type": "boolean", "description": "Open click in new tab" },
@@ -326,13 +327,13 @@ impl Tool for BrowserTool {
             }
             "eval" => {
                 let js_code = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                // Check if base64 encoding is requested (for complex JS with special chars)
+                // use_base64: encode JS as base64 (-b flag) to avoid shell-escaping issues
+                // when the script contains quotes, backticks, or other special characters.
                 let use_base64 = args
-                    .get("json_output")
+                    .get("use_base64")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if use_base64 {
-                    // Encode JS as base64 to avoid shell escaping issues
                     use base64::{Engine, engine::general_purpose::STANDARD};
                     let encoded = STANDARD.encode(js_code.as_bytes());
                     self.run_cmd(vec!["eval", "-b", &encoded]).await
@@ -538,6 +539,17 @@ impl Tool for BrowserTool {
             }
             // Snapshot with options
             "snapshot" => {
+                // depth_str must outlive cmd; allocate before building cmd.
+                let depth_str = args
+                    .get("depth")
+                    .and_then(|v| v.as_u64())
+                    .map(|d| d.to_string());
+
+                let is_compact = args
+                    .get("compact")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
                 let mut cmd = vec!["snapshot"];
                 if args
                     .get("json_output")
@@ -546,28 +558,19 @@ impl Tool for BrowserTool {
                 {
                     cmd.push("--json");
                 }
-                if args
-                    .get("compact")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
+                if is_compact {
                     cmd.push("-c");
                 }
-                if let Some(depth) = args.get("depth").and_then(|v| v.as_u64()) {
-                    let depth_str = depth.to_string();
+                if let Some(ref d) = depth_str {
                     cmd.push("-d");
-                    cmd.push(Box::leak(depth_str.into_boxed_str()) as &'static str);
+                    cmd.push(d.as_str());
                 }
                 if let Some(scope) = args.get("scope").and_then(|v| v.as_str()) {
                     cmd.push("-s");
                     cmd.push(scope);
                 }
-                // Default to interactive if not compact
-                if !args
-                    .get("compact")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
+                // Default to interactive when not compact
+                if !is_compact {
                     cmd.push("-i");
                 }
                 self.run_cmd(cmd).await

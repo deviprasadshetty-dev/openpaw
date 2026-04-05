@@ -52,14 +52,17 @@ impl Tool for CronAddTool {
             .unwrap_or(&self.default_timezone)
             .to_string();
 
-        // BUG-CRON-3 FIX: Use bare chat_id, NOT session_key.
-        // session_key has format "telegram:1234567" which Telegram API rejects.
+        // account_id is intentionally None: the outbound dispatcher uses find_by_name
+        // when account_id is absent, which correctly routes to the first (and typically
+        // only) registered channel of that type. Setting it to sender_id (the user's
+        // Telegram user ID) would cause find_by_name_account to fail because the bot
+        // is registered under its config account_id (e.g. "main"), not the user's ID.
         let delivery = if deliver {
             crate::cron::DeliveryConfig {
                 mode: crate::cron::DeliveryMode::Always,
                 channel: Some(context.channel.clone()),
-                account_id: Some(context.sender_id.clone()),
-                to: Some(context.chat_id.clone()), // bare chat ID, not session key
+                account_id: None,
+                to: Some(context.chat_id.clone()),
                 best_effort: true,
             }
         } else {

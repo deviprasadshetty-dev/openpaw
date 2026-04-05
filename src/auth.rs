@@ -101,6 +101,20 @@ impl From<StoredToken> for OAuthToken {
     }
 }
 
+/// Set owner-only read/write permissions on a file (Unix: 0600).
+/// On non-Unix platforms this is a no-op; tighten as needed per platform.
+fn set_secure_permissions(file: &fs::File) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        file.set_permissions(perms)?;
+    }
+    let _ = file; // suppress unused warning on non-Unix
+    Ok(())
+}
+
 pub fn save_credential(provider: &str, token: OAuthToken) -> Result<()> {
     let home = platform::get_home_dir().context("Home directory not found")?;
     let dir_path = home.join(CRED_DIR);
@@ -118,15 +132,7 @@ pub fn save_credential(provider: &str, token: OAuthToken) -> Result<()> {
     existing.insert(provider.to_string(), token.into());
 
     let file = fs::File::create(&file_path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = file.metadata()?.permissions();
-        perms.set_mode(0o600);
-        file.set_permissions(perms)?;
-    }
-
+    set_secure_permissions(&file)?;
     serde_json::to_writer(file, &existing)?;
     Ok(())
 }
@@ -166,13 +172,7 @@ pub fn delete_credential(provider: &str) -> Result<bool> {
 
     if existing.remove(provider).is_some() {
         let file = fs::File::create(&file_path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = file.metadata()?.permissions();
-            perms.set_mode(0o600);
-            file.set_permissions(perms)?;
-        }
+        set_secure_permissions(&file)?;
         serde_json::to_writer(file, &existing)?;
         Ok(true)
     } else {

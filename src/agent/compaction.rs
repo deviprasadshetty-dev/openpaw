@@ -153,8 +153,7 @@ pub fn auto_compact_history(
 
     let mut compact_end = start + compact_count;
 
-    // TODO: Implement multi-part summarization for very large histories
-    let summary = summarize_slice(provider, model_name, history, start, compact_end, config)
+    let summary = summarize_chunked(provider, model_name, history, start, compact_end, config)
         .unwrap_or_else(|| "Context summarized due to length.".to_string());
 
     *last_compaction = now; // Update per-agent cooldown timestamp
@@ -204,6 +203,170 @@ pub fn auto_compact_history(
 
     *history = new_history;
     true
+}
+
+/// Multi-part summarization for very large histories.
+///
+/// If the transcript fits in one chunk, delegates to `summarize_slice`.
+/// Otherwise splits into overlapping chunks, summarises each independently,
+/// then collapses the partial summaries into a single final summary.
+/// This avoids the quality degradation of feeding a 50k-char transcript to
+/// a 512-token summarizer in a single shot.
+fn summarize_chunked(
+    provider: &Arc<dyn Provider>,
+    model_name: &str,
+    history: &[ChatMessage],
+    start: usize,
+    end: usize,
+    config: &CompactionConfig,
+) -> Option<String> {
+    let transcript = build_compaction_transcript(history, start, end, u32::MAX);
+    let max_chunk = config.max_source_chars as usize;
+
+    // Single-pass fast path
+    if transcript.len() <= max_chunk {
+        return summarize_slice(provider, model_name, history, start, end, config);
+    }
+
+    // Split transcript into overlapping char-based chunks
+    let overlap = max_chunk / 5; // 20% overlap
+    let chars: Vec<char> = transcript.chars().collect();
+    let total = chars.len();
+    let mut chunk_summaries: Vec<String> = Vec::new();
+    let mut pos = 0;
+
+    while pos < total {
+        let chunk_end = (pos + max_chunk).min(total);
+        let chunk_text: String = chars[pos..chunk_end].iter().collect();
+
+        let summarizer_system = "You are a conversation compaction engine. Summarize this excerpt of older chat history into concise bullet points. Preserve: user preferences, commitments, decisions, unresolved tasks, key facts. Omit: filler and verbose tool logs. Output plain text bullet points only.";
+        let summarizer_user = format!(
+            "Summarize this conversation excerpt (part {}/{}):\n\n{}",
+            chunk_summaries.len() + 1,
+            ((total + max_chunk - 1) / (max_chunk - overlap)).max(1),
+            chunk_text
+        );
+
+        let messages = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: summarizer_system.to_string(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                content_parts: None,
+                thought_signature: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: summarizer_user,
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                content_parts: None,
+                thought_signature: None,
+            },
+        ];
+
+        let provider_clone = provider.clone();
+        let model_owned = model_name.to_string();
+        let partial: Option<String> = tokio::task::block_in_place(|| {
+            let req = crate::providers::ChatRequest {
+                messages: &messages,
+                model: &model_owned,
+                temperature: 0.2,
+                max_tokens: Some(256),
+                tools: None,
+                timeout_secs: 45,
+                reasoning_effort: None,
+            };
+            match provider_clone.chat(&req) {
+                Ok(resp) => resp.content,
+                Err(_) => {
+                    // Fallback: truncate chunk
+                    let safe = chunk_text
+                        .char_indices()
+                        .nth(config.max_summary_chars as usize / 2)
+                        .map(|(i, _)| i)
+                        .unwrap_or(chunk_text.len());
+                    Some(chunk_text[..safe].to_string())
+                }
+            }
+        });
+
+        if let Some(s) = partial {
+            chunk_summaries.push(s);
+        }
+
+        if chunk_end == total {
+            break;
+        }
+        pos += max_chunk - overlap;
+    }
+
+    if chunk_summaries.is_empty() {
+        return None;
+    }
+
+    // Single-chunk result: return directly
+    if chunk_summaries.len() == 1 {
+        return Some(chunk_summaries.remove(0));
+    }
+
+    // Merge partial summaries into one final summary
+    let combined = chunk_summaries.join("\n\n---\n\n");
+    let merge_system = "You are a conversation compaction engine. You have been given several partial summaries of a conversation. Merge them into a single concise summary of at most 12 bullet points. Remove duplicates, preserve key facts, decisions, and unresolved tasks.";
+    let merge_user = format!("Merge these partial conversation summaries:\n\n{}", combined);
+
+    let merge_messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: merge_system.to_string(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+            thought_signature: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: merge_user,
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            content_parts: None,
+            thought_signature: None,
+        },
+    ];
+
+    let provider_clone = provider.clone();
+    let model_owned = model_name.to_string();
+    let max_summary_chars = config.max_summary_chars;
+
+    tokio::task::block_in_place(|| {
+        let req = crate::providers::ChatRequest {
+            messages: &merge_messages,
+            model: &model_owned,
+            temperature: 0.2,
+            max_tokens: Some(512),
+            tools: None,
+            timeout_secs: 60,
+            reasoning_effort: None,
+        };
+        match provider_clone.chat(&req) {
+            Ok(resp) => resp.content,
+            Err(_) => {
+                // Fallback: join partial summaries and truncate
+                let joined = chunk_summaries.join("\n");
+                let safe = joined
+                    .char_indices()
+                    .nth(max_summary_chars as usize)
+                    .map(|(i, _)| i)
+                    .unwrap_or(joined.len());
+                Some(joined[..safe].to_string())
+            }
+        }
+    })
 }
 
 fn summarize_slice(

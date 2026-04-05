@@ -1,8 +1,11 @@
 pub mod agent;
+pub mod agent_mailbox;
 pub mod agent_routing;
+pub mod approval;
 pub mod auth;
 pub mod build_options;
 pub mod bus;
+pub mod events;
 pub mod capabilities;
 pub mod channel_adapters;
 pub mod channel_catalog;
@@ -38,6 +41,7 @@ pub mod net_security;
 pub mod observability;
 pub mod onboard;
 pub mod peripherals;
+pub mod plan;
 pub mod platform;
 pub mod portable_atomic;
 pub mod porting;
@@ -134,6 +138,12 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // Handle onboard before any config loading — it creates the config from scratch.
+    if let Some(Commands::Onboard { dir }) = &args.command {
+        onboard::interactive_onboard(dir)?;
+        return Ok(());
+    }
+
     let config_path = args.config.clone().or_else(|| {
         if std::path::Path::new("config.json").exists() {
             Some("config.json".to_string())
@@ -171,7 +181,7 @@ async fn main() -> Result<()> {
             scheduler: Default::default(),
             session: Default::default(),
             bindings: Vec::new(),
-            config_path: String::new(),
+            config_path: "./config.json".to_string(),
             workspace_dir: ".".to_string(),
             default_model: None,
             default_provider: "openai".to_string(),
@@ -273,6 +283,11 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
         None, // No persistent memory for one-shot check
         None, // No scheduler
         None, // No goal manager
+        None, // No bus
+        None, // No mailbox
+        None, // No approval manager
+        None, // No event registry
+        None, // No plan manager
     )
     .await;
 

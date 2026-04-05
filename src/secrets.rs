@@ -184,6 +184,26 @@ impl SecretStore {
                 .with_context(|| "Failed to set key file permissions")?;
         }
 
+        // On Windows, use icacls to strip inherited ACEs and grant only the
+        // current user full control, preventing other local users from reading
+        // the master encryption key.
+        #[cfg(windows)]
+        {
+            // Obtain current username via USERPROFILE or USERNAME env var.
+            let username = std::env::var("USERNAME").unwrap_or_default();
+            if !username.is_empty() {
+                let path_str = self.key_path.to_string_lossy();
+                // /inheritance:r  – remove inherited permissions
+                // /grant:r        – replace (not add) a grant ACE
+                let _ = std::process::Command::new("icacls")
+                    .arg(path_str.as_ref())
+                    .arg("/inheritance:r")
+                    .arg("/grant:r")
+                    .arg(format!("{}:F", username))
+                    .output(); // best-effort; proceed even if icacls is unavailable
+            }
+        }
+
         Ok(key)
     }
 }
