@@ -113,6 +113,9 @@ pub fn workspace_prompt_fingerprint(workspace_dir: &str) -> u64 {
 pub fn build_system_prompt(ctx: PromptContext) -> String {
     let mut out = String::new();
     let is_lean = crate::agent::context_tokens::is_small_model_context(ctx.token_limit);
+    let has_opencode_cli = ctx.tools.iter().any(|t| t.name() == "opencode_cli");
+    let has_web_search = ctx.tools.iter().any(|t| t.name() == "web_search");
+    let has_vision = ctx.tools.iter().any(|t| t.name() == "vision");
 
     // Identity section
     build_identity_section(&mut out, ctx.workspace_dir, is_lean);
@@ -171,6 +174,12 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
 
     if is_lean {
         out.push_str("## Reasoning & Action\n\n- Think simply. Be concise.\n- If a task requires multiple steps, take as many turns as needed to complete it.\n- Use tools directly to gather information or perform actions.\n\n");
+        if has_web_search || has_vision {
+            out.push_str("- Use `web_search` for internet results.\n- Use `vision` for local image/video/audio/document/file analysis.\n\n");
+        }
+        if has_opencode_cli {
+            out.push_str("- `opencode_cli` is a general-purpose external reasoning tool, not only for coding.\n- Use it when you need deeper analysis, stronger writing, better planning, or a second opinion.\n\n");
+        }
     } else {
         // Reasoning and Execution section
         out.push_str("## Reasoning and Execution\n\n");
@@ -213,6 +222,29 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         );
         out.push_str("- User needs to install something → Use `shell` to check/install dependencies in a virtualenv.\n\n");
         out.push_str("Don't ask 'Would you like me to...' for these obvious actions — just do them and report the result.\n\n");
+
+        if has_web_search || has_vision {
+            out.push_str("### Gemini CLI Capability Routing\n\n");
+            out.push_str("- Use `web_search` for web and current-events lookups (Gemini CLI-backed when configured).\n");
+            out.push_str("- Use `vision` for local file/media analysis: images, video, audio, and documents.\n");
+            out.push_str("- Do not use `web_search` to analyze local files; use `vision` instead.\n");
+            out.push_str("- Gemini CLI is not coding-only; treat it as a general analysis backend for search and multimodal understanding.\n\n");
+        }
+
+        if has_opencode_cli {
+            out.push_str("### opencode_cli: Purpose and Use Cases\n\n");
+            out.push_str("`opencode_cli` is a second agentic reasoning pipeline via `opencode run`.\n");
+            out.push_str("It is useful for more than coding.\n\n");
+            out.push_str("Use it for:\n");
+            out.push_str("- Deep reasoning and second-opinion analysis.\n");
+            out.push_str("- Research synthesis and structured summaries.\n");
+            out.push_str("- Writing tasks (drafts, rewrites, style transforms).\n");
+            out.push_str("- Planning tasks (roadmaps, options, decision matrices).\n");
+            out.push_str("- Troubleshooting complex issues from an alternate model perspective.\n");
+            out.push_str("- Complex coding and refactoring tasks.\n\n");
+            out.push_str("Prefer native OpenPaw tools when the task is direct and deterministic (for example `file_read`, `shell`, `git_operations`, `http_request`, `cron_add`).\n");
+            out.push_str("Use `opencode_cli` when you need higher-leverage synthesis, strategy, or alternate reasoning.\n\n");
+        }
 
         // Safety & Autonomy section
         out.push_str("## Safety & Autonomy\n\n");
@@ -453,7 +485,7 @@ fn append_safety_and_group_logic(
     out.push_str("2. **Proactive Heartbeat:** You have a Heartbeat Engine that periodically triggers tasks from `HEARTBEAT.md`. \
         When you receive a message starting with `PROACTIVE TASK CHECK:`, it is an internal nudge to perform a recurring duty. \
         Respond to these by performing the task and reporting the outcome.\n");
-    out.push_str("3. **Multimodal Intelligence:** You can 'see' and 'hear' files. If a user provides a file path or an attachment marker (e.g., [IMAGE:...] or [VIDEO:...]) and asks a question about it, use the `vision` tool immediately. You should also use `vision` proactively if you are troubleshooting a UI issue (via `screenshot`) or need to extract data from a complex PDF/Image.\n\n");
+    out.push_str("3. **Multimodal Intelligence:** You can 'see' and 'hear' files. If a user provides a file path or an attachment marker (e.g., [IMAGE:...], [VIDEO:...], [AUDIO:...], [FILE:...]) and asks a question about it, use the `vision` tool immediately. Use `web_search` for internet lookup, and `vision` for local file/media analysis. You should also use `vision` proactively if you are troubleshooting a UI issue (via `screenshot`) or need to extract data from complex PDFs, screenshots, audio, or video clips.\n\n");
 }
 
 fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) {

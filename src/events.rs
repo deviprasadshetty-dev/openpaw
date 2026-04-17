@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, path::PathBuf};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,13 +46,44 @@ pub struct EventRegistry {
     workspace_dir: String,
 }
 
+fn watchers_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".openpaw").join("event_watchers.json")
+}
+
 impl EventRegistry {
     pub fn new(workspace_dir: &str, bus: Arc<Bus>) -> Self {
-        Self {
+        let registry = Self {
             watchers: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(1)),
             bus,
             workspace_dir: workspace_dir.to_string(),
+        };
+        registry.load();
+        registry
+    }
+
+    fn load(&self) {
+        let path = watchers_path();
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(watchers) = serde_json::from_str::<HashMap<u64, EventWatcher>>(&data) {
+                let max_id = watchers.keys().max().copied().unwrap_or(0);
+                *self.next_id.lock().unwrap_or_else(|e| e.into_inner()) = max_id + 1;
+                *self.watchers.lock().unwrap_or_else(|e| e.into_inner()) = watchers;
+            }
+        }
+    }
+
+    fn save(&self) {
+        let path = watchers_path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let guard = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(data) = serde_json::to_string_pretty(&*guard) {
+            let _ = fs::write(path, data);
         }
     }
 
@@ -83,16 +115,21 @@ impl EventRegistry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, watcher);
+        self.save();
         id
     }
 
     /// Remove a watcher by ID. Returns true if it existed.
     pub fn unwatch(&self, watcher_id: u64) -> bool {
-        self.watchers
+        let removed = self.watchers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&watcher_id)
-            .is_some()
+            .is_some();
+        if removed {
+            self.save();
+        }
+        removed
     }
 
     /// List all registered watchers.
@@ -160,16 +197,29 @@ impl EventRegistry {
 
                     // Fire shell command in a background task
                     tokio::spawn(async move {
-                        let full_cmd = format!(
-                            "EVENT_NAME='{}' EVENT_PAYLOAD='{}' {}",
-                            ev_name, payload_str, command
-                        );
-                        let output = tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&full_cmd)
-                            .current_dir(&workspace)
-                            .output()
-                            .await;
+                        let output = if cfg!(windows) {
+                            let full_cmd = format!(
+                                "set EVENT_NAME={}&& set EVENT_PAYLOAD={}&& {}",
+                                ev_name, payload_str, command
+                            );
+                            tokio::process::Command::new("cmd")
+                                .arg("/c")
+                                .arg(&full_cmd)
+                                .current_dir(&workspace)
+                                .output()
+                                .await
+                        } else {
+                            let full_cmd = format!(
+                                "EVENT_NAME='{}' EVENT_PAYLOAD='{}' {}",
+                                ev_name, payload_str, command
+                            );
+                            tokio::process::Command::new("sh")
+                                .arg("-c")
+                                .arg(&full_cmd)
+                                .current_dir(&workspace)
+                                .output()
+                                .await
+                        };
 
                         let report = match output {
                             Ok(out) => {
@@ -204,6 +254,10 @@ impl EventRegistry {
                 let outbound = make_outbound(emitter_channel, emitter_chat_id, &ack);
                 let _ = self.bus.publish_outbound(outbound);
             }
+        }
+
+        if triggered > 0 {
+            self.save();
         }
 
         triggered

@@ -1,61 +1,135 @@
-use super::{Tool, ToolContext, ToolResult, process_util};
+use super::{Tool, ToolContext, ToolResult};
+use super::cdp::CdpClient;
+use crate::config_types::BrowserConfig;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct BrowserTool {
-    pub workspace_dir: String,
+    workspace_dir: String,
+    cdp_host: String,
+    cdp_port: u16,
+    headless: bool,
+    browser_path: Option<String>,
+    profile_dir: Option<String>,
+    auto_launch: bool,
+    client: Arc<Mutex<Option<CdpClient>>>,
+    browser_process: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 impl BrowserTool {
-    pub fn new(workspace_dir: impl Into<String>) -> Self {
+    pub fn new(workspace_dir: impl Into<String>, config: &BrowserConfig) -> Self {
         Self {
             workspace_dir: workspace_dir.into(),
+            cdp_host: config.cdp_host.clone(),
+            cdp_port: config.cdp_port,
+            headless: config.native_headless,
+            browser_path: config.native_chrome_path.clone(),
+            profile_dir: config.profile_dir.clone(),
+            auto_launch: config.cdp_auto_launch,
+            client: Arc::new(Mutex::new(None)),
+            browser_process: Arc::new(Mutex::new(None)),
         }
     }
 
-    async fn run_cmd(&self, args: Vec<&str>) -> Result<ToolResult> {
-        let is_headless = std::env::var("OPENPAW_BROWSER_HEADLESS")
-            .map(|v| v.to_lowercase() == "true")
-            .unwrap_or(false); // Default to headed (visible)
+    fn endpoint(&self) -> String {
+        format!("{}:{}", self.cdp_host, self.cdp_port)
+    }
 
-        #[cfg(windows)]
-        let mut full_args = vec![
-            "cmd.exe",
-            "/c",
-            "agent-browser",
-            "--session-name",
-            "openpaw",
-        ];
-        #[cfg(not(windows))]
-        let mut full_args = vec!["agent-browser", "--session-name", "openpaw"];
-
-        if !is_headless {
-            full_args.push("--headed");
+    async fn get_client(&self) -> Result<CdpClient> {
+        {
+            let guard = self.client.lock().await;
+            if guard.is_some() {
+                return Ok(guard.as_ref().unwrap().clone());
+            }
         }
 
-        full_args.extend(args);
+        let endpoint = self.endpoint();
+        let cdp = CdpClient::new(&endpoint);
 
-        let opts = process_util::RunOptions {
-            timeout_ms: 60_000, // 60s timeout for browser actions
-            ..Default::default()
-        };
+        if let Err(e) = cdp.connect().await {
+            if self.auto_launch {
+                tracing::info!("Browser not reachable on {}, auto-launching", endpoint);
+                let mut proc_guard = self.browser_process.lock().await;
+                let child = super::cdp::launch_browser(
+                    self.cdp_port,
+                    self.headless,
+                    self.browser_path.as_deref(),
+                    &self.workspace_dir,
+                    self.profile_dir.as_deref(),
+                )
+                .await?;
+                *proc_guard = Some(child);
+                drop(proc_guard);
 
-        let res = process_util::run(&full_args, opts).await?;
+                tokio::time::sleep(tokio::time::Duration::from_millis(2500)).await;
 
-        if res.success {
-            Ok(ToolResult::ok(res.stdout))
-        } else {
-            Ok(ToolResult::fail(format!(
-                "Browser action failed (exit {}): {}\n{}",
-                res.exit_code.unwrap_or(-1),
-                res.stderr,
-                res.stdout
-            )))
+                for attempt in 0..5 {
+                    match cdp.connect().await {
+                        Ok(()) => break,
+                        Err(conn_err) => {
+                            if attempt == 4 {
+                                return Err(conn_err);
+                            }
+                            tracing::debug!("Browser not ready yet, retrying... ({}/5)", attempt + 1);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                        }
+                    }
+                }
+            } else {
+                return Err(e);
+            }
+        }
+
+        cdp.enable_page_domain().await?;
+        cdp.enable_network().await?;
+
+        let mut guard = self.client.lock().await;
+        *guard = Some(cdp.clone());
+        Ok(cdp)
+    }
+
+    fn screenshot_path(&self, name: &str) -> String {
+        let path = Path::new(&self.workspace_dir).join("screenshots").join(name);
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        path.to_string_lossy().to_string()
+    }
+
+    fn default_screenshot_path(&self, suffix: &str) -> String {
+        let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let filename = format!("screenshot_{}{}.png", ts, suffix);
+        self.screenshot_path(&filename)
+    }
+
+    fn save_base64_image(&self, data: &str, path: &str) -> Result<String> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let bytes = STANDARD.decode(data)?;
+        std::fs::write(path, bytes)?;
+        Ok(path.to_string())
+    }
+}
+
+impl Clone for BrowserTool {
+    fn clone(&self) -> Self {
+        Self {
+            workspace_dir: self.workspace_dir.clone(),
+            cdp_host: self.cdp_host.clone(),
+            cdp_port: self.cdp_port,
+            headless: self.headless,
+            browser_path: self.browser_path.clone(),
+            profile_dir: self.profile_dir.clone(),
+            auto_launch: self.auto_launch,
+            client: self.client.clone(),
+            browser_process: self.browser_process.clone(),
         }
     }
 }
+
+unsafe impl Send for BrowserTool {}
+unsafe impl Sync for BrowserTool {}
 
 #[async_trait]
 impl Tool for BrowserTool {
@@ -64,13 +138,18 @@ impl Tool for BrowserTool {
     }
 
     fn description(&self) -> &str {
-        "Advanced browser automation using agent-browser. The tool manages its own browser internally; no external Chrome with --remote-debugging-port (CDP) is required. \
-         Core workflow: 1) navigate -> 2) snapshot -i (get @e1 refs) -> 3) interact using refs -> 4) re-snapshot after navigation. \
-         Key actions: navigate, snapshot (-i interactive, -c compact, -d depth, -s selector), click/fill/type/select/check, wait (element/text/url/networkidle), screenshot (--full, --annotate), \
-         get (text/html/value/attr/title/url/count/box/styles), is (visible/enabled/checked), eval (JS with --stdin/-b for complex), find (semantic locators), \
-         state (save/load/list/clear/clean), diff (snapshot/screenshot/url), storage (local/session), cookies, tabs, keyboard (type/inserttext), scroll, drag, upload, download, pdf, \
-         record (start/stop/restart), network (route/unroute/requests), auth (save/login/list/show/delete), set (viewport/device/geo/offline/headers/media), \
-         iOS gestures (tap/swipe), connect (--auto-connect, --cdp port). Use --json for structured output, --new-tab for clicks. Session persistence via --session-name."
+        "Browser automation via Chrome DevTools Protocol (CDP). Directly controls a Chrome instance \
+         over WebSocket — no external CLI required. \
+         Core flow: navigate → snapshot/get DOM → interact with selectors → re-snapshot. \
+         Actions: navigate, click, dblclick, type, fill, scroll, hover, focus, check, uncheck, \
+         scrollintoview, screenshot, screenshot_element, pdf, read_page, read_dom, \
+         back, forward, refresh, get_url, get_title, get_text, get_html, get_value, get_attr, \
+         get_count, get_box, get_styles, is_visible, is_enabled, is_checked, eval, \
+         select_option, key_press, mouse_move, mouse_click, mouse_wheel, \
+         get_cookies, set_cookie, clear_cookies, storage_local, storage_session, \
+         wait, wait_text, wait_load, close, set_viewport, set_device, set_geo, \
+         set_offline, set_headers, set_media, tab_new, tab_list, tab_close, tab_switch, \
+         drag, snapshot."
     }
 
     fn parameters_json(&self) -> String {
@@ -79,53 +158,37 @@ impl Tool for BrowserTool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["navigate", "click", "dblclick", "type", "fill", "keyboard_type", "keyboard_insert", "scroll", "hover", "focus", "check", "uncheck", "scrollintoview", "upload", "download", "screenshot", "screenshot_element", "pdf", "read_page", "read_dom", "back", "forward", "refresh", "get_url", "get_title", "get_text", "get_html", "get_value", "get_attr", "get_count", "get_box", "get_styles", "is_visible", "is_enabled", "is_checked", "eval", "find", "select_option", "key_press", "mouse_move", "mouse_click", "mouse_wheel", "get_cookies", "set_cookie", "clear_cookies", "storage_local", "storage_session", "wait", "wait_text", "wait_url", "wait_load", "close", "set_viewport", "set_device", "set_geo", "set_offline", "set_headers", "set_media", "alert_accept", "alert_dismiss", "drag", "tab_new", "tab_list", "tab_close", "tab_switch", "window_new", "frame", "snapshot", "state_save", "state_load", "state_list", "state_clear", "state_clean", "diff_snapshot", "diff_screenshot", "diff_url", "record_start", "record_stop", "record_restart", "network_route", "network_unroute", "network_requests", "auth_save", "auth_login", "auth_list", "auth_show", "auth_delete", "tap", "swipe", "connect", "highlight", "inspect", "get_cdp_url"],
+              "enum": ["navigate", "click", "dblclick", "type", "fill", "scroll", "hover", "focus", "check", "uncheck", "scrollintoview", "screenshot", "screenshot_element", "pdf", "read_page", "read_dom", "back", "forward", "refresh", "get_url", "get_title", "get_text", "get_html", "get_value", "get_attr", "get_count", "get_box", "get_styles", "is_visible", "is_enabled", "is_checked", "eval", "select_option", "key_press", "mouse_move", "mouse_click", "mouse_wheel", "get_cookies", "set_cookie", "clear_cookies", "storage_local", "storage_session", "wait", "wait_text", "wait_load", "close", "set_viewport", "set_device", "set_geo", "set_offline", "set_headers", "set_media", "tab_new", "tab_list", "tab_close", "tab_switch", "drag", "snapshot"],
               "description": "Action to perform"
             },
-            "url":       { "type": "string",  "description": "URL for navigate/tab_new/wait_url/diff_url" },
-            "selector":  { "type": "string",  "description": "CSS selector or @eN element index" },
+            "url":       { "type": "string",  "description": "URL for navigate/tab_new" },
+            "selector":  { "type": "string",  "description": "CSS selector" },
             "text":      { "type": "string",  "description": "Text to type/eval/wait for, or JS code for eval" },
-            "tab_id":    { "type": "integer", "description": "ID or index of the tab to operate on" },
+            "tab_id":    { "type": "integer", "description": "Tab target ID or index" },
             "direction": { "type": "string",  "enum": ["up", "down", "left", "right"], "description": "Scroll direction" },
-            "amount":     { "type": "integer", "description": "Scroll/wheel amount or snapshot depth" },
-            "ms":        { "type": "integer", "description": "Wait duration in ms" },
+            "amount":     { "type": "integer", "description": "Scroll amount or snapshot depth" },
             "key":       { "type": "string",  "description": "Key name for key_press" },
-            "option":    { "type": "string",  "description": "Value or label for select_option" },
-            "path":      { "type": "string",  "description": "File path for upload/pdf/screenshot/download/state" },
+            "option":    { "type": "string",  "description": "Value for select_option" },
             "attribute": { "type": "string",  "description": "Attribute name for get_attr" },
             "device":    { "type": "string",  "description": "Device name for set_device" },
-            "latitude":  { "type": "number", "description": "Latitude for set_geo" },
-            "longitude": { "type": "number", "description": "Longitude for set_geo" },
-            "cookie_name":   { "type": "string", "description": "Cookie/Storage/State name or auth profile name" },
-            "cookie_value":  { "type": "string", "description": "Cookie/Storage value" },
-            "x":           { "type": "integer", "description": "X coordinate for mouse" },
-            "y":           { "type": "integer", "description": "Y coordinate for mouse" },
+            "latitude":  { "type": "number",  "description": "Latitude for set_geo" },
+            "longitude": { "type": "number",  "description": "Longitude for set_geo" },
+            "cookie_name":   { "type": "string",  "description": "Cookie or storage key name" },
+            "cookie_value":  { "type": "string",  "description": "Cookie or storage value" },
+            "x":           { "type": "integer",  "description": "X coordinate for mouse" },
+            "y":           { "type": "integer",  "description": "Y coordinate for mouse" },
             "button":      { "type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button" },
-            "locator":     { "type": "string", "enum": ["role", "text", "label", "placeholder", "alt", "title", "testid", "first", "last", "nth"], "description": "Locator type for find" },
-            "value":       { "type": "string", "description": "Value for locator" },
-            "sub_action":  { "type": "string", "description": "Action to perform on found element (e.g. click, text)" },
-            "load_state":  { "type": "string", "enum": ["load", "domcontentloaded", "networkidle"], "description": "Load state to wait for" },
-            "headers":     { "type": "string", "description": "JSON string of headers for set_headers" },
-            "media_scheme":{ "type": "string", "enum": ["dark", "light", "no-preference"], "description": "Color scheme for set_media" },
-            "width":       { "type": "integer", "description": "Width for set_viewport" },
-            "height":      { "type": "integer", "description": "Height for set_viewport" },
-            "scale":       { "type": "integer", "description": "Device pixel ratio for set_viewport (retina)" },
-            "to_selector": { "type": "string", "description": "Target selector for drag" },
-            "baseline":    { "type": "string", "description": "Baseline file for diff comparison" },
-            "url2":        { "type": "string", "description": "Second URL for diff_url" },
-            "username":    { "type": "string", "description": "Username for auth_save" },
-            "password":    { "type": "string", "description": "Password for auth_save" },
-            "gesture":     { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Swipe gesture direction" },
-            "port":        { "type": "integer", "description": "CDP port for connect" },
-            "json_output": { "type": "boolean", "description": "Return JSON output for snapshot/get commands" },
-            "use_base64":  { "type": "boolean", "description": "Base64-encode JS for eval (-b flag), use when script contains quotes or special characters" },
-            "full_page":   { "type": "boolean", "description": "Full page screenshot" },
-            "annotate":    { "type": "boolean", "description": "Annotated screenshot with element labels" },
-            "new_tab":     { "type": "boolean", "description": "Open click in new tab" },
+            "to_selector": { "type": "string",  "description": "Target selector for drag" },
             "compact":     { "type": "boolean", "description": "Compact snapshot output" },
-            "scope":       { "type": "string", "description": "CSS selector to scope snapshot" },
-            "depth":       { "type": "integer", "description": "Max depth for snapshot" },
-            "days":        { "type": "integer", "description": "Days for state_clean (older than)" }
+            "depth":        { "type": "integer", "description": "Max depth for snapshot" },
+            "headers":     { "type": "string",  "description": "JSON string of headers for set_headers" },
+            "media_scheme":{ "type": "string",  "enum": ["dark", "light", "no-preference"], "description": "Color scheme" },
+            "width":       { "type": "integer",  "description": "Viewport width" },
+            "height":      { "type": "integer",  "description": "Viewport height" },
+            "use_base64":  { "type": "boolean", "description": "Base64-encode JS for eval (avoid shell escaping)" },
+            "path":        { "type": "string",  "description": "File path for screenshot/pdf download" },
+            "ms":          { "type": "integer", "description": "Wait duration in ms" },
+            "load_state":  { "type": "string",  "enum": ["load", "domcontentloaded", "networkidle"], "description": "Load state to wait for" }
           },
           "required": ["action"]
         }"#.to_string()
@@ -134,268 +197,267 @@ impl Tool for BrowserTool {
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
+        let cdp = match self.get_client().await {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolResult::fail(format!("CDP connection error: {}", e))),
+        };
+
+        macro_rules! cdp_err {
+            ($result:expr) => {
+                match $result {
+                    Ok(v) => v,
+                    Err(e) => return Ok(ToolResult::fail(format!("{}", e))),
+                }
+            };
+        }
+
         match action {
             "navigate" => {
-                let url = args
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("about:blank");
-                self.run_cmd(vec!["open", url]).await
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
+                cdp_err!(cdp.navigate(url).await);
+                Ok(ToolResult::ok(format!("Navigated to {}", url)))
             }
             "click" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                let mut cmd = vec!["click", selector];
-                if args
-                    .get("new_tab")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    cmd.push("--new-tab");
-                }
-                self.run_cmd(cmd).await
+                cdp_err!(cdp.click(selector).await);
+                Ok(ToolResult::ok(format!("Clicked {}", selector)))
             }
             "dblclick" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["dblclick", selector]).await
+                cdp_err!(cdp.dblclick(selector).await);
+                Ok(ToolResult::ok(format!("Double-clicked {}", selector)))
             }
             "type" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["type", selector, text]).await
+                cdp_err!(cdp.type_text(selector, text).await);
+                Ok(ToolResult::ok(format!("Typed into {}", selector)))
             }
             "fill" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["fill", selector, text]).await
-            }
-            "keyboard_type" => {
-                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["keyboard", "type", text]).await
-            }
-            "keyboard_insert" => {
-                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["keyboard", "inserttext", text]).await
+                cdp_err!(cdp.fill(selector, text).await);
+                Ok(ToolResult::ok(format!("Filled {}", selector)))
             }
             "scroll" => {
-                let direction = args
-                    .get("direction")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("down");
-                let amount = args
-                    .get("amount")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(500)
-                    .to_string();
-                self.run_cmd(vec!["scroll", direction, &amount]).await
+                let direction = args.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+                let amount = args.get("amount").and_then(|v| v.as_i64()).unwrap_or(500);
+                cdp_err!(cdp.scroll(direction, amount).await);
+                Ok(ToolResult::ok(format!("Scrolled {} {}", direction, amount)))
             }
             "hover" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["hover", selector]).await
+                cdp_err!(cdp.hover(selector).await);
+                Ok(ToolResult::ok(format!("Hovered over {}", selector)))
             }
             "focus" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["focus", selector]).await
+                cdp_err!(cdp.focus(selector).await);
+                Ok(ToolResult::ok(format!("Focused {}", selector)))
             }
             "check" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["check", selector]).await
+                cdp_err!(cdp.check(selector).await);
+                Ok(ToolResult::ok(format!("Checked {}", selector)))
             }
             "uncheck" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["uncheck", selector]).await
+                cdp_err!(cdp.uncheck(selector).await);
+                Ok(ToolResult::ok(format!("Unchecked {}", selector)))
             }
             "scrollintoview" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["scrollintoview", selector]).await
-            }
-            "upload" => {
-                let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["upload", selector, path]).await
-            }
-            "download" => {
-                let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["download", selector, path]).await
+                cdp_err!(cdp.scroll_into_view(selector).await);
+                Ok(ToolResult::ok(format!("Scrolled {} into view", selector)))
             }
             "screenshot" => {
-                let path_arg = args.get("path").and_then(|v| v.as_str());
-                let path_str = if let Some(p) = path_arg {
-                    p.to_string()
-                } else {
-                    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-                    let filename = format!("screenshot_{}.png", ts);
-                    let path = Path::new(&self.workspace_dir)
-                        .join("screenshots")
-                        .join(&filename);
-                    let _ = std::fs::create_dir_all(path.parent().unwrap());
-                    path.to_string_lossy().to_string()
-                };
-                let mut cmd_args = vec!["screenshot", &path_str];
-                if args
-                    .get("full_page")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    cmd_args.push("--full");
+                let result = cdp_err!(cdp.screenshot("png", None).await);
+                let data = result
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| self.default_screenshot_path(""));
+                match self.save_base64_image(data, &path) {
+                    Ok(p) => Ok(ToolResult::ok(format!("Screenshot saved to: {}", p))),
+                    Err(e) => Ok(ToolResult::fail(format!("Failed to save screenshot: {}", e))),
                 }
-                if args
-                    .get("annotate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    cmd_args.push("--annotate");
-                }
-                self.run_cmd(cmd_args).await
             }
             "screenshot_element" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
+                let result = cdp_err!(cdp.screenshot_element(selector, "png").await);
+                let data = result
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-                let filename = format!("element_{}.png", ts);
-                let path = Path::new(&self.workspace_dir)
-                    .join("screenshots")
-                    .join(&filename);
-                let _ = std::fs::create_dir_all(path.parent().unwrap());
-                let path_str = path.to_string_lossy().to_string();
-                if !selector.is_empty() {
-                    let _ = self.run_cmd(vec!["highlight", selector]).await;
+                let path = self.screenshot_path(&format!("element_{}.png", ts));
+                match self.save_base64_image(data, &path) {
+                    Ok(p) => Ok(ToolResult::ok(format!("Element screenshot saved to: {}", p))),
+                    Err(e) => Ok(ToolResult::fail(format!("Failed to save screenshot: {}", e))),
                 }
-                self.run_cmd(vec!["screenshot", &path_str]).await
             }
             "pdf" => {
-                let path_arg = args.get("path").and_then(|v| v.as_str());
-                let path_str = if let Some(p) = path_arg {
-                    p.to_string()
-                } else {
-                    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-                    let filename = format!("page_{}.pdf", ts);
-                    let path = Path::new(&self.workspace_dir)
-                        .join("downloads")
-                        .join(&filename);
-                    let _ = std::fs::create_dir_all(path.parent().unwrap());
-                    path.to_string_lossy().to_string()
-                };
-                self.run_cmd(vec!["pdf", &path_str]).await
+                let result = cdp_err!(cdp.print_pdf().await);
+                let data = result
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                let downloads = Path::new(&self.workspace_dir).join("downloads");
+                let _ = std::fs::create_dir_all(&downloads);
+                let path = downloads.join(format!("page_{}.pdf", ts));
+                use base64::{Engine, engine::general_purpose::STANDARD};
+                match STANDARD.decode(data) {
+                    Ok(bytes) => {
+                        std::fs::write(&path, bytes)?;
+                        Ok(ToolResult::ok(format!("PDF saved to: {}", path.display())))
+                    }
+                    Err(e) => Ok(ToolResult::fail(format!("Failed to decode PDF: {}", e))),
+                }
             }
-            "read_page" => self.run_cmd(vec!["snapshot", "-c"]).await,
-            "read_dom" => self.run_cmd(vec!["snapshot", "-i"]).await,
-            "back" => self.run_cmd(vec!["back"]).await,
-            "forward" => self.run_cmd(vec!["forward"]).await,
-            "refresh" => self.run_cmd(vec!["reload"]).await,
-            "get_url" => self.run_cmd(vec!["get", "url"]).await,
-            "get_title" => self.run_cmd(vec!["get", "title"]).await,
+            "read_page" => {
+                let text = cdp_err!(cdp.get_text("body").await);
+                Ok(ToolResult::ok(text))
+            }
+            "read_dom" => {
+                let dom = cdp_err!(cdp.snapshot_dom(Some(-1)).await);
+                Ok(ToolResult::ok(serde_json::to_string_pretty(&dom).unwrap_or_default()))
+            }
+            "back" => {
+                cdp_err!(cdp.go_back().await);
+                Ok(ToolResult::ok("Navigated back".to_string()))
+            }
+            "forward" => {
+                cdp_err!(cdp.go_forward().await);
+                Ok(ToolResult::ok("Navigated forward".to_string()))
+            }
+            "refresh" => {
+                cdp_err!(cdp.reload().await);
+                Ok(ToolResult::ok("Page refreshed".to_string()))
+            }
+            "get_url" => {
+                let url = cdp_err!(cdp.get_current_url().await);
+                Ok(ToolResult::ok(url))
+            }
+            "get_title" => {
+                let title = cdp_err!(cdp.get_title().await);
+                Ok(ToolResult::ok(title))
+            }
             "get_text" => {
-                let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "text", s]).await
+                let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("body");
+                let text = cdp_err!(cdp.get_text(s).await);
+                Ok(ToolResult::ok(text))
             }
             "get_html" => {
-                let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "html", s]).await
+                let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("body");
+                let html = cdp_err!(cdp.get_html(s).await);
+                Ok(ToolResult::ok(html))
             }
             "get_value" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "value", s]).await
+                let val = cdp_err!(cdp.get_value(s).await);
+                Ok(ToolResult::ok(val))
             }
             "get_attr" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let a = args.get("attribute").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "attr", a, s]).await
+                let val = cdp_err!(cdp.get_attribute(s, a).await);
+                Ok(ToolResult::ok(val))
             }
             "get_count" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "count", s]).await
+                let count = cdp_err!(cdp.get_count(s).await);
+                Ok(ToolResult::ok(count.to_string()))
             }
             "get_box" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "box", s]).await
+                let box_val = cdp_err!(cdp.get_bounding_box(s).await);
+                Ok(ToolResult::ok(serde_json::to_string_pretty(&box_val).unwrap_or_default()))
             }
             "get_styles" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["get", "styles", s]).await
+                let styles = cdp_err!(cdp.get_computed_styles(s).await);
+                Ok(ToolResult::ok(serde_json::to_string_pretty(&styles).unwrap_or_default()))
             }
             "is_visible" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["is", "visible", s]).await
+                let visible = cdp_err!(cdp.is_visible(s).await);
+                Ok(ToolResult::ok(visible.to_string()))
             }
             "is_enabled" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["is", "enabled", s]).await
+                let enabled = cdp_err!(cdp.is_enabled(s).await);
+                Ok(ToolResult::ok(enabled.to_string()))
             }
             "is_checked" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["is", "checked", s]).await
+                let checked = cdp_err!(cdp.is_checked(s).await);
+                Ok(ToolResult::ok(checked.to_string()))
             }
             "eval" => {
                 let js_code = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                // use_base64: encode JS as base64 (-b flag) to avoid shell-escaping issues
-                // when the script contains quotes, backticks, or other special characters.
                 let use_base64 = args
                     .get("use_base64")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                if use_base64 {
+                let js = if use_base64 {
                     use base64::{Engine, engine::general_purpose::STANDARD};
-                    let encoded = STANDARD.encode(js_code.as_bytes());
-                    self.run_cmd(vec!["eval", "-b", &encoded]).await
+                    match STANDARD.decode(js_code) {
+                        Ok(decoded) => String::from_utf8_lossy(&decoded).to_string(),
+                        Err(e) => return Ok(ToolResult::fail(format!("Base64 decode error: {}", e))),
+                    }
                 } else {
-                    self.run_cmd(vec!["eval", js_code]).await
+                    js_code.to_string()
+                };
+                let result = cdp_err!(cdp.evaluate(&js, true).await);
+                if let Some(err) = result.get("exceptionDetails") {
+                    Ok(ToolResult::fail(format!("JS error: {}", serde_json::to_string_pretty(err).unwrap_or_default())))
+                } else {
+                    let val = result
+                        .get("result")
+                        .and_then(|r| r.get("value"))
+                        .cloned()
+                        .unwrap_or(json!(null));
+                    Ok(ToolResult::ok(serde_json::to_string_pretty(&val).unwrap_or_default()))
                 }
-            }
-            "find" => {
-                let l = args
-                    .get("locator")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("role");
-                let v = args.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                let sa = args
-                    .get("sub_action")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("click");
-                let mut cmd = vec!["find", l, v, sa];
-                if let Some(t) = args.get("text").and_then(|v| v.as_str()) {
-                    cmd.push(t);
-                }
-                self.run_cmd(cmd).await
             }
             "select_option" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let o = args.get("option").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["select", s, o]).await
+                cdp_err!(cdp.select_option(s, o).await);
+                Ok(ToolResult::ok(format!("Selected {} in {}", o, s)))
             }
             "key_press" => {
                 let k = args.get("key").and_then(|v| v.as_str()).unwrap_or("Enter");
-                self.run_cmd(vec!["press", k]).await
+                cdp_err!(cdp.key_press(k, None).await);
+                Ok(ToolResult::ok(format!("Pressed key {}", k)))
             }
             "mouse_move" => {
-                let x = args
-                    .get("x")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0)
-                    .to_string();
-                let y = args
-                    .get("y")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0)
-                    .to_string();
-                self.run_cmd(vec!["mouse", "move", &x, &y]).await
+                let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                cdp_err!(cdp.mouse_move(x, y).await);
+                Ok(ToolResult::ok(format!("Mouse moved to ({},{})", x, y)))
             }
             "mouse_click" => {
-                let b = args
-                    .get("button")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("left");
-                self.run_cmd(vec!["mouse", "down", b]).await?;
-                self.run_cmd(vec!["mouse", "up", b]).await
+                let button = args.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+                let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                cdp_err!(cdp.mouse_click(x, y, button, 1).await);
+                Ok(ToolResult::ok(format!("Clicked {} at ({},{})", button, x, y)))
             }
             "mouse_wheel" => {
-                let a = args
-                    .get("amount")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(100)
-                    .to_string();
-                self.run_cmd(vec!["mouse", "wheel", &a]).await
+                let a = args.get("amount").and_then(|v| v.as_f64()).unwrap_or(100.0);
+                cdp_err!(cdp.mouse_wheel(0.0, 0.0, 0.0, a).await);
+                Ok(ToolResult::ok(format!("Mouse wheel: {}", a)))
             }
-            "get_cookies" => self.run_cmd(vec!["cookies", "get"]).await,
+            "get_cookies" => {
+                let result = cdp_err!(cdp.get_cookies().await);
+                Ok(ToolResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()))
+            }
             "set_cookie" => {
                 let n = args
                     .get("cookie_name")
@@ -405,346 +467,202 @@ impl Tool for BrowserTool {
                     .get("cookie_value")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                self.run_cmd(vec!["cookies", "set", n, v]).await
+                cdp_err!(cdp.set_cookie(n, v, None, None).await);
+                Ok(ToolResult::ok(format!("Cookie {} set", n)))
             }
-            "clear_cookies" => self.run_cmd(vec!["cookies", "clear"]).await,
+            "clear_cookies" => {
+                cdp_err!(cdp.clear_cookies().await);
+                Ok(ToolResult::ok("Cookies cleared".to_string()))
+            }
             "storage_local" => {
-                let mut cmd = vec!["storage", "local"];
-                if let Some(n) = args.get("cookie_name").and_then(|v| v.as_str()) {
-                    cmd.push(n);
+                let key = args.get("cookie_name").and_then(|v| v.as_str());
+                let val = args.get("cookie_value").and_then(|v| v.as_str());
+                if let (Some(k), Some(v)) = (key, val) {
+                    cdp_err!(cdp.set_local_storage(k, v).await);
+                    Ok(ToolResult::ok(format!("Set localStorage[{}]", k)))
+                } else if let Some(k) = key {
+                    let result = cdp_err!(cdp.get_local_storage(Some(k)).await);
+                    Ok(ToolResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()))
+                } else {
+                    let result = cdp_err!(cdp.get_local_storage(None).await);
+                    Ok(ToolResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()))
                 }
-                if let Some(v) = args.get("cookie_value").and_then(|v| v.as_str()) {
-                    cmd.push(v);
-                }
-                self.run_cmd(cmd).await
             }
             "storage_session" => {
-                let mut cmd = vec!["storage", "session"];
-                if let Some(n) = args.get("cookie_name").and_then(|v| v.as_str()) {
-                    cmd.push(n);
+                let key = args.get("cookie_name").and_then(|v| v.as_str());
+                let val = args.get("cookie_value").and_then(|v| v.as_str());
+                if let (Some(k), Some(v)) = (key, val) {
+                    let expr = format!(
+                        "sessionStorage.setItem({}, {})",
+                        serde_json::to_string(k)?,
+                        serde_json::to_string(v)?
+                    );
+                    cdp_err!(cdp.evaluate(&expr, false).await);
+                    Ok(ToolResult::ok(format!("Set sessionStorage[{}]", k)))
+                } else {
+                    let expr = "JSON.stringify(Object.fromEntries(Array.from({...(sessionStorage.length && Object.getOwnPropertyNames(sessionStorage).map(k=>[k,sessionStorage.getItem(k)]))})))";
+                    let result = cdp_err!(cdp.evaluate(expr, false).await);
+                    Ok(ToolResult::ok(
+                        result
+                            .get("result")
+                            .and_then(|r| r.get("value"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}")
+                            .to_string(),
+                    ))
                 }
-                if let Some(v) = args.get("cookie_value").and_then(|v| v.as_str()) {
-                    cmd.push(v);
-                }
-                self.run_cmd(cmd).await
             }
             "wait" => {
                 if let Some(ms) = args.get("ms").and_then(|v| v.as_u64()) {
-                    self.run_cmd(vec!["wait", &ms.to_string()]).await
+                    tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+                    Ok(ToolResult::ok(format!("Waited {}ms", ms)))
                 } else if let Some(s) = args.get("selector").and_then(|v| v.as_str()) {
-                    self.run_cmd(vec!["wait", s]).await
+                    cdp_err!(cdp.wait_for_selector(s, 10000).await);
+                    Ok(ToolResult::ok(format!("Element {} appeared", s)))
                 } else {
-                    self.run_cmd(vec!["wait", "1000"]).await
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    Ok(ToolResult::ok("Waited 1000ms".to_string()))
                 }
             }
             "wait_text" => {
                 let t = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["wait", "--text", t]).await
-            }
-            "wait_url" => {
-                let u = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["wait", "--url", u]).await
+                cdp_err!(cdp.wait_for_text(t, 10000).await);
+                Ok(ToolResult::ok(format!("Text '{}' appeared", t)))
             }
             "wait_load" => {
                 let ls = args
                     .get("load_state")
                     .and_then(|v| v.as_str())
                     .unwrap_or("networkidle");
-                self.run_cmd(vec!["wait", "--load", ls]).await
+                if ls == "networkidle" {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+                cdp_err!(cdp.wait_for_load(ls).await);
+                Ok(ToolResult::ok(format!("Page loaded: {}", ls)))
             }
-            "close" => self.run_cmd(vec!["close"]).await,
+            "close" => {
+                cdp.disconnect().await?;
+                let mut guard = self.client.lock().await;
+                *guard = None;
+                Ok(ToolResult::ok("Browser connection closed".to_string()))
+            }
             "set_viewport" => {
-                let w = args
-                    .get("width")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1280)
-                    .to_string();
+                let w = args.get("width").and_then(|v| v.as_i64()).unwrap_or(1280);
                 let h = args
                     .get("height")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(800)
-                    .to_string();
-                self.run_cmd(vec!["set", "viewport", &w, &h]).await
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(800);
+                cdp_err!(cdp.set_viewport(w, h, None).await);
+                Ok(ToolResult::ok(format!("Viewport set to {}x{}", w, h)))
             }
             "set_device" => {
                 let d = args.get("device").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["set", "device", d]).await
+                cdp_err!(cdp.emulate_device(d).await);
+                Ok(ToolResult::ok(format!("Device emulation set to {}", d)))
             }
             "set_geo" => {
                 let lat = args
                     .get("latitude")
                     .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-                    .to_string();
+                    .unwrap_or(0.0);
                 let lon = args
                     .get("longitude")
                     .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-                    .to_string();
-                self.run_cmd(vec!["set", "geo", &lat, &lon]).await
+                    .unwrap_or(0.0);
+                cdp_err!(cdp.set_geolocation(lat, lon).await);
+                Ok(ToolResult::ok(format!("Geolocation set to {}, {}", lat, lon)))
             }
-            "set_offline" => self.run_cmd(vec!["set", "offline", "on"]).await,
+            "set_offline" => {
+                cdp_err!(cdp.set_network_offline(true).await);
+                Ok(ToolResult::ok("Network set to offline".to_string()))
+            }
             "set_headers" => {
                 let h = args.get("headers").and_then(|v| v.as_str()).unwrap_or("{}");
-                self.run_cmd(vec!["set", "headers", h]).await
+                let headers: Value = serde_json::from_str(h).unwrap_or(json!({}));
+                cdp_err!(cdp.set_extra_http_headers(headers).await);
+                Ok(ToolResult::ok("Extra headers set".to_string()))
             }
             "set_media" => {
                 let m = args
                     .get("media_scheme")
                     .and_then(|v| v.as_str())
                     .unwrap_or("dark");
-                self.run_cmd(vec!["set", "media", m]).await
-            }
-            "alert_accept" => {
-                let t = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                if t.is_empty() {
-                    self.run_cmd(vec!["dialog", "accept"]).await
-                } else {
-                    self.run_cmd(vec!["dialog", "accept", t]).await
-                }
-            }
-            "alert_dismiss" => self.run_cmd(vec!["dialog", "dismiss"]).await,
-            "drag" => {
-                let f = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                let t = args
-                    .get("to_selector")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.run_cmd(vec!["drag", f, t]).await
+                cdp_err!(cdp.set_color_scheme(m).await);
+                Ok(ToolResult::ok(format!("Media scheme set to {}", m)))
             }
             "tab_new" => {
                 let u = args
                     .get("url")
                     .and_then(|v| v.as_str())
                     .unwrap_or("about:blank");
-                self.run_cmd(vec!["tab", "new", u]).await
+                let target_id = cdp_err!(cdp.create_target(u).await);
+                Ok(ToolResult::ok(format!("New tab created: {}", target_id)))
             }
-            "tab_list" => self.run_cmd(vec!["tab", "list"]).await,
-            "tab_close" => self.run_cmd(vec!["tab", "close"]).await,
+            "tab_list" => {
+                let targets = cdp_err!(cdp.list_targets().await);
+                let lines: Vec<String> = targets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("[{}] {} - {} ({})", i, t.id, t.title, t.url))
+                    .collect();
+                Ok(ToolResult::ok(lines.join("\n")))
+            }
+            "tab_close" => {
+                let targets = cdp_err!(cdp.list_targets().await);
+                if let Some(target_id) = args.get("tab_id").and_then(|v| v.as_u64()) {
+                    let idx = target_id as usize;
+                    if idx < targets.len() {
+                        cdp_err!(cdp.close_target(&targets[idx].id).await);
+                        Ok(ToolResult::ok(format!("Tab {} closed", idx)))
+                    } else {
+                        Ok(ToolResult::fail(format!("Tab index {} out of range", idx)))
+                    }
+                } else if let Some(last) = targets.last() {
+                    cdp_err!(cdp.close_target(&last.id).await);
+                    Ok(ToolResult::ok("Last tab closed".to_string()))
+                } else {
+                    Ok(ToolResult::fail("No tabs to close"))
+                }
+            }
             "tab_switch" => {
-                let id = args
-                    .get("tab_id")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0)
-                    .to_string();
-                self.run_cmd(vec!["tab", &id]).await
+                let targets = cdp_err!(cdp.list_targets().await);
+                if let Some(tab_id) = args.get("tab_id").and_then(|v| v.as_u64()) {
+                    let idx = tab_id as usize;
+                    if idx < targets.len() {
+                        cdp_err!(cdp.activate_target(&targets[idx].id).await);
+                        let mut guard = self.client.lock().await;
+                        *guard = None;
+                        drop(guard);
+                        let _ = self.get_client().await?;
+                        Ok(ToolResult::ok(format!("Switched to tab {}", idx)))
+                    } else {
+                        Ok(ToolResult::fail(format!("Tab index {} out of range", idx)))
+                    }
+                } else {
+                    Ok(ToolResult::fail("Missing tab_id parameter"))
+                }
             }
-            "window_new" => self.run_cmd(vec!["window", "new"]).await,
-            "frame" => {
-                let s = args
-                    .get("selector")
+            "drag" => {
+                let f = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
+                let t = args
+                    .get("to_selector")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("main");
-                self.run_cmd(vec!["frame", s]).await
+                    .unwrap_or("");
+                cdp_err!(cdp.drag(f, t).await);
+                Ok(ToolResult::ok(format!("Dragged {} to {}", f, t)))
             }
-            // Snapshot with options
             "snapshot" => {
-                // depth_str must outlive cmd; allocate before building cmd.
-                let depth_str = args
-                    .get("depth")
-                    .and_then(|v| v.as_u64())
-                    .map(|d| d.to_string());
-
-                let is_compact = args
+                let compact = args
                     .get("compact")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-
-                let mut cmd = vec!["snapshot"];
-                if args
-                    .get("json_output")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    cmd.push("--json");
-                }
-                if is_compact {
-                    cmd.push("-c");
-                }
-                if let Some(ref d) = depth_str {
-                    cmd.push("-d");
-                    cmd.push(d.as_str());
-                }
-                if let Some(scope) = args.get("scope").and_then(|v| v.as_str()) {
-                    cmd.push("-s");
-                    cmd.push(scope);
-                }
-                // Default to interactive when not compact
-                if !is_compact {
-                    cmd.push("-i");
-                }
-                self.run_cmd(cmd).await
+                let depth = args.get("depth").and_then(|v| v.as_i64());
+                let depth_opt = depth.map(|d| d as i32);
+                let text = cdp_err!(cdp.snapshot_text(compact, depth_opt).await);
+                Ok(ToolResult::ok(text))
             }
-            // State management
-            "state_save" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("./state.json");
-                self.run_cmd(vec!["state", "save", path]).await
-            }
-            "state_load" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("./state.json");
-                self.run_cmd(vec!["state", "load", path]).await
-            }
-            "state_list" => self.run_cmd(vec!["state", "list"]).await,
-            "state_clear" => {
-                let name = args
-                    .get("cookie_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.run_cmd(vec!["state", "clear", name]).await
-            }
-            "state_clean" => {
-                let days = args
-                    .get("days")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(30)
-                    .to_string();
-                self.run_cmd(vec!["state", "clean", "--older-than", &days])
-                    .await
-            }
-            // Diff commands
-            "diff_snapshot" => {
-                let mut cmd = vec!["diff", "snapshot"];
-                if let Some(baseline) = args.get("baseline").and_then(|v| v.as_str()) {
-                    cmd.push("--baseline");
-                    cmd.push(baseline);
-                }
-                self.run_cmd(cmd).await
-            }
-            "diff_screenshot" => {
-                let mut cmd = vec!["diff", "screenshot"];
-                if let Some(baseline) = args.get("baseline").and_then(|v| v.as_str()) {
-                    cmd.push("--baseline");
-                    cmd.push(baseline);
-                }
-                self.run_cmd(cmd).await
-            }
-            "diff_url" => {
-                let url1 = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                let url2 = args.get("url2").and_then(|v| v.as_str()).unwrap_or("");
-                let mut cmd = vec!["diff", "url", url1, url2];
-                if let Some(load_state) = args.get("load_state").and_then(|v| v.as_str()) {
-                    cmd.push("--wait-until");
-                    cmd.push(load_state);
-                }
-                if let Some(selector) = args.get("scope").and_then(|v| v.as_str()) {
-                    cmd.push("--selector");
-                    cmd.push(selector);
-                }
-                self.run_cmd(cmd).await
-            }
-            // Video recording
-            "record_start" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("./recording.webm");
-                self.run_cmd(vec!["record", "start", path]).await
-            }
-            "record_stop" => self.run_cmd(vec!["record", "stop"]).await,
-            "record_restart" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("./recording.webm");
-                self.run_cmd(vec!["record", "restart", path]).await
-            }
-            // Network controls
-            "network_route" => {
-                let url_pattern = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                let body = args.get("text").and_then(|v| v.as_str());
-                let mut cmd = vec!["network", "route", url_pattern];
-                if let Some(b) = body {
-                    cmd.push("--body");
-                    cmd.push(b);
-                } else {
-                    cmd.push("--abort");
-                }
-                self.run_cmd(cmd).await
-            }
-            "network_unroute" => {
-                let url_pattern = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["network", "unroute", url_pattern]).await
-            }
-            "network_requests" => {
-                let clear = args.get("cookie_name").and_then(|v| v.as_str()) == Some("clear");
-                if clear {
-                    self.run_cmd(vec!["network", "requests", "--clear"]).await
-                } else {
-                    self.run_cmd(vec!["network", "requests"]).await
-                }
-            }
-            // Auth vault
-            "auth_save" => {
-                let name = args
-                    .get("cookie_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                let username = args.get("username").and_then(|v| v.as_str()).unwrap_or("");
-                let password = args.get("password").and_then(|v| v.as_str()).unwrap_or("");
-                let mut cmd = vec!["auth", "save", name, "--url", url, "--username", username];
-                if !password.is_empty() {
-                    cmd.push("--password");
-                    cmd.push(password);
-                }
-                self.run_cmd(cmd).await
-            }
-            "auth_login" => {
-                let name = args
-                    .get("cookie_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.run_cmd(vec!["auth", "login", name]).await
-            }
-            "auth_list" => self.run_cmd(vec!["auth", "list"]).await,
-            "auth_show" => {
-                let name = args
-                    .get("cookie_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.run_cmd(vec!["auth", "show", name]).await
-            }
-            "auth_delete" => {
-                let name = args
-                    .get("cookie_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.run_cmd(vec!["auth", "delete", name]).await
-            }
-            // iOS gestures
-            "tap" => {
-                let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["tap", selector]).await
-            }
-            "swipe" => {
-                let gesture = args.get("gesture").and_then(|v| v.as_str()).unwrap_or("up");
-                self.run_cmd(vec!["swipe", gesture]).await
-            }
-            // Connect to existing browser
-            "connect" => {
-                if let Some(port) = args.get("port").and_then(|v| v.as_u64()) {
-                    self.run_cmd(vec!["connect", &port.to_string()]).await
-                } else if let Some(url) = args.get("url").and_then(|v| v.as_str()) {
-                    self.run_cmd(vec!["connect", url]).await
-                } else {
-                    self.run_cmd(vec!["connect", "9222"]).await
-                }
-            }
-            // Debug utilities
-            "highlight" => {
-                let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
-                self.run_cmd(vec!["highlight", selector]).await
-            }
-            "inspect" => self.run_cmd(vec!["inspect"]).await,
-            "get_cdp_url" => self.run_cmd(vec!["get", "cdp-url"]).await,
             _ => Ok(ToolResult::fail(format!(
-                "Action '{}' not supported",
+                "Action '{}' not supported via CDP. Available: navigate, click, dblclick, type, fill, scroll, hover, focus, check, uncheck, scrollintoview, screenshot, screenshot_element, pdf, read_page, read_dom, back, forward, refresh, get_url, get_title, get_text, get_html, get_value, get_attr, get_count, get_box, get_styles, is_visible, is_enabled, is_checked, eval, select_option, key_press, mouse_move, mouse_click, mouse_wheel, get_cookies, set_cookie, clear_cookies, storage_local, storage_session, wait, wait_text, wait_load, close, set_viewport, set_device, set_geo, set_offline, set_headers, set_media, tab_new, tab_list, tab_close, tab_switch, drag, snapshot",
                 action
             ))),
         }

@@ -118,6 +118,12 @@ struct HttpRequestConfigInput {
 #[derive(Debug, Deserialize)]
 struct BrowserConfigInput {
     enabled: Option<bool>,
+    cdp_host: Option<String>,
+    cdp_port: Option<u16>,
+    cdp_auto_launch: Option<bool>,
+    native_headless: Option<bool>,
+    native_chrome_path: Option<String>,
+    profile_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,10 +206,30 @@ async fn save_config(
     }
 
     // Update browser
-    if let Some(browser) = req.browser
+    if let Some(ref browser) = req.browser
         && let Some(enabled) = browser.enabled {
             config.browser.enabled = enabled;
         }
+    if let Some(browser) = req.browser {
+        if let Some(host) = browser.cdp_host {
+            config.browser.cdp_host = host;
+        }
+        if let Some(port) = browser.cdp_port {
+            config.browser.cdp_port = port;
+        }
+        if let Some(auto) = browser.cdp_auto_launch {
+            config.browser.cdp_auto_launch = auto;
+        }
+        if let Some(headless) = browser.native_headless {
+            config.browser.native_headless = headless;
+        }
+        if let Some(path) = browser.native_chrome_path {
+            config.browser.native_chrome_path = Some(path);
+        }
+        if let Some(profile_dir) = browser.profile_dir {
+            config.browser.profile_dir = Some(profile_dir);
+        }
+    }
 
     // Update composio
     if let Some(composio) = req.composio {

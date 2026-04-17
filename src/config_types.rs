@@ -194,10 +194,16 @@ impl Default for HttpRequestConfig {
             allowed_domains: Vec::new(),
             search_base_url: None,
             search_provider: default_search_provider(),
-            search_fallback_providers: Vec::new(),
+            search_fallback_providers: default_search_fallback_providers(),
             brave_search_api_key: None,
         }
     }
+}
+
+fn default_search_fallback_providers() -> Vec<String> {
+    // gemini_cli is the primary provider; duckduckgo is kept as a last-resort fallback
+    // only if gemini CLI is not installed. Brave requires an API key so is not a default.
+    vec!["duckduckgo".to_string()]
 }
 
 fn default_http_max_response_size() -> u32 {
@@ -209,7 +215,47 @@ fn default_http_timeout_secs() -> u64 {
 }
 
 fn default_search_provider() -> String {
-    "auto".to_string()
+    "gemini_cli".to_string()
+}
+
+// ── OpenCode CLI config ─────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OpencodeCliConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_opencode_binary")]
+    pub binary: String,
+    #[serde(default = "default_opencode_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_opencode_max_output_bytes")]
+    pub max_output_bytes: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attach_url: Option<String>,
+}
+
+impl Default for OpencodeCliConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            binary: default_opencode_binary(),
+            timeout_secs: default_opencode_timeout_secs(),
+            max_output_bytes: default_opencode_max_output_bytes(),
+            attach_url: None,
+        }
+    }
+}
+
+fn default_opencode_binary() -> String {
+    "opencode".to_string()
+}
+
+fn default_opencode_timeout_secs() -> u64 {
+    180
+}
+
+fn default_opencode_max_output_bytes() -> u32 {
+    1_000_000
 }
 
 // ── Browser config ──────────────────────────────────────────────
@@ -265,6 +311,14 @@ pub struct BrowserConfig {
     pub native_webdriver_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_chrome_path: Option<String>,
+    #[serde(default = "default_cdp_host")]
+    pub cdp_host: String,
+    #[serde(default = "default_cdp_port")]
+    pub cdp_port: u16,
+    #[serde(default)]
+    pub cdp_auto_launch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_dir: Option<String>,
     #[serde(default)]
     pub computer_use: BrowserComputerUseConfig,
     #[serde(default)]
@@ -280,6 +334,10 @@ impl Default for BrowserConfig {
             native_headless: true,
             native_webdriver_url: default_native_webdriver_url(),
             native_chrome_path: None,
+            cdp_host: default_cdp_host(),
+            cdp_port: default_cdp_port(),
+            cdp_auto_launch: true,
+            profile_dir: None,
             computer_use: BrowserComputerUseConfig::default(),
             allowed_domains: Vec::new(),
         }
@@ -287,7 +345,7 @@ impl Default for BrowserConfig {
 }
 
 fn default_browser_backend() -> String {
-    "agent_browser".to_string()
+    "cdp".to_string()
 }
 
 fn default_true() -> bool {
@@ -296,6 +354,14 @@ fn default_true() -> bool {
 
 fn default_native_webdriver_url() -> String {
     "http://127.0.0.1:9515".to_string()
+}
+
+fn default_cdp_port() -> u16 {
+    9222
+}
+
+fn default_cdp_host() -> String {
+    "127.0.0.1".to_string()
 }
 
 // ── Composio config ─────────────────────────────────────────────

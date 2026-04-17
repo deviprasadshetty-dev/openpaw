@@ -40,6 +40,13 @@
         "search_provider": "duckduckgo",
         "allowed_domains": []
     },
+    "opencode_cli": {
+        "enabled": true,
+        "binary": "opencode",
+        "timeout_secs": 180,
+        "max_output_bytes": 1000000,
+        "attach_url": "http://127.0.0.1:4096"
+    },
     "composio": {
         "enabled": false,
         "api_key": "YOUR_COMPOSIO_API_KEY",

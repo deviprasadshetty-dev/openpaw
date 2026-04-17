@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
             channels: Default::default(),
             memory: Default::default(),
             http_request: Default::default(),
+            opencode_cli: Default::default(),
             browser: Default::default(),
             composio: Default::default(),
             hardware: Default::default(),

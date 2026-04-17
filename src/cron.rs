@@ -204,7 +204,7 @@ impl CronScheduler {
             .as_secs() as i64;
 
         let mut jobs = self.jobs.lock().unwrap();
-        let mut to_fire: Vec<String> = Vec::new();
+        let mut to_fire: Vec<(String, Option<CronJob>)> = Vec::new();
         let mut to_delete: Vec<String> = Vec::new();
         let mut modified = false;
 
@@ -225,7 +225,9 @@ impl CronScheduler {
             }
 
             if job.next_run_secs > 0 && now >= job.next_run_secs {
-                to_fire.push(id.clone());
+                let is_ephemeral = job.delete_after_run || job.one_shot;
+                let snapshot = if is_ephemeral { Some(job.clone()) } else { None };
+                to_fire.push((id.clone(), snapshot));
                 job.last_run_secs = Some(now);
                 job.last_status = Some("running".to_string());
                 modified = true;
@@ -237,7 +239,7 @@ impl CronScheduler {
                     job.paused = true;
                 }
 
-                if job.delete_after_run || job.one_shot {
+                if is_ephemeral {
                     to_delete.push(id.clone());
                 }
             }
@@ -255,7 +257,7 @@ impl CronScheduler {
             drop(jobs);
         }
 
-        for id in to_fire {
+        for (id, snapshot) in to_fire {
             // Skip jobs that are already running to prevent concurrent duplicate runs.
             {
                 let running = self.running_jobs.lock().unwrap();
@@ -265,7 +267,7 @@ impl CronScheduler {
             }
             let scheduler = self.clone_with_arcs();
             tokio::spawn(async move {
-                let _ = scheduler.run_job(&id).await;
+                let _ = scheduler.run_job_with_snapshot(&id, snapshot).await;
             });
         }
     }
@@ -281,15 +283,20 @@ impl CronScheduler {
     }
 
     pub async fn run_job(&self, id: &str) -> Result<()> {
-        let id_str = id.to_string();
-        let job_data = {
-            let guard = self.jobs.lock().unwrap();
-            guard.get(&id.to_owned()).cloned()
-        };
+        self.run_job_with_snapshot(id, None).await
+    }
 
-        let job = match job_data {
+    pub async fn run_job_with_snapshot(&self, id: &str, snapshot: Option<CronJob>) -> Result<()> {
+        let id_str = id.to_string();
+        let job = match snapshot {
             Some(j) => j,
-            None => return Err(anyhow!("Job not found")),
+            None => {
+                let guard = self.jobs.lock().unwrap();
+                match guard.get(id) {
+                    Some(j) => j.clone(),
+                    None => return Err(anyhow!("Job not found")),
+                }
+            }
         };
 
         // Mark as running; bail if already in progress.

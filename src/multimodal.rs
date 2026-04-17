@@ -145,31 +145,84 @@ pub fn detect_mime_type(data: &[u8], path: &str) -> String {
 }
 
 pub fn is_gemini_cli_available() -> bool {
-    Command::new("gemini")
+    let direct = Command::new("gemini")
         .arg("--version")
         .output()
-        .is_ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if direct {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        return Command::new("gemini.cmd")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 pub fn process_with_gemini_cli(prompt: &str, files: &[String]) -> Result<String> {
-    let mut cmd = Command::new("gemini");
-    cmd.arg("ask");
-    
-    // Construct the prompt with file references
-    let full_prompt = prompt.to_string();
+    let mut full_prompt = String::new();
     for file in files {
-        // @google/gemini-cli uses @path to reference files
-        cmd.arg(format!("@{}", file));
+        let abs = std::fs::canonicalize(file)
+            .unwrap_or_else(|_| std::path::PathBuf::from(file));
+        full_prompt.push_str(&format!(
+            "Read and analyze the file at path: {}\n",
+            abs.display()
+        ));
     }
-    
-    cmd.arg(full_prompt);
+    full_prompt.push_str(prompt);
 
-    let output = cmd.output().context("Failed to execute gemini cli")?;
+    let output = match Command::new("gemini")
+        .arg("--approval-mode")
+        .arg("yolo")
+        .arg("--output-format")
+        .arg("text")
+        .arg("-p")
+        .arg(&full_prompt)
+        .output()
+    {
+        Ok(out) => out,
+        Err(primary_err) => {
+            #[cfg(windows)]
+            {
+                Command::new("gemini.cmd")
+                    .arg("--approval-mode")
+                    .arg("yolo")
+                    .arg("--output-format")
+                    .arg("text")
+                    .arg("-p")
+                    .arg(&full_prompt)
+                    .output()
+                    .with_context(|| format!("Failed to execute gemini cli: {}", primary_err))?
+            }
+            #[cfg(not(windows))]
+            {
+                return Err(anyhow!("Failed to execute gemini cli: {}", primary_err));
+            }
+        }
+    };
+
     if !output.status.success() {
-        return Err(anyhow!("Gemini CLI error: {}", String::from_utf8_lossy(&output.stderr)));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Gemini CLI error: {}", stderr));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err(anyhow!("Gemini CLI returned empty output"));
+    }
+
+    Ok(stdout)
 }
 
 pub fn read_local_file(path: &str, config: &MultimodalConfig) -> Result<MultimodalData> {

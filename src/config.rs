@@ -1,7 +1,7 @@
 use crate::config_types::{
     AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
-    McpServerConfig, MemoryConfig, NamedAgentConfig, PushoverConfig, ReliabilityConfig,
-    SchedulerConfig, SessionConfig,
+    McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig, PushoverConfig,
+    ReliabilityConfig, SchedulerConfig, SessionConfig,
 };
 use crate::secrets::SecretStore;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub http_request: HttpRequestConfig,
+    #[serde(default)]
+    pub opencode_cli: OpencodeCliConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
     #[serde(default)]

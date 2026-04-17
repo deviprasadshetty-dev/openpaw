@@ -120,7 +120,10 @@ impl Doctor {
             if ws_path.is_dir() {
                 items.push(DiagItem::ok(cat, &format!("found: {:?}", ws_path)));
             } else {
-                items.push(DiagItem::err(cat, &format!("not a directory: {:?}", ws_path)));
+                items.push(DiagItem::err(
+                    cat,
+                    &format!("not a directory: {:?}", ws_path),
+                ));
             }
         } else {
             items.push(DiagItem::err(cat, &format!("missing: {:?}", ws_path)));
@@ -142,11 +145,34 @@ impl Doctor {
         } else {
             items.push(DiagItem::warn(cat, "curl not found"));
         }
-        // Check agent-browser
-        if which::which("agent-browser").is_ok() {
-            items.push(DiagItem::ok(cat, "agent-browser found"));
+        // Check Chrome/CDP
+        let chrome_found = dirs::home_dir()
+            .map(|h| {
+                h.join("AppData")
+                    .join("Local")
+                    .join("Google")
+                    .join("Chrome")
+                    .join("Application")
+                    .join("chrome.exe")
+            })
+            .map(|p| p.exists())
+            .unwrap_or(false)
+            || std::path::Path::new(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+                .exists()
+            || std::path::Path::new(
+                r"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            )
+            .exists()
+            || which::which("google-chrome").is_ok()
+            || which::which("google-chrome-stable").is_ok()
+            || which::which("chromium-browser").is_ok();
+        if chrome_found {
+            items.push(DiagItem::ok(cat, "Chrome/Chromium found (CDP browser)"));
         } else {
-            items.push(DiagItem::warn(cat, "agent-browser not found (required for browser tool)"));
+            items.push(DiagItem::warn(
+                cat,
+                "Chrome/Chromium not found (required for CDP browser tool)",
+            ));
         }
         Ok(())
     }

@@ -69,6 +69,7 @@ WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:fr
 *   **Brave Search Integration**: High-quality web results via Brave's Search API. Returns rich, agent-friendly snippets for superior information gathering.
 *   **Background Sub-agents**: OpenPaw can spawn and manage background workers for long-running tasks, allowing it to multi-task without blocking your main conversation.
 *   **SkillForge Ecosystem**: Automatically scout and integrate community "Skills" from GitHub. Compatible with the NullClaw and OpenClaw ecosystems.
+*   **OpenCode CLI Bridge**: Optional `opencode_cli` tool lets OpenPaw invoke `opencode run` (including `--attach`) for a second coding agent pipeline when you need deeper code reasoning or different tool ecosystems.
 
 ### 🔌 Multimodal Senses
 *   **Hardware Gateway**: Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer.
@@ -143,6 +144,29 @@ Execute complex tasks directly from your terminal:
 ```bash
 openpaw agent --message "Sniff out the CPU temperature and let me know if it's getting too hot."
 ```
+
+### 🧩 OpenCode CLI Bridge (Optional)
+Enable in your `config.json`:
+```json
+"opencode_cli": {
+  "enabled": true,
+  "binary": "opencode",
+  "timeout_secs": 180,
+  "max_output_bytes": 1000000,
+  "attach_url": "http://127.0.0.1:4096"
+}
+```
+
+Use with a warm OpenCode server for faster repeated calls:
+```bash
+opencode serve --port 4096
+```
+
+Suggested uses:
+- Complex coding/refactoring and debugging
+- Research synthesis and long-form summarization
+- Planning (milestones, alternatives, decision matrices)
+- Writing transformations (rewrite, tone shift, structured drafts)
 
 ---
 

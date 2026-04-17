@@ -256,9 +256,12 @@ pub fn scheduler_thread(
     config: Arc<Config>,
     state: Arc<std::sync::Mutex<DaemonState>>,
     scheduler: Arc<CronScheduler>,
+    rt_handle: tokio::runtime::Handle,
 ) {
     let name = "scheduler";
-    let poll_secs = config.reliability.scheduler_poll_secs; // Assuming this exists or using default
+    let poll_secs = config.reliability.scheduler_poll_secs;
+
+    let _guard = rt_handle.enter();
 
     while !is_shutdown_requested() {
         {
@@ -268,7 +271,6 @@ pub fn scheduler_thread(
 
         scheduler.tick();
 
-        // Dynamic sleep to honor poll_secs
         thread::sleep(Duration::from_secs(poll_secs));
     }
 }
@@ -631,6 +633,17 @@ pub async fn build_tools(
         max_output_bytes: 1024 * 1024,
     }));
 
+    if config.opencode_cli.enabled {
+        tools.push(Arc::new(crate::tools::opencode_cli::OpencodeCliTool {
+            workspace_dir: config.workspace_dir.clone(),
+            allowed_paths: vec![config.workspace_dir.clone()],
+            binary: config.opencode_cli.binary.clone(),
+            default_attach_url: config.opencode_cli.attach_url.clone(),
+            timeout_secs: config.opencode_cli.timeout_secs,
+            max_output_bytes: config.opencode_cli.max_output_bytes as usize,
+        }));
+    }
+
     tools.push(Arc::new(crate::tools::git::GitTool {
         workspace_dir: config.workspace_dir.clone(),
         allowed_paths: vec![config.workspace_dir.clone()],
@@ -653,12 +666,15 @@ pub async fn build_tools(
 
     tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
         config.workspace_dir.clone(),
+        &config.browser,
     )));
 
     let mut search_tool = crate::tools::web_search::WebSearchTool::default();
     let req_config = &config.http_request;
     search_tool.provider = req_config.search_provider.clone();
     search_tool.api_key = req_config.brave_search_api_key.clone();
+    search_tool.fallback_providers = req_config.search_fallback_providers.clone();
+    search_tool.searxng_base_url = req_config.search_base_url.clone();
     tools.push(Arc::new(search_tool));
 
     tools.push(Arc::new(crate::tools::web_fetch::WebFetchTool {
@@ -712,7 +728,10 @@ pub async fn build_tools(
     }
 
     tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
-    tools.push(Arc::new(crate::tools::vision::VisionTool {}));
+    tools.push(Arc::new(crate::tools::vision::VisionTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone()],
+    }));
     tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
@@ -1057,7 +1076,8 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     let config_clone2 = config.clone();
     let sched_clone = scheduler.clone();
     let ds_clone = daemon_state.clone();
-    thread::spawn(move || scheduler_thread(config_clone2, ds_clone, sched_clone));
+    let rt_handle = tokio::runtime::Handle::current();
+    thread::spawn(move || scheduler_thread(config_clone2, ds_clone, sched_clone, rt_handle));
 
     // Start Gateway (Web UI) supervised
     let config_clone = config.clone();

@@ -29,6 +29,8 @@ use dispatcher::{ParsedToolCall, ToolExecutionResult, parse_tool_calls};
 use max_tokens as max_tokens_resolver;
 use memory_loader::{Memory, NoopMemory};
 
+const MAX_SAME_TOOL_RETRIES: u32 = 3;
+
 pub struct Agent {
     pub provider: Arc<dyn Provider>,
     pub tools: Vec<Arc<dyn Tool>>,
@@ -632,6 +634,10 @@ impl Agent {
         // compound into an infinite loop.
         let mut follow_through_nudge_count = 0u32;
         let mut empty_response_nudge_count = 0u32;
+        // BUG-7 FIX: Track tool call repetitions across iterations to prevent
+        // infinite retry loops (e.g. gemini CLI failing repeatedly).
+        let mut tool_call_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
 
         loop {
             if iterations >= self.max_tool_iterations {
@@ -870,6 +876,45 @@ impl Agent {
                     seen_calls.insert(key)
                 })
                 .collect();
+
+            // BUG-7 FIX: Cross-iteration circuit breaker — if the same tool+args
+            // has been called MAX_SAME_TOOL_RETRIES times, stop retrying and tell
+            // the LLM to give up. Prevents infinite loops with failing tools.
+            let mut blocked_tools: Vec<String> = Vec::new();
+            for tc in &deduped_calls {
+                let key = format!("{}:{}", tc.name, tc.arguments_json);
+                let count = tool_call_counts.entry(key).or_insert(0);
+                *count += 1;
+                if *count > MAX_SAME_TOOL_RETRIES {
+                    blocked_tools.push(tc.name.clone());
+                }
+            }
+
+            if !blocked_tools.is_empty() {
+                let blocked_names: Vec<String> = blocked_tools.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+                warn!(
+                    "Circuit breaker: tools {:?} called {} times with same args, stopping retry loop",
+                    blocked_names, MAX_SAME_TOOL_RETRIES
+                );
+                let circuit_msg = format!(
+                    "SYSTEM: The following tool(s) have been called {} times with the same arguments and continue to fail: {}. \
+                     Do NOT retry them. Instead, explain to the user what went wrong and suggest alternatives \
+                     (e.g. a different approach, manual steps, or a different tool).",
+                    MAX_SAME_TOOL_RETRIES,
+                    blocked_names.join(", ")
+                );
+                self.history.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: circuit_msg,
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    content_parts: None,
+                    thought_signature: None,
+                });
+                iterations += 1;
+                continue;
+            }
 
             let mut handles = Vec::new();
             for tool_call in &deduped_calls {
@@ -1253,6 +1298,9 @@ impl Agent {
         // BUG-2 FIX: Independent counters per nudge type to prevent infinite loops.
         let mut follow_through_nudge_count = 0u32;
         let mut empty_response_nudge_count = 0u32;
+        // BUG-7 FIX: Cross-iteration circuit breaker (same as turn()).
+        let mut tool_call_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
 
         loop {
             if iterations >= self.max_tool_iterations {
@@ -1475,6 +1523,43 @@ impl Agent {
                     seen_calls_s.insert(key)
                 })
                 .collect();
+
+            // BUG-7 FIX: Cross-iteration circuit breaker (same as turn()).
+            let mut blocked_tools_s: Vec<String> = Vec::new();
+            for tc in &deduped_calls_s {
+                let key = format!("{}:{}", tc.name, tc.arguments_json);
+                let count = tool_call_counts.entry(key).or_insert(0);
+                *count += 1;
+                if *count > MAX_SAME_TOOL_RETRIES {
+                    blocked_tools_s.push(tc.name.clone());
+                }
+            }
+
+            if !blocked_tools_s.is_empty() {
+                let blocked_names_s: Vec<String> = blocked_tools_s.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+                warn!(
+                    "Circuit breaker: tools {:?} called {} times with same args, stopping retry loop",
+                    blocked_names_s, MAX_SAME_TOOL_RETRIES
+                );
+                let circuit_msg = format!(
+                    "SYSTEM: The following tool(s) have been called {} times with the same arguments and continue to fail: {}. \
+                     Do NOT retry them. Instead, explain to the user what went wrong and suggest alternatives \
+                     (e.g. a different approach, manual steps, or a different tool).",
+                    MAX_SAME_TOOL_RETRIES,
+                    blocked_names_s.join(", ")
+                );
+                self.history.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: circuit_msg,
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    content_parts: None,
+                    thought_signature: None,
+                });
+                iterations += 1;
+                continue;
+            }
 
             let mut handles = Vec::new();
             for tool_call in &deduped_calls_s {
