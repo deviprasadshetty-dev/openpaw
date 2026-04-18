@@ -4,7 +4,6 @@
 /// and the `PlanManager` executes it using the `SubagentManager` in topological order —
 /// running independent tasks concurrently within each dependency level.
 use crate::bus::{Bus, make_outbound};
-use crate::skillmint::{ImportanceLevel, MintResult, SkillMint};
 use crate::subagent::{SubagentManager, TaskStatus};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -53,11 +52,6 @@ pub struct PlanManager {
     next_id: Arc<Mutex<u64>>,
     subagent_manager: Arc<SubagentManager>,
     bus: Arc<Bus>,
-    /// Optional SkillMint instance. When present, auto-minting runs after
-    /// each fully-successful plan completion.
-    skillmint: Option<Arc<SkillMint>>,
-    /// Resolved distillation model (from resolve_distill_model at startup).
-    distill_model: String,
 }
 
 impl PlanManager {
@@ -67,16 +61,7 @@ impl PlanManager {
             next_id: Arc::new(Mutex::new(1)),
             subagent_manager,
             bus,
-            skillmint: None,
-            distill_model: String::new(),
         }
-    }
-
-    /// Attach a SkillMint instance so the plan manager can auto-mint after completions.
-    pub fn with_skillmint(mut self, sm: Arc<SkillMint>, distill_model: String) -> Self {
-        self.skillmint = Some(sm);
-        self.distill_model = distill_model;
-        self
     }
 
     /// Validate the task list and return topologically sorted batches.
@@ -183,8 +168,6 @@ impl PlanManager {
         let origin_channel = origin_channel.to_string();
         let origin_chat_id = origin_chat_id.to_string();
         let goal_str = goal.to_string();
-        let skillmint_opt = self.skillmint.clone();
-        let distill_model = self.distill_model.clone();
 
         tokio::spawn(async move {
             let total_batches = batches.len();
@@ -310,69 +293,8 @@ impl PlanManager {
 
             if let Ok(mut guard) = plans_clone.lock() {
                 if let Some(plan) = guard.get_mut(&plan_id) {
-                    plan.status = final_status.clone();
+                    plan.status = final_status;
                     plan.completed_at = Some(now_secs());
-                }
-            }
-
-            // --- SkillMint auto-mint hook ---
-            // Capture metrics before the async spawn moves them away.
-            let duration_secs = {
-                let guard = plans_clone.lock().unwrap_or_else(|e| e.into_inner());
-                let started = guard.get(&plan_id).map(|p| p.started_at).unwrap_or(0);
-                now_secs().saturating_sub(started)
-            };
-            let task_outcomes_snapshot: HashMap<String, TaskStatus> = {
-                let guard = plans_clone.lock().unwrap_or_else(|e| e.into_inner());
-                guard
-                    .get(&plan_id)
-                    .map(|p| p.task_outcomes.clone())
-                    .unwrap_or_default()
-            };
-
-            if final_status == PlanStatus::Completed {
-                if let Some(ref sm_arc) = skillmint_opt {
-                    let summary =
-                        build_plan_summary(&goal_str, total_tasks, &task_outcomes_snapshot);
-                    let sm_ref = sm_arc.clone();
-                    let model = distill_model.clone();
-                    let goal_clone = goal_str.clone();
-
-                    tokio::spawn(async move {
-                        let result = sm_ref
-                            .maybe_mint(
-                                &goal_clone,
-                                &summary,
-                                total_tasks,
-                                true,
-                                duration_secs,
-                                &model,
-                                // Provider wired in Phase 6 follow-up
-                                |_m, _p| async { Ok(String::new()) },
-                            )
-                            .await;
-
-                        match result {
-                            MintResult::Minted { slug, importance, is_upgrade } => {
-                                let verb = if is_upgrade { "upgraded" } else { "minted" };
-                                match importance {
-                                    ImportanceLevel::Normal => {
-                                        info!("SkillMint: {} skill '{}'", verb, slug);
-                                    }
-                                    ImportanceLevel::High => {
-                                        info!(
-                                            "SkillMint: {} high-importance skill '{}' — notifying user",
-                                            verb, slug
-                                        );
-                                        // TODO: publish approval-request to origin_channel
-                                    }
-                                }
-                            }
-                            MintResult::Skipped { reason } => {
-                                info!("SkillMint: skipped — {}", reason);
-                            }
-                        }
-                    });
                 }
             }
         });
@@ -417,31 +339,4 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-/// Build a concise plain-text summary of what the plan did.
-/// Used as the `plan_summary` argument to SkillMint distillation.
-fn build_plan_summary(
-    goal: &str,
-    total_tasks: usize,
-    outcomes: &HashMap<String, TaskStatus>,
-) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Goal: {}", goal));
-    lines.push(format!("Total tasks: {}", total_tasks));
-    lines.push("Tasks:".to_string());
-
-    let mut task_ids: Vec<&String> = outcomes.keys().collect();
-    task_ids.sort();
-    for id in task_ids {
-        let status = match outcomes.get(id) {
-            Some(TaskStatus::Completed) => "✅ completed",
-            Some(TaskStatus::Failed) => "❌ failed",
-            Some(TaskStatus::Cancelled) => "⚠️ cancelled",
-            _ => "❓ unknown",
-        };
-        lines.push(format!("  - {}: {}", id, status));
-    }
-
-    lines.join("\n")
 }

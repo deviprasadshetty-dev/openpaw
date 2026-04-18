@@ -1,7 +1,7 @@
 use crate::config_types::{
     AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
     McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig, PushoverConfig,
-    ReliabilityConfig, SchedulerConfig, SessionConfig, SkillMintConfig, TaskModelsConfig,
+    ReliabilityConfig, SchedulerConfig, SessionConfig,
 };
 use crate::secrets::SecretStore;
 use serde::{Deserialize, Serialize};
@@ -14,8 +14,6 @@ pub struct Config {
     pub default_model: Option<String>,
     pub default_temperature: Option<f32>,
     pub models: Option<ModelsConfig>,
-    #[serde(default)]
-    pub task_models: TaskModelsConfig,
     #[serde(default)]
     pub gateway: GatewayConfig,
     #[serde(default)]
@@ -46,10 +44,6 @@ pub struct Config {
     pub session: SessionConfig,
     #[serde(default)]
     pub bindings: Vec<AgentBinding>,
-
-    /// SkillMint self-learning configuration.
-    #[serde(default)]
-    pub skillmint: SkillMintConfig,
 
     #[serde(skip)]
     pub config_path: String,
@@ -95,8 +89,8 @@ impl Config {
         // Encrypt Composio API key
         if self.composio.enabled {
             if let Some(ref mut api_key) = self.composio.api_key {
-                if !api_key.as_str().is_empty() && !SecretStore::is_encrypted(api_key.as_str()) {
-                    *api_key = store.encrypt(api_key.as_str())?;
+                if !api_key.is_empty() && !SecretStore::is_encrypted(api_key) {
+                    *api_key = store.encrypt(api_key)?;
                 }
             }
         }
@@ -129,8 +123,8 @@ impl Config {
         // Decrypt Composio API key
         if self.composio.enabled {
             if let Some(ref mut api_key) = self.composio.api_key {
-                if SecretStore::is_encrypted(api_key.as_str()) {
-                    *api_key = store.decrypt(api_key.as_str())?;
+                if SecretStore::is_encrypted(api_key) {
+                    *api_key = store.decrypt(api_key)?;
                 }
             }
         }
@@ -201,5 +195,3 @@ fn default_gateway_port() -> u16 {
 fn default_gateway_host() -> String {
     "127.0.0.1".to_string()
 }
-
-

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-// â”€â”€ Autonomy Level â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Autonomy Level ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +13,7 @@ pub enum AutonomyLevel {
     Autonomous,
 }
 
-// â”€â”€ Named agent config (for agents map in JSON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Named agent config (for agents map in JSON) ────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NamedAgentConfig {
@@ -34,7 +34,7 @@ fn default_max_depth() -> u32 {
     3
 }
 
-// â”€â”€ Session Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Session Config ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -163,7 +163,7 @@ fn default_typing_interval_secs() -> u32 {
     5
 }
 
-// â”€â”€ HTTP request config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── HTTP request config ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpRequestConfig {
@@ -218,7 +218,7 @@ fn default_search_provider() -> String {
     "gemini_cli".to_string()
 }
 
-// â”€â”€ OpenCode CLI config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── OpenCode CLI config ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OpencodeCliConfig {
@@ -258,7 +258,7 @@ fn default_opencode_max_output_bytes() -> u32 {
     1_000_000
 }
 
-// â”€â”€ Browser config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Browser config ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BrowserComputerUseConfig {
@@ -364,7 +364,7 @@ fn default_cdp_host() -> String {
     "127.0.0.1".to_string()
 }
 
-// â”€â”€ Composio config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Composio config ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ComposioConfig {
@@ -390,7 +390,7 @@ fn default_composio_entity_id() -> String {
     "default".to_string()
 }
 
-// â”€â”€ Hardware config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Hardware config ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -436,7 +436,7 @@ fn default_baud_rate() -> u32 {
     115200
 }
 
-// â”€â”€ Memory config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Memory config ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MemoryConfig {
@@ -459,7 +459,7 @@ fn default_memory_backend() -> String {
     "markdown".to_string()
 }
 
-// â”€â”€ Channels configs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Channels configs ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
@@ -519,7 +519,7 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
 }
 
-// â”€â”€ MCP config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── MCP config ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerEnv {
@@ -540,7 +540,7 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub inherit: Vec<String>,
 }
-// â”€â”€ Pushover config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Pushover config ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PushoverConfig {
@@ -551,7 +551,7 @@ pub struct PushoverConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_key: Option<String>,
 }
-// â”€â”€ Reliability config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Reliability config ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReliabilityConfig {
@@ -586,7 +586,7 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
-// â”€â”€ Scheduler config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Scheduler config ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchedulerConfig {
@@ -614,137 +614,4 @@ fn default_max_tasks() -> usize {
 
 fn default_agent_timeout_secs() -> u64 {
     300
-}
-
-// â”€â”€ Task-based model routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TaskModelsConfig {
-    #[serde(default)]
-    pub chat: Option<String>,
-    #[serde(default)]
-    pub tool_use: Option<String>,
-    #[serde(default)]
-    pub summarize: Option<String>,
-    #[serde(default)]
-    pub greeting: Option<String>,
-    #[serde(default)]
-    pub cron: Option<String>,
-    #[serde(default)]
-    pub subagent: Option<String>,
-    #[serde(default)]
-    pub heartbeat: Option<String>,
-    #[serde(default)]
-    pub event: Option<String>,
-}
-
-impl Default for TaskModelsConfig {
-    fn default() -> Self {
-        Self {
-            chat: None,
-            tool_use: None,
-            summarize: None,
-            greeting: None,
-            cron: None,
-            subagent: None,
-            heartbeat: None,
-            event: None,
-        }
-    }
-}
-
-impl TaskModelsConfig {
-    pub fn to_map(&self) -> std::collections::HashMap<String, String> {
-        let mut map = std::collections::HashMap::new();
-        if let Some(ref v) = self.chat {
-            map.insert("chat".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.tool_use {
-            map.insert("tool_use".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.summarize {
-            map.insert("summarize".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.greeting {
-            map.insert("greeting".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.cron {
-            map.insert("cron".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.subagent {
-            map.insert("subagent".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.heartbeat {
-            map.insert("heartbeat".to_string(), v.clone());
-        }
-        if let Some(ref v) = self.event {
-            map.insert("event".to_string(), v.clone());
-        }
-        map
-    }
-}
-
-// u{2500}u{2500} SkillMint config u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}
-
-fn default_mint_min_duration() -> u64 { 60 }
-fn default_mint_high_importance_secs() -> u64 { 300 }
-fn default_mint_min_tasks() -> usize { 3 }
-fn default_skillmint_true() -> bool { true }
-
-/// Configuration for the SkillMint self-learning system.
-///
-/// SkillMint watches for successful multi-step plans and automatically
-/// distils them into reusable skill files stored in `skills/minted/`.
-/// A cheap secondary model handles distillation to keep costs low.
-/// An optional GitHub-backed SkillVault syncs minted skills so they
-/// survive agent wipes and can be restored on new instances instantly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillMintConfig {
-    /// Enable automatic skill minting after successful plans (default: true).
-    #[serde(default = "default_skillmint_true")]
-    pub enabled: bool,
-    /// Minimum plan duration in seconds before a mint is considered. Default: 60 s.
-    #[serde(default = "default_mint_min_duration")]
-    pub min_duration_secs: u64,
-    /// Minimum sub-task count before minting is considered. Default: 3.
-    #[serde(default = "default_mint_min_tasks")]
-    pub min_tasks: usize,
-    /// Model to use for the distillation LLM call.
-    /// If None (default), SkillMint reuses the user's already-configured
-    /// secondary model: task_models.summarize → task_models.subagent → default model.
-    /// No need to set this unless you want to override with a specific model.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub distill_model: Option<String>,
-    /// Duration (secs) above which a mint is flagged High-importance (approval required).
-    /// Default: 300 s (5 min).
-    #[serde(default = "default_mint_high_importance_secs")]
-    pub high_importance_secs: u64,
-    /// GitHub repo for minted skills, e.g. "alice/openpaw-skills". None = local-only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vault_repo: Option<String>,
-    /// GitHub personal access token with `repo` scope for SkillVault sync.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vault_token: Option<String>,
-    /// Auto-create the GitHub repo if it does not exist (default: true).
-    #[serde(default = "default_skillmint_true")]
-    pub vault_auto_create: bool,
-    /// Make the auto-created repo private (default: true).
-    #[serde(default = "default_skillmint_true")]
-    pub vault_private: bool,
-}
-
-impl Default for SkillMintConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            min_duration_secs: default_mint_min_duration(),
-            min_tasks: default_mint_min_tasks(),
-            distill_model: None,
-            high_importance_secs: default_mint_high_importance_secs(),
-            vault_repo: None,
-            vault_token: None,
-            vault_auto_create: true,
-            vault_private: true,
-        }
-    }
 }

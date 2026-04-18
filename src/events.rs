@@ -168,14 +168,13 @@ impl EventRegistry {
                         event_name, prompt, payload
                     );
                     let session_key = format!("{}:{}", origin_channel, origin_chat_id);
-                    let mut inbound = make_inbound(
+                    let inbound = make_inbound(
                         &origin_channel,
                         "event_system",
                         &origin_chat_id,
                         &full_prompt,
                         &session_key,
                     );
-                    inbound.task_kind = Some("event".to_string());
                     if let Err(e) = self.bus.publish_inbound(inbound) {
                         warn!("EventRegistry: failed to publish inbound for watcher {}: {}", watcher.id, e);
                     } else {

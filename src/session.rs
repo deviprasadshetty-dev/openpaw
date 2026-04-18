@@ -3,20 +3,21 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::agent::memory_loader::Memory;
 use crate::providers::Provider;
 use crate::tools::{Tool, ToolContext};
 
+/// Session wraps an Agent instance for an ongoing conversation.
+/// It maintains the last active time and an internal async mutex to serialize turns
+/// per session key.
 pub struct Session {
     pub agent: tokio::sync::Mutex<Agent>,
     pub created_at: u64,
     pub last_active: AtomicU64,
     pub session_key: String,
     pub turn_count: AtomicU64,
-    pub cancel_token: std::sync::Mutex<CancellationToken>,
 }
 
 impl Session {
@@ -32,7 +33,6 @@ impl Session {
             last_active: AtomicU64::new(now),
             session_key,
             turn_count: AtomicU64::new(0),
-            cancel_token: std::sync::Mutex::new(CancellationToken::new()),
         }
     }
 }
@@ -91,7 +91,7 @@ impl SessionManager {
         let mut agent = Agent::new(
             provider,
             self.tools.clone(),
-            model.clone(),
+            model,
             self.config.workspace_dir.clone(),
         );
         agent.config_path = if self.config.config_path.is_empty() {
@@ -99,13 +99,6 @@ impl SessionManager {
         } else {
             Some(self.config.config_path.clone())
         };
-
-        // Apply task-based model routing from config
-        let task_config = crate::model_router::TaskModelConfig::with_overrides(
-            &model,
-            &self.config.task_models.to_map(),
-        );
-        agent = agent.with_task_models(&task_config);
 
         if let Some(cfg) = agent_cfg
             && let Some(prompt) = &cfg.system_prompt {
@@ -154,23 +147,7 @@ impl SessionManager {
         Ok(response)
     }
 
-    /// Cancel any in-progress turn for the given session key.
-    /// Returns true if a session was found (and its token was cancelled).
-    pub fn cancel_turn(&self, session_key: &str) -> bool {
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(session) = sessions.get(session_key) {
-            if let Ok(token) = session.cancel_token.lock() {
-                token.cancel();
-            }
-            true
-        } else {
-            false
-        }
-    }
-
     /// Safely process a message with a streaming callback for a specific session.
-    /// Resets the cancellation token before starting so previous cancellations
-    /// don't block new turns.
     pub async fn process_message_stream(
         &self,
         session_key: &str,
@@ -187,17 +164,8 @@ impl SessionManager {
             .as_secs();
         session_arc.last_active.store(now, Ordering::SeqCst);
 
-        // Reset cancellation token so a new turn can start even if the
-        // previous one was cancelled with /stop.
-        if let Ok(mut token) = session_arc.cancel_token.lock() {
-            *token = CancellationToken::new();
-        }
-
         let mut agent_guard = session_arc.agent.lock().await;
-        let cancel_token = session_arc.cancel_token.lock().ok().map(|t| t.clone());
-        let response = agent_guard
-            .turn_stream(message, &context, callback, cancel_token)
-            .await?;
+        let response = agent_guard.turn_stream(message, &context, callback).await?;
 
         session_arc.turn_count.fetch_add(1, Ordering::SeqCst);
         session_arc.last_active.store(

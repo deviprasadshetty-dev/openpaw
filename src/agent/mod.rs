@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tracing::warn;
 
-use crate::model_router::{TaskKind, TaskModelConfig};
+use crate::model_router::ModelRoutingConfig;
 use crate::providers::{ChatMessage, ChatRequest, Provider, ToolSpec};
 use crate::tools::{Tool, ToolContext};
 
@@ -51,7 +51,7 @@ pub struct Agent {
     pub total_tokens: u64,
     pub tool_cache: crate::tools::cache::ToolCache,
     pub command_registry: commands::CommandRegistry,
-    pub task_models: TaskModelConfig,
+    pub model_routing_config: ModelRoutingConfig,
     pub cached_system_prompt: OnceLock<String>,
     pub last_tool_hash: u64,
     pub cost_tracker: Option<crate::cost::CostTracker>,
@@ -328,7 +328,10 @@ impl Agent {
             total_tokens: 0,
             tool_cache: crate::tools::cache::ToolCache::new(300), // Default 5 min TTL
             command_registry: commands::CommandRegistry::new(),
-            task_models: TaskModelConfig::new(&model_name),
+            model_routing_config: ModelRoutingConfig {
+                cheap_model: model_name.clone(), // Default to same, will be tuned by config
+                default_model: model_name,
+            },
             cached_system_prompt: OnceLock::new(),
             last_tool_hash: 0,
             cost_tracker: Some(crate::cost::CostTracker::init(
@@ -365,11 +368,6 @@ impl Agent {
     pub fn with_system_prompt(mut self, prompt: &str) -> Self {
         let _ = self.cached_system_prompt.set(prompt.to_string());
         self.has_system_prompt = true;
-        self
-    }
-
-    pub fn with_task_models(mut self, config: &TaskModelConfig) -> Self {
-        self.task_models = config.clone();
         self
     }
 
@@ -476,18 +474,13 @@ impl Agent {
             return Ok(slash_response);
         }
 
-        // Task-based model routing: context.task_kind overrides, else detect greeting
-        let task = if let Some(ref kind) = context.task_kind {
-            TaskKind::from_str(kind).unwrap_or(TaskKind::Chat)
-        } else if model_router::is_greeting(&user_message) {
-            TaskKind::Greeting
-        } else {
-            TaskKind::Chat
-        };
-        let model_to_use = self.task_models.get(&task).to_string();
+        // QW-7: Cheap model routing for greetings/simple tasks
+        let model_to_use =
+            model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
+                .to_string();
 
         // R-1 & QW-2: Memory optimizations
-        if self.auto_save && user_message.len() > 20 && task != TaskKind::Greeting {
+        if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
             let key = format!(
                 "autosave_user_{}",
                 std::time::SystemTime::now()
@@ -561,7 +554,7 @@ impl Agent {
 
         // R-6 & QW-2: Enrich user message with memory context (only if substantive)
         let enriched_msg = if user_message.len() > 30
-            && task != TaskKind::Greeting
+            && !model_router::is_greeting(&user_message)
             && self.memory.as_any().downcast_ref::<NoopMemory>().is_none()
         {
             match memory_loader::enrich_message(
@@ -606,11 +599,10 @@ impl Agent {
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
 
-            let summarize_model = self.task_models.get(&TaskKind::Summarize).to_string();
             let _ = auto_compact_history(
                 &mut self.history,
                 &self.provider,
-                &summarize_model,
+                &self.model_name,
                 &compaction_config,
                 &mut self.last_compaction,
             );
@@ -1120,7 +1112,6 @@ impl Agent {
         user_message: String,
         context: &ToolContext,
         callback: crate::providers::StreamCallback,
-        cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         use crate::model_router;
         use crate::providers::StreamChunk;
@@ -1137,19 +1128,14 @@ impl Agent {
             return Ok(slash_response);
         }
 
-        // Task-based model routing: context.task_kind overrides, else detect greeting
-        let task = if let Some(ref kind) = context.task_kind {
-            TaskKind::from_str(kind).unwrap_or(TaskKind::Chat)
-        } else if model_router::is_greeting(&user_message) {
-            TaskKind::Greeting
-        } else {
-            TaskKind::Chat
-        };
-        let model_to_use = self.task_models.get(&task).to_string();
+        // QW-7: Cheap model routing
+        let model_to_use =
+            model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
+                .to_string();
 
         // R-6 & QW-2: Memory enrichment (only if substantive)
         let enriched_msg = if user_message.len() > 30
-            && task != TaskKind::Greeting
+            && !model_router::is_greeting(&user_message)
             && self.memory.as_any().downcast_ref::<NoopMemory>().is_none()
         {
             match memory_loader::enrich_message(
@@ -1169,7 +1155,7 @@ impl Agent {
 
         // R-1 & QW-2: Auto-save user message (only if substantive)
         // Skip saving imperative/task messages to prevent agent confusion
-        if self.auto_save && user_message.len() > 20 && task != TaskKind::Greeting {
+        if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
             let lower = user_message.to_lowercase();
             // Don't save imperative commands (create, delete, run, etc.) - only save facts/preferences
             let is_imperative = lower.contains("create")
@@ -1280,11 +1266,10 @@ impl Agent {
                 max_history_messages: self.max_history_messages as u32,
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
-            let summarize_model = self.task_models.get(&TaskKind::Summarize).to_string();
             let _ = auto_compact_history(
                 &mut self.history,
                 &self.provider,
-                &summarize_model,
+                &self.model_name,
                 &compaction_config,
                 &mut self.last_compaction,
             );
@@ -1318,13 +1303,6 @@ impl Agent {
             std::collections::HashMap::new();
 
         loop {
-            // Check cancellation at the start of every iteration.
-            if let Some(ref ct) = cancel_token {
-                if ct.is_cancelled() {
-                    return Ok("⏹ Task stopped by user.".to_string());
-                }
-            }
-
             if iterations >= self.max_tool_iterations {
                 warn!("Max tool iterations reached");
                 // BUG-4 FIX: Clone live history to satisfy borrow checker
