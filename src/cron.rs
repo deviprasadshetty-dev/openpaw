@@ -180,15 +180,7 @@ impl CronScheduler {
 
         let guard = self.jobs.lock().unwrap();
         if let Ok(data) = serde_json::to_string_pretty(&*guard) {
-            let tmp_path = path.with_extension("tmp");
-            if let Ok(mut file) = fs::File::create(&tmp_path) {
-                use std::io::Write;
-                if file.write_all(data.as_bytes()).is_ok() && file.sync_all().is_ok() {
-                    let _ = fs::rename(&tmp_path, path);
-                } else {
-                    let _ = fs::remove_file(&tmp_path);
-                }
-            }
+            let _ = fs::write(path, data);
         }
     }
 
@@ -255,8 +247,8 @@ impl CronScheduler {
         for (id, snapshot) in to_fire {
             // Skip jobs that are already running to prevent concurrent duplicate runs.
             {
-                let mut running = self.running_jobs.lock().unwrap();
-                if !running.insert(id.clone()) {
+                let running = self.running_jobs.lock().unwrap();
+                if running.contains(&id) {
                     continue;
                 }
             }
@@ -307,7 +299,7 @@ impl CronScheduler {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let result = match job.job_type {
+        let (success, output) = match job.job_type {
             JobType::Shell => {
                 // Cross-platform shell execution
                 let output = if cfg!(windows) {
@@ -361,7 +353,6 @@ impl CronScheduler {
                     media: Vec::new(),
                     metadata_json: None,
                     task_kind: Some("cron".to_string()),
-                    is_group: false,
                 };
                 match self.bus.publish_inbound(inbound) {
                     Ok(()) => (
@@ -378,8 +369,6 @@ impl CronScheduler {
                 }
             }
         };
-
-        let (success, output) = result;
 
         let finished_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -521,7 +510,159 @@ pub fn normalize_expression(expression: &str) -> Result<CronNormalized> {
     }
 }
 
-// Old cron parsers removed
+pub struct ParsedCronExpression {
+    pub minutes: [bool; 60],
+    pub hours: [bool; 24],
+    pub day_of_month: [bool; 32],
+    pub months: [bool; 13],
+    pub day_of_week: [bool; 7],
+    pub day_of_month_any: bool,
+    pub day_of_week_any: bool,
+}
+
+fn parse_cron_field(
+    field: &str,
+    min: u8,
+    max: u8,
+    allow_sunday_7: bool,
+    out: &mut [bool],
+) -> Result<bool> {
+    for val in out.iter_mut() {
+        *val = false;
+    }
+
+    if field == "*" {
+        for i in min..=max {
+            out[i as usize] = true;
+        }
+        return Ok(true);
+    }
+
+    let mut saw_value = false;
+    for part in field.split(',') {
+        let (range_part, step) = if let Some(slash_idx) = part.find('/') {
+            let step_str = &part[slash_idx + 1..];
+            let step: u8 = step_str.parse().map_err(|_| anyhow!("Invalid step"))?;
+            (&part[..slash_idx], step)
+        } else {
+            (part, 1)
+        };
+
+        let (start, end) = if range_part == "*" {
+            (min, max)
+        } else if let Some(dash_idx) = range_part.find('-') {
+            let start_str = &range_part[..dash_idx];
+            let end_str = &range_part[dash_idx + 1..];
+            let start: u8 = start_str
+                .parse()
+                .map_err(|_| anyhow!("Invalid range start"))?;
+            let end: u8 = end_str.parse().map_err(|_| anyhow!("Invalid range end"))?;
+            (start, end)
+        } else {
+            let val: u8 = range_part
+                .parse()
+                .map_err(|_| anyhow!("Invalid cron value"))?;
+            (val, val)
+        };
+
+        if start < min || end > (if allow_sunday_7 { 7 } else { max }) || start > end {
+            return Err(anyhow!("Cron value out of range"));
+        }
+
+        let mut current = start;
+        while current <= end {
+            let normalized = if allow_sunday_7 && current == 7 {
+                0
+            } else {
+                current
+            };
+            if normalized >= min && (normalized as usize) < out.len() {
+                out[normalized as usize] = true;
+                saw_value = true;
+            }
+            if let Some(next) = current.checked_add(step) {
+                current = next;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if !saw_value {
+        return Err(anyhow!("Invalid cron field: {}", field));
+    }
+    Ok(false)
+}
+
+pub fn parse_cron_expression(expression: &str) -> Result<ParsedCronExpression> {
+    let normalized = normalize_expression(expression)?;
+    let fields: Vec<&str> = normalized.expression.split_whitespace().collect();
+
+    let (min_f, hour_f, dom_f, mon_f, dow_f) = if normalized.needs_second_prefix {
+        (fields[0], fields[1], fields[2], fields[3], fields[4])
+    } else {
+        (fields[1], fields[2], fields[3], fields[4], fields[5])
+    };
+
+    let mut parsed = ParsedCronExpression {
+        minutes: [false; 60],
+        hours: [false; 24],
+        day_of_month: [false; 32],
+        months: [false; 13],
+        day_of_week: [false; 7],
+        day_of_month_any: false,
+        day_of_week_any: false,
+    };
+
+    parse_cron_field(min_f, 0, 59, false, &mut parsed.minutes)?;
+    parse_cron_field(hour_f, 0, 23, false, &mut parsed.hours)?;
+    parsed.day_of_month_any = parse_cron_field(dom_f, 1, 31, false, &mut parsed.day_of_month)?;
+    parse_cron_field(mon_f, 1, 12, false, &mut parsed.months)?;
+    parsed.day_of_week_any = parse_cron_field(dow_f, 0, 6, true, &mut parsed.day_of_week)?;
+
+    Ok(parsed)
+}
+
+fn cron_matches(parsed: &ParsedCronExpression, ts: i64, timezone: &str) -> bool {
+    use chrono::{Datelike, TimeZone, Timelike};
+    use chrono_tz::Tz;
+
+    // Parse timezone string, fallback to UTC if invalid
+    let tz: Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
+    let dt = tz
+        .timestamp_opt(ts, 0)
+        .single()
+        .unwrap_or_else(|| chrono::Utc::now().with_timezone(&tz));
+
+    let minute = dt.minute() as usize;
+    let hour = dt.hour() as usize;
+    let day = dt.day() as usize;
+    let month = dt.month() as usize;
+    let dow = dt.weekday().num_days_from_sunday() as usize;
+
+    if minute >= 60 || !parsed.minutes[minute] {
+        return false;
+    }
+    if hour >= 24 || !parsed.hours[hour] {
+        return false;
+    }
+    if month > 12 || !parsed.months[month] {
+        return false;
+    }
+
+    let dom_match = day <= 31 && parsed.day_of_month[day];
+    let dow_match = dow < 7 && parsed.day_of_week[dow];
+
+    if parsed.day_of_month_any && parsed.day_of_week_any {
+        true
+    } else if parsed.day_of_month_any {
+        dow_match
+    } else if parsed.day_of_week_any {
+        dom_match
+    } else {
+        dom_match || dow_match
+    }
+}
 
 pub fn next_run_for_expression(expression: &str, from_secs: i64, timezone: &str) -> Result<i64> {
     if let Some(delay) = expression.strip_prefix("@once:") {
@@ -529,44 +670,18 @@ pub fn next_run_for_expression(expression: &str, from_secs: i64, timezone: &str)
         return Ok(from_secs + delay_secs); // Delays are timezone-agnostic (relative)
     }
 
-    use chrono::{TimeZone, Utc};
-    use chrono_tz::Tz;
-    use std::str::FromStr;
+    let parsed = parse_cron_expression(expression)?;
+    let mut candidate = from_secs - (from_secs % 60) + 60;
 
-    let normalized = normalize_expression(expression)?;
-    
-    // We must pass a 7-part expression to `cron` crate.
-    let parts: Vec<&str> = normalized.expression.split_whitespace().collect();
-    let cron_str = if normalized.needs_second_prefix {
-        // Was 5 fields, now 6 with 0 at the start. Need 7 for `cron` crate (add year `*`).
-        if parts.len() == 5 {
-            format!("0 {} *", normalized.expression)
-        } else {
-            normalized.expression.clone()
+    // Look ahead 1 year
+    for _ in 0..(366 * 24 * 60) {
+        if cron_matches(&parsed, candidate, timezone) {
+            return Ok(candidate);
         }
-    } else {
-        if parts.len() == 6 {
-            format!("{} *", normalized.expression)
-        } else {
-            normalized.expression.clone()
-        }
-    };
-
-    let schedule = cron::Schedule::from_str(&cron_str)
-        .map_err(|e| anyhow!("Failed to parse cron expression: {}", e))?;
-
-    let tz: Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
-    
-    let dt = tz
-        .timestamp_opt(from_secs, 0)
-        .single()
-        .unwrap_or_else(|| Utc::now().with_timezone(&tz));
-
-    if let Some(next) = schedule.after(&dt).next() {
-        Ok(next.timestamp())
-    } else {
-        Err(anyhow!("No future run found within schedule limits"))
+        candidate += 60;
     }
+
+    Err(anyhow!("No future run found within 1 year"))
 }
 
 pub fn parse_duration(input: &str) -> Result<i64> {

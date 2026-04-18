@@ -62,7 +62,6 @@ impl Doctor {
         let mut items = Vec::new();
 
         Self::check_config_semantics(config, &mut items)?;
-        Self::check_security_defaults(config, &mut items)?;
         Self::check_workspace(config, &mut items)?;
         Self::check_environment(&mut items)?;
 
@@ -103,7 +102,6 @@ impl Doctor {
 
     fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) -> Result<()> {
         let cat = "config";
-        // Provider / API key
         if config.default_provider.is_empty() {
             items.push(DiagItem::err(cat, "no default_provider configured"));
         } else {
@@ -112,105 +110,6 @@ impl Doctor {
                 &format!("provider: {}", config.default_provider),
             ));
         }
-
-        // Default model must be resolvable
-        if config.default_model.is_none() {
-            if let Some(ref models) = config.models {
-                if !models.providers.contains_key(&config.default_provider) {
-                    items.push(DiagItem::warn(
-                        cat,
-                        &format!(
-                            "no model config found for provider '{}'",
-                            config.default_provider
-                        ),
-                    ));
-                } else {
-                    items.push(DiagItem::ok(cat, "provider config found"));
-                }
-            }
-        } else {
-            items.push(DiagItem::ok(
-                cat,
-                &format!("model: {}", config.default_model.as_deref().unwrap_or("(default)")),
-            ));
-        }
-
-        Ok(())
-    }
-
-    // ── 1.4.1: Security default checks ─────────────────────────────────────
-    fn check_security_defaults(config: &Config, items: &mut Vec<DiagItem>) -> Result<()> {
-        let cat = "security";
-
-        // Gateway: auth token
-        if config.gateway.token.is_none() {
-            items.push(DiagItem::warn(
-                cat,
-                "gateway.token is not set — /api/config is unauthenticated; \
-                 set a token for any non-localhost deployment",
-            ));
-        } else {
-            items.push(DiagItem::ok(cat, "gateway auth token configured"));
-        }
-
-        // Gateway: 0.0.0.0 without auth
-        let public_bind = config.gateway.allow_public_bind.unwrap_or(false);
-        if public_bind && config.gateway.token.is_none() {
-            items.push(DiagItem::err(
-                cat,
-                "gateway binds to 0.0.0.0 (allow_public_bind=true) but no auth token is set — \
-                 API is publicly accessible without any authentication",
-            ));
-        } else if public_bind {
-            items.push(DiagItem::warn(
-                cat,
-                "gateway binds to 0.0.0.0; ensure firewall rules restrict access",
-            ));
-        } else {
-            items.push(DiagItem::ok(cat, "gateway binds to 127.0.0.1 (localhost only)"));
-        }
-
-        // Telegram: open allowlists
-        for tg in &config.channels.telegram {
-            if tg.allow_from.is_empty() {
-                items.push(DiagItem::err(
-                    cat,
-                    &format!(
-                        "Telegram account '{}': allow_from is empty — bot accepts messages from ANY user",
-                        tg.account_id
-                    ),
-                ));
-            } else {
-                items.push(DiagItem::ok(
-                    cat,
-                    &format!(
-                        "Telegram account '{}': allow_from restricted to {} user(s)",
-                        tg.account_id,
-                        tg.allow_from.len()
-                    ),
-                ));
-            }
-        }
-
-        // Workspace must be writable
-        let ws = std::path::Path::new(&config.workspace_dir);
-        if ws.exists() {
-            // Create + delete a temp file to test writability
-            let test_path = ws.join(".openpaw_write_test");
-            match std::fs::write(&test_path, b"test") {
-                Ok(_) => {
-                    let _ = std::fs::remove_file(&test_path);
-                    items.push(DiagItem::ok(cat, "workspace directory is writable"));
-                }
-                Err(e) => {
-                    items.push(DiagItem::err(
-                        cat,
-                        &format!("workspace directory is not writable: {}", e),
-                    ));
-                }
-            }
-        }
-
         Ok(())
     }
 

@@ -101,7 +101,6 @@ struct PartialConfig {
     custom_base_url: Option<Option<String>>,
     custom_model: Option<Option<String>>,
     task_models_secondary: Option<SecondaryModel>,
-    email: Option<Option<EmailOnboard>>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,12 +109,6 @@ struct SecondaryModel {
     api_key: String,
     base_url: Option<String>,
     model: String,
-}
-
-#[derive(Debug, Clone)]
-struct EmailOnboard {
-    address: String,
-    password: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,7 +123,7 @@ fn theme() -> ColorfulTheme {
 // Main onboarding flow
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOTAL_STEPS: u8 = 10;
+const TOTAL_STEPS: u8 = 9;
 
 const COMMON_TIMEZONES: &[(&str, &str)] = &[
     ("UTC", "UTC / GMT+0"),
@@ -224,7 +217,6 @@ fn print_fresh_setup(partial: &mut PartialConfig) -> Result<()> {
     partial.step_composio(7)?;
     partial.step_brave(8)?;
     partial.step_pushover(9)?;
-    partial.step_email(10)?;
     Ok(())
 }
 
@@ -241,7 +233,6 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
             "Composio             — External app integrations",
             "Web Search           — Gemini CLI, Brave, or DuckDuckGo",
             "Pushover             — Push notification alerts",
-            "Email                — Internal email (send + read via SMTP/IMAP)",
             "─────────────────────────────────────────────────────",
             "Save & Exit          — Write config and quit",
             "Discard & Exit       — Exit without saving",
@@ -263,9 +254,8 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
             6 => partial.step_composio(7)?,
             7 => partial.step_brave(8)?,
             8 => partial.step_pushover(9)?,
-            9 => partial.step_email(10)?,
-            10 => {} // separator
-            11 => break,
+            9 => {} // separator
+            10 => break,
             _ => return Ok(()),
         }
     }
@@ -357,16 +347,6 @@ impl PartialConfig {
                 self.pushover = Some(Some((t, u)));
             } else {
                 self.pushover = Some(None);
-            }
-        }
-        if let Some(email) = json.get("email") {
-            if email["enabled"].as_bool().unwrap_or(false) {
-                self.email = Some(Some(EmailOnboard {
-                    address: email["address"].as_str().unwrap_or("").to_string(),
-                    password: email["password"].as_str().unwrap_or("").to_string(),
-                }));
-            } else {
-                self.email = Some(None);
             }
         }
     }
@@ -1281,46 +1261,6 @@ impl PartialConfig {
         Ok(())
     }
 
-    fn step_email(&mut self, step: u8) -> Result<()> {
-        step_header(
-            step,
-            TOTAL_STEPS,
-            "Email",
-            "Internal email for the agent (SMTP/IMAP auto-detected from your address)",
-        );
-        let has = self.email.as_ref().and_then(|e| e.as_ref()).is_some();
-
-        let enable = Confirm::with_theme(&theme())
-            .with_prompt("Enable internal email?")
-            .default(has)
-            .interact()?;
-
-        if enable {
-            let default_addr = self
-                .email
-                .as_ref()
-                .and_then(|e| e.as_ref())
-                .map(|e| e.address.as_str())
-                .unwrap_or("");
-            let address: String = Input::with_theme(&theme())
-                .with_prompt("Email address")
-                .default(default_addr.to_string())
-                .interact()?;
-
-            let password: String = Password::with_theme(&theme())
-                .with_prompt("App password  (Gmail: use an app-specific password)")
-                .allow_empty_password(true)
-                .interact()?;
-
-            self.email = Some(Some(EmailOnboard { address, password }));
-            step_done("Email · enabled (SMTP/IMAP auto-detected)");
-        } else {
-            self.email = Some(None);
-            step_skip("Email");
-        }
-        Ok(())
-    }
-
     fn to_json(&self) -> serde_json::Value {
         use serde_json::json;
 
@@ -1389,11 +1329,6 @@ impl PartialConfig {
                 "enabled": self.pushover.as_ref().and_then(|p| p.as_ref()).is_some(),
                 "token":    self.pushover.as_ref().and_then(|p| p.as_ref()).map(|p| p.0.clone()),
                 "user_key": self.pushover.as_ref().and_then(|p| p.as_ref()).map(|p| p.1.clone())
-            },
-            "email": {
-                "enabled": self.email.as_ref().and_then(|e| e.as_ref()).is_some(),
-                "address": self.email.as_ref().and_then(|e| e.as_ref()).map(|e| e.address.clone()),
-                "password": self.email.as_ref().and_then(|e| e.as_ref()).map(|e| e.password.clone())
             }
         });
 
@@ -1786,13 +1721,6 @@ fn print_done(partial: &PartialConfig, dir: &Path) {
         "disabled"
     };
     summary_row("Pushover", push);
-
-    let email = if partial.email.as_ref().and_then(|e| e.as_ref()).is_some() {
-        "enabled"
-    } else {
-        "disabled"
-    };
-    summary_row("Email", email);
 
     println!();
     summary_row("Workspace", &workspace);

@@ -248,13 +248,6 @@ pub trait Provider: Send + Sync {
     /// Whether this provider inherently supports returning native tool calls
     fn supports_native_tools(&self) -> bool;
 
-    /// Whether the current model supports multimodal input (images, audio, video).
-    /// Default is true since most modern models support some form of multimodal.
-    /// Override to return false for models known to lack vision/multimodal support.
-    fn supports_multimodal(&self) -> bool {
-        true
-    }
-
     /// Provider name for diagnostics
     fn get_name(&self) -> &str;
 }

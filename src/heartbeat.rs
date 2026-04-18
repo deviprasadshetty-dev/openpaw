@@ -115,7 +115,6 @@ impl HeartbeatEngine {
                                 media: Vec::new(),
                                 metadata_json: None,
                                 task_kind: Some("heartbeat".to_string()),
-                                is_group: false,
                             };
 
                             if let Err(e) = self.bus.publish_inbound(msg) {

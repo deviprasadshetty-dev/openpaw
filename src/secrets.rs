@@ -5,16 +5,15 @@
 //!
 //! Encrypted secrets are prefixed with "enc2:" to distinguish them from plaintext.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit, OsRng},
     ChaCha20Poly1305, Nonce,
+    aead::{Aead, KeyInit, OsRng},
 };
 use rand::RngCore;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use zeroize::Zeroizing;
 
 /// Length of the encryption key in bytes (256-bit).
 pub const KEY_LEN: usize = 32;
@@ -58,7 +57,7 @@ impl SecretStore {
         }
 
         let key = self.load_or_create_key()?;
-        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
+        let cipher = ChaCha20Poly1305::new_from_slice(&key)
             .map_err(|e| anyhow!("Failed to initialize cipher: {}", e))?;
 
         // Generate random nonce
@@ -107,7 +106,7 @@ impl SecretStore {
         let ciphertext = &blob[NONCE_LEN..];
 
         let key = self.load_or_create_key()?;
-        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
+        let cipher = ChaCha20Poly1305::new_from_slice(&key)
             .map_err(|e| anyhow!("Failed to initialize cipher: {}", e))?;
 
         let plaintext = cipher
@@ -121,7 +120,7 @@ impl SecretStore {
 
 impl SecretStore {
     /// Load the encryption key from disk, or create one if it doesn't exist.
-    fn load_or_create_key(&self) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    fn load_or_create_key(&self) -> Result<[u8; KEY_LEN]> {
         // Try to read existing key
         if self.key_path.exists() {
             let mut file = File::open(&self.key_path)
@@ -143,17 +142,17 @@ impl SecretStore {
                 ));
             }
 
-            let mut key = Zeroizing::new([0u8; KEY_LEN]);
+            let mut key = [0u8; KEY_LEN];
             key.copy_from_slice(&key_bytes);
             return Ok(key);
         }
 
         // Generate new key
-        let mut key = Zeroizing::new([0u8; KEY_LEN]);
-        OsRng.fill_bytes(key.as_mut());
+        let mut key = [0u8; KEY_LEN];
+        OsRng.fill_bytes(&mut key);
 
         // Write hex-encoded key
-        let hex_encoded = hex::encode(key.as_ref());
+        let hex_encoded = hex::encode(&key);
 
         // Ensure parent dir exists
         if let Some(parent) = self.key_path.parent() {

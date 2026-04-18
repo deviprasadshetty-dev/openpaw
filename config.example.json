@@ -47,15 +47,10 @@
         "max_output_bytes": 1000000,
         "attach_url": "http://127.0.0.1:4096"
     },
-"composio": {
+    "composio": {
         "enabled": false,
         "api_key": "YOUR_COMPOSIO_API_KEY",
         "entity_id": "default"
-    },
-    "email": {
-        "enabled": false,
-        "address": "your-bot@gmail.com",
-        "password": "YOUR_APP_PASSWORD"
     },
     "browser": {
         "enabled": true

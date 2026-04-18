@@ -100,13 +100,6 @@ impl Provider for FallbackProvider {
             .unwrap_or(false)
     }
 
-    fn supports_multimodal(&self) -> bool {
-        self.providers
-            .first()
-            .map(|p| p.supports_multimodal())
-            .unwrap_or(true)
-    }
-
     fn get_name(&self) -> &str {
         "fallback"
     }

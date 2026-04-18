@@ -10,8 +10,6 @@ pub struct FileAppendTool {
     pub workspace_dir: String,
     pub allowed_paths: Vec<String>,
     pub max_file_size: usize,
-    /// Maximum content size allowed (bytes) to append in a single call. Default: 10 MB.
-    pub max_content_bytes: usize,
 }
 
 use async_trait::async_trait;
@@ -40,14 +38,6 @@ impl Tool for FileAppendTool {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing 'content' parameter")),
         };
-
-        if content.len() > self.max_content_bytes {
-            return Ok(ToolResult::fail(format!(
-                "Content too large: {} bytes (limit: {} bytes)",
-                content.len(),
-                self.max_content_bytes
-            )));
-        }
 
         let full_path = if Path::new(path_str).is_absolute() {
             if self.allowed_paths.is_empty() {

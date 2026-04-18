@@ -357,12 +357,6 @@ impl Provider for OpenAiCompatibleProvider {
         true
     }
 
-    fn supports_multimodal(&self) -> bool {
-        // OpenAI-compatible API supports multimodal for vision models (gpt-4o, etc.)
-        // Text-only models (gpt-3.5-turbo) will return an error which we handle gracefully.
-        true
-    }
-
     fn get_name(&self) -> &str {
         &self.name
     }

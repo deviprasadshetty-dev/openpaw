@@ -116,10 +116,6 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     let has_opencode_cli = ctx.tools.iter().any(|t| t.name() == "opencode_cli");
     let has_web_search = ctx.tools.iter().any(|t| t.name() == "web_search");
     let has_vision = ctx.tools.iter().any(|t| t.name() == "vision");
-    let has_memory = ctx
-        .tools
-        .iter()
-        .any(|t| t.name() == "memory_store" || t.name() == "memory_recall");
 
     // Identity section
     build_identity_section(&mut out, ctx.workspace_dir, is_lean);
@@ -226,14 +222,13 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         out.push_str(
             "- User references prior conversation → Use `memory_recall` to find context.\n",
         );
-        if !has_memory {
-            out.push_str("- Note: Memory tools are not available in this session. Do NOT attempt to call `memory_store`, `memory_recall`, etc.\n");
-        }
         out.push_str("- User needs to install something → Use `shell` to check/install dependencies in a virtualenv.\n\n");
         out.push_str("Don't ask 'Would you like me to...' for these obvious actions — just do them and report the result.\n\n");
 
-        if has_vision {
-            out.push_str("- Use `vision` for local image/video/audio/document/file analysis.\n");
+        if has_web_search || has_vision {
+            out.push_str("### Gemini CLI Capability Routing\n\n");
+            out.push_str("- Use `web_search` for web and current-events lookups (Gemini CLI-backed when configured).\n");
+            out.push_str("- Use `vision` for local file/media analysis: images, video, audio, and documents.\n");
             out.push_str(
                 "- Do not use `web_search` to analyze local files; use `vision` instead.\n",
             );
@@ -331,18 +326,13 @@ fn append_skills_section(out: &mut String, workspace_dir: &str) {
     out.push_str(
         "The following skills extend your capabilities. Follow their instructions carefully.\n",
     );
-    out.push_str(
-        "Skills marked [minted] are your own learned skills — prefer these when they match.\n\n",
-    );
+    out.push_str("Skills marked [minted] are your own learned skills — prefer these when they match.\n\n");
 
     for ls in &active {
         let tier_label = ls.tier.label();
         out.push_str(&format!("### Skill: {} [{}]\n", ls.skill.name, tier_label));
         if !ls.skill.description.is_empty() {
-            out.push_str(&format!(
-                "{} (v{})\n\n",
-                ls.skill.description, ls.skill.version
-            ));
+            out.push_str(&format!("{} (v{})\n\n", ls.skill.description, ls.skill.version));
         }
         out.push_str(&ls.skill.instructions);
         out.push_str("\n\n");
@@ -362,11 +352,7 @@ fn append_skills_section(out: &mut String, workspace_dir: &str) {
         out.push_str("<available_skills>\n");
         for ls in &available {
             out.push_str("  <skill>\n");
-            out.push_str(&format!(
-                "    <name>{} [{}]</name>\n",
-                ls.skill.name,
-                ls.tier.label()
-            ));
+            out.push_str(&format!("    <name>{} [{}]</name>\n", ls.skill.name, ls.tier.label()));
             if !ls.skill.description.is_empty() {
                 out.push_str(&format!(
                     "    <description>{}</description>\n",

@@ -26,54 +26,23 @@ impl Tool for DynamicSkillTool {
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
-        // ── 0.2: Fix parameter injection ──────────────────────────────────────
-        //
-        // BROKEN (previous): substitute {{param}} into the entire command string,
-        // then pass that string to `sh -c cmd_str`.  This lets any parameter value
-        // containing shell metacharacters (`;`, `|`, `$(...)`, etc.) execute
-        // arbitrary commands.
-        //
-        // FIXED: split the command template into individual argv tokens FIRST, then
-        // substitute placeholder values into individual tokens.  Each token becomes
-        // a separate Command::arg() call — the shell never sees the values.
-        //
-        // This preserves skill functionality: all existing {{param}} templates keep
-        // working, they just can't inject shell metacharacters anymore.
+        let mut cmd_str = self.definition.command.clone();
 
-        let cmd_str = self.definition.command.trim();
-
-        // Build the argv template by splitting on whitespace
-        let template_argv: Vec<String> = cmd_str.split_whitespace().map(|s| s.to_string()).collect();
-
-        if template_argv.is_empty() {
-            return Ok(ToolResult::fail("Skill command is empty"));
+        // Substitute {{param}} placeholders
+        if let Some(obj) = args.as_object() {
+            for (key, val) in obj {
+                let placeholder = format!("{{{{{}}}}}", key);
+                let val_str = match val {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => val.to_string(),
+                };
+                cmd_str = cmd_str.replace(&placeholder, &val_str);
+            }
         }
 
-        // Substitute {{param}} placeholders in each argv token individually
-        let substituted: Vec<String> = template_argv
-            .iter()
-            .map(|token| {
-                let mut t = token.clone();
-                if let Some(obj) = args.as_object() {
-                    for (key, val) in obj {
-                        let placeholder = format!("{{{{{}}}}}", key);
-                        let val_str = match val {
-                            Value::String(s) => s.clone(),
-                            Value::Number(n) => n.to_string(),
-                            Value::Bool(b) => b.to_string(),
-                            _ => val.to_string(),
-                        };
-                        t = t.replace(&placeholder, &val_str);
-                    }
-                }
-                t
-            })
-            .collect();
-
-        // Now build the Command from the substituted argv (no shell involved)
-        let mut cmd = build_command_from_argv(&substituted, &self.skill_path);
-
-        let output = cmd
+        let output = build_command(&cmd_str, &self.skill_path)
             .output()
             .await
             .context("Failed to execute skill tool command")?;
@@ -94,48 +63,46 @@ impl Tool for DynamicSkillTool {
     }
 }
 
-/// Build a `Command` from an already-split argv slice, with no shell involvement.
-///
-/// Routing logic (same as before, but operating on per-token argv):
-/// 1. `runtime:<interpreter>` prefix in first token → use that interpreter
-/// 2. File extension in first token (e.g. `.py`, `.js`) → use detected interpreter
-/// 3. Otherwise → execute the first token as the binary directly (no shell)
-fn build_command_from_argv(argv: &[String], cwd: &PathBuf) -> Command {
-    if argv.is_empty() {
-        let mut c = Command::new("true");
-        c.current_dir(cwd);
-        return c;
-    }
-
-    let first = &argv[0];
-
-    // 1. Explicit runtime prefix: first token is `runtime:<interpreter>`
-    if let Some(interpreter) = first.strip_prefix("runtime:") {
+/// Determine how to run `cmd_str` based on:
+/// 1. An explicit `runtime:` prefix (e.g. `runtime:python3 script.py`)
+/// 2. The file extension of the first token
+/// 3. The current platform (Windows vs Unix shell)
+fn build_command(cmd_str: &str, cwd: &PathBuf) -> Command {
+    // Check for explicit runtime prefix: "runtime:<interpreter> ..."
+    if let Some(rest) = cmd_str.strip_prefix("runtime:") {
+        let mut parts = rest.splitn(2, ' ');
+        let interpreter = parts.next().unwrap_or("sh");
+        let remainder = parts.next().unwrap_or("");
         let mut c = Command::new(interpreter);
-        // Remaining tokens (index 1+) are arguments to the interpreter
-        if argv.len() > 1 {
-            c.args(&argv[1..]);
+        if !remainder.is_empty() {
+            c.args(remainder.split_whitespace());
         }
         c.current_dir(cwd);
         return c;
     }
 
-    // 2. Detect interpreter from filename extension
-    if let Some(interpreter) = interpreter_for(first) {
+    // Detect interpreter from the first token's extension
+    let first_token = cmd_str.split_whitespace().next().unwrap_or("");
+    if let Some(interpreter) = interpreter_for(first_token) {
         let mut c = Command::new(interpreter);
-        // Pass entire argv (script name + args) to interpreter
-        c.args(argv);
+        // Pass the whole command string as arguments to the interpreter
+        c.args(cmd_str.split_whitespace());
         c.current_dir(cwd);
         return c;
     }
 
-    // 3. Execute the binary directly — no shell, no `-c`, no injection surface
-    let mut c = Command::new(first);
-    if argv.len() > 1 {
-        c.args(&argv[1..]);
+    // Default: platform shell
+    if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", cmd_str]);
+        c.current_dir(cwd);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.args(["-c", cmd_str]);
+        c.current_dir(cwd);
+        c
     }
-    c.current_dir(cwd);
-    c
 }
 
 /// Map a file extension to the preferred interpreter binary.
@@ -146,18 +113,19 @@ fn interpreter_for(filename: &str) -> Option<&'static str> {
         .to_lowercase();
 
     match ext.as_str() {
-        "py"   => Some("python3"),
-        "js"   => Some("node"),
-        "rb"   => Some("ruby"),
-        "pl"   => Some("perl"),
-        "php"  => Some("php"),
-        "r"    => Some("Rscript"),
-        "lua"  => Some("lua"),
-        "sh"   => Some("sh"),
-        "bash" => Some("bash"),
-        "zsh"  => Some("zsh"),
-        "fish" => Some("fish"),
-        "ps1"  => Some("powershell"),
-        _      => None,
+        "py"    => Some("python3"),
+        "js"    => Some("node"),
+        "ts"    => Some("npx ts-node"),  // common enough to support
+        "rb"    => Some("ruby"),
+        "pl"    => Some("perl"),
+        "php"   => Some("php"),
+        "r"     => Some("Rscript"),
+        "lua"   => Some("lua"),
+        "sh"    => Some("sh"),
+        "bash"  => Some("bash"),
+        "zsh"   => Some("zsh"),
+        "fish"  => Some("fish"),
+        "ps1"   => Some("powershell"),
+        _       => None,
     }
 }

@@ -56,13 +56,7 @@ impl StateManager {
             fs::create_dir_all(parent)?;
         }
 
-        {
-            use std::io::Write;
-            let mut file = fs::File::create(&tmp_path)?;
-            file.write_all(json.as_bytes())?;
-            file.sync_all()?;
-        }
-
+        fs::write(&tmp_path, json)?;
         fs::rename(tmp_path, &self.state_path)?;
 
         Ok(())

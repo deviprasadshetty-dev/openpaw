@@ -128,7 +128,6 @@ struct PendingInbound {
 
 pub struct TelegramChannel {
     config: TelegramConfig,
-    require_pairing: bool,
     /// reqwest blocking client — used for all Telegram API calls.
     client: Client,
     /// Teloxide getUpdates offset (next update_id to request).
@@ -143,20 +142,22 @@ pub struct TelegramChannel {
     typing_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Pending media group messages (media_group_id -> messages)
     pending_media: Mutex<HashMap<String, Vec<PendingInbound>>>,
+    /// Pending text chunks for debouncing (chat_id -> chunks)
+    pending_text: Mutex<HashMap<String, Vec<PendingInbound>>>,
 }
 
 impl TelegramChannel {
-    pub fn new(config: TelegramConfig, require_pairing: bool) -> Self {
+    pub fn new(config: TelegramConfig) -> Self {
         Self {
             client: Client::new(),
             config,
-            require_pairing,
             last_update_id: AtomicI64::new(0),
             active_streams: Mutex::new(HashMap::new()),
             draft_buffers: Mutex::new(HashMap::new()),
             tag_filters: Mutex::new(HashMap::new()),
             typing_stops: Mutex::new(HashMap::new()),
             pending_media: Mutex::new(HashMap::new()),
+            pending_text: Mutex::new(HashMap::new()),
         }
     }
 
@@ -188,9 +189,6 @@ impl TelegramChannel {
         }
         for allowed in &self.config.allow_from {
             if allowed == "*" {
-                if self.require_pairing {
-                    continue; // '*' is not allowed when pairing is required
-                }
                 return true;
             }
             let check = if let Some(stripped) = allowed.strip_prefix('@') {
@@ -207,13 +205,7 @@ impl TelegramChannel {
 
     fn is_group_user_allowed(&self, username: &str, user_id: &str) -> bool {
         match self.config.group_policy.as_str() {
-            "open" => {
-                if self.require_pairing {
-                    // fall through to allowlist check
-                } else {
-                    return true;
-                }
-            }
+            "open" => return true,
             "disabled" => return false,
             _ => {}
         }
@@ -227,9 +219,6 @@ impl TelegramChannel {
         }
         for allowed in check_list {
             if allowed == "*" {
-                if self.require_pairing {
-                    continue;
-                }
                 return true;
             }
             let check = if let Some(stripped) = allowed.strip_prefix('@') {
@@ -367,7 +356,7 @@ impl TelegramChannel {
                     } else {
                         format!("\nCaption: {}", caption)
                     };
-                    return format!("[IMAGE:{}]{}", path.display(), cap);
+                    return format!("[User sent photo: {}{}]", path.display(), cap);
                 }
                 return format!(
                     "[Photo: file_id={}]{}",
@@ -398,7 +387,8 @@ impl TelegramChannel {
                     format!("\nCaption: {}", caption)
                 };
                 return format!(
-                    "[FILE:{}]{}",
+                    "[User sent document '{}': {}{}]",
+                    file_name,
                     path.display(),
                     cap
                 );
@@ -410,7 +400,7 @@ impl TelegramChannel {
         if let Some(voice) = message.get("voice") {
             let file_id = voice.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
             if let Some(path) = self.download_tg_file(file_id, "voice", "ogg") {
-                return format!("[AUDIO:{}]", path.display());
+                return format!("[User sent voice message: {}]", path.display());
             }
             return format!("[Voice message: file_id={}]", file_id);
         }
@@ -423,7 +413,7 @@ impl TelegramChannel {
                 .and_then(|v| v.as_str())
                 .unwrap_or("audio");
             if let Some(path) = self.download_tg_file(file_id, "audio", "mp3") {
-                return format!("[AUDIO:{}] ({})", path.display(), title);
+                return format!("[User sent audio '{}': {}]", title, path.display());
             }
             return format!("[Audio: {} file_id={}]", title, file_id);
         }
@@ -437,7 +427,7 @@ impl TelegramChannel {
                 } else {
                     format!("\nCaption: {}", caption)
                 };
-                return format!("[VIDEO:{}]{}", path.display(), cap);
+                return format!("[User sent video: {}{}]", path.display(), cap);
             }
             return format!("[Video: file_id={}]", file_id);
         }
@@ -546,10 +536,6 @@ impl TelegramChannel {
         };
 
         // ── Inbound Buffering / Debouncing ──
-        // Media groups (photo albums, etc.) share a media_group_id and must be
-        // buffered so they can be combined into a single inbound message.
-        // Text messages are NEVER split by Telegram — each one arrives as a
-        // complete update — so they are processed immediately without debouncing.
         if let Some(mgid) = media_group_id {
             let mut map = self.pending_media.lock().unwrap();
             map.entry(mgid.to_string())
@@ -558,14 +544,19 @@ impl TelegramChannel {
                     message: parsed,
                     received_at: std::time::Instant::now(),
                 });
+        } else if parsed.content.len() > 500 {
+            // Likely a split text chunk
+            let mut map = self.pending_text.lock().unwrap();
+            map.entry(chat_id).or_default().push(PendingInbound {
+                message: parsed,
+                received_at: std::time::Instant::now(),
+            });
         } else {
             messages.push(parsed);
         }
     }
 
-    /// Flushes matured pending media group messages.
-    /// (Text debouncing was removed because Telegram never splits text
-    /// messages — each arrives as a complete single update.)
+    /// Flushes matured pending inbound messages.
     fn flush_pending_inbound(&self, messages: &mut Vec<ParsedMessage>) {
         // Media Groups: flush after 3 seconds of inactivity
         {
@@ -579,6 +570,29 @@ impl TelegramChannel {
             }
             for mgid in to_remove {
                 if let Some(mut pending) = map.remove(&mgid)
+                    && !pending.is_empty() {
+                        let mut first = pending.remove(0).message;
+                        for extra in pending {
+                            first.content.push('\n');
+                            first.content.push_str(&extra.message.content);
+                        }
+                        messages.push(first);
+                    }
+            }
+        }
+
+        // Text chunks: flush after 2 seconds of inactivity
+        {
+            let mut map = self.pending_text.lock().unwrap();
+            let mut to_remove = Vec::new();
+            for (chat_id, pending) in map.iter() {
+                if let Some(last) = pending.last()
+                    && last.received_at.elapsed().as_secs() >= 2 {
+                        to_remove.push(chat_id.clone());
+                    }
+            }
+            for chat_id in to_remove {
+                if let Some(mut pending) = map.remove(&chat_id)
                     && !pending.is_empty() {
                         let mut first = pending.remove(0).message;
                         for extra in pending {
@@ -1383,7 +1397,6 @@ mod tests {
                 reply_in_private: true,
                 proxy: None,
             },
-            require_pairing: false,
             client: Client::new(),
             last_update_id: AtomicI64::new(0),
             active_streams: Mutex::new(HashMap::new()),
@@ -1391,6 +1404,7 @@ mod tests {
             tag_filters: Mutex::new(HashMap::new()),
             typing_stops: Mutex::new(HashMap::new()),
             pending_media: Mutex::new(HashMap::new()),
+            pending_text: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1431,7 +1445,7 @@ mod tests {
             reply_in_private: true,
             proxy: None,
         };
-        let ch = TelegramChannel::new(config, false);
+        let ch = TelegramChannel::new(config);
         assert!(ch.is_user_allowed("testuser", ""));
         assert!(ch.is_user_allowed("TestUser", "")); // case-insensitive
         assert!(ch.is_user_allowed("", "123456")); // by user ID

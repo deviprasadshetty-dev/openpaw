@@ -1,8 +1,7 @@
 use crate::config_types::{
-    AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, EmailConfig, HardwareConfig,
-    HttpRequestConfig, McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig,
-    PushoverConfig, ReliabilityConfig, SchedulerConfig, SessionConfig, SkillMintConfig,
-    TaskModelsConfig,
+    AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
+    McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig, PushoverConfig,
+    ReliabilityConfig, SchedulerConfig, SessionConfig, SkillMintConfig, TaskModelsConfig,
 };
 use crate::secrets::SecretStore;
 use serde::{Deserialize, Serialize};
@@ -35,8 +34,6 @@ pub struct Config {
     pub hardware: HardwareConfig,
     #[serde(default)]
     pub pushover: PushoverConfig,
-    #[serde(default)]
-    pub email: EmailConfig,
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
@@ -104,15 +101,6 @@ impl Config {
             }
         }
 
-        // Encrypt email password
-        if self.email.enabled {
-            if let Some(ref mut pw) = self.email.password {
-                if !pw.is_empty() && !SecretStore::is_encrypted(pw) {
-                    *pw = store.encrypt(pw)?;
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -143,15 +131,6 @@ impl Config {
             if let Some(ref mut api_key) = self.composio.api_key {
                 if SecretStore::is_encrypted(api_key.as_str()) {
                     *api_key = store.decrypt(api_key.as_str())?;
-                }
-            }
-        }
-
-        // Decrypt email password
-        if self.email.enabled {
-            if let Some(ref mut pw) = self.email.password {
-                if SecretStore::is_encrypted(pw) {
-                    *pw = store.decrypt(pw)?;
                 }
             }
         }
@@ -213,13 +192,6 @@ pub struct GatewayConfig {
     pub require_pairing: bool,
     #[serde(default)]
     pub allow_public_bind: Option<bool>,
-    /// Optional shared secret for gateway authentication.
-    /// When set, all API requests must include `Authorization: Bearer <token>`
-    /// or `X-API-Key: <token>`.  When absent, the gateway is unauthenticated
-    /// (acceptable for localhost-only deployments, but not recommended for
-    /// public-facing deployments).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
 }
 
 fn default_gateway_port() -> u16 {
@@ -229,3 +201,5 @@ fn default_gateway_port() -> u16 {
 fn default_gateway_host() -> String {
     "127.0.0.1".to_string()
 }
+
+

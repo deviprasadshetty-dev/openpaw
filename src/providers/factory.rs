@@ -11,11 +11,11 @@ use tracing::warn;
 use crate::providers::anthropic::AnthropicProvider;
 use crate::providers::fallback::FallbackProvider;
 use crate::providers::kilocode::{
-    fetch_kilocode_free_models, KiloCodeProvider, DEFAULT_FREE_MODELS,
+    DEFAULT_FREE_MODELS, KiloCodeProvider, fetch_kilocode_free_models,
 };
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::reliable::ReliableProvider;
-use crate::providers::{gemini::GeminiProvider, openai::OpenAiCompatibleProvider, Provider};
+use crate::providers::{Provider, gemini::GeminiProvider, openai::OpenAiCompatibleProvider};
 
 /// Config snippet used by the factory. Matches the `providers` map in config.json.
 #[derive(Debug, Clone, Default)]
@@ -30,7 +30,6 @@ pub struct ProviderConfig {
 /// Always wrapped in `ReliableProvider`.
 pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
     let max_retries = cfg.and_then(|c| c.max_retries).unwrap_or(3);
-    let shared_client = Arc::new(reqwest::blocking::Client::new());
 
     let inner: Arc<dyn Provider> = match name {
         "anthropic" => {
@@ -40,16 +39,12 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
             if resolved.is_empty() {
                 warn!("ANTHROPIC_API_KEY not set — Anthropic provider may fail");
             }
-            let mut p = AnthropicProvider::new(resolved);
-            p.client = (*shared_client).clone();
-            Arc::new(p)
+            Arc::new(AnthropicProvider::new(resolved))
         }
 
         "gemini" => {
             let key = cfg.map(|c| c.api_key.clone());
-            let mut p = GeminiProvider::new(key.as_deref());
-            p.client = (*shared_client).clone();
-            Arc::new(p)
+            Arc::new(GeminiProvider::new(key.as_deref()))
         }
 
         "kilocode" => {
@@ -84,16 +79,12 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
                 }
             };
 
-            let mut p = KiloCodeProvider::new(&api_key, fallback_models);
-            p.inner.client = (*shared_client).clone();
-            Arc::new(p)
+            Arc::new(KiloCodeProvider::new(&api_key, fallback_models))
         }
 
         "ollama" => {
             let base_url = cfg.and_then(|c| c.base_url.as_deref());
-            let mut p = OllamaProvider::new(base_url);
-            p.client = (*shared_client).clone();
-            Arc::new(p)
+            Arc::new(OllamaProvider::new(base_url))
         }
 
         // Covers: openai, openrouter, opencode, or any OpenAI-compatible base_url
@@ -106,9 +97,7 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
                 .map(|c| c.api_key.clone())
                 .unwrap_or_else(|| resolve_env_key(name));
 
-            let mut p = OpenAiCompatibleProvider::new(name, &base_url, &api_key);
-            p.client = (*shared_client).clone();
-            Arc::new(p)
+            Arc::new(OpenAiCompatibleProvider::new(name, &base_url, &api_key))
         }
     };
 

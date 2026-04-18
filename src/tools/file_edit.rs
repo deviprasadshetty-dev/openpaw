@@ -98,25 +98,7 @@ impl Tool for FileEditTool {
         };
 
         if !content.contains(search) {
-            // Help the LLM recover: show nearby matches and suggest reading the file
-            let search_preview: String = if search.len() > 80 {
-                format!("{}...", &search[..78])
-            } else {
-                search.to_string()
-            };
-            // Try to find a fuzzy prefix match to give context
-            let first_line = search.lines().next().unwrap_or("");
-            let suggestion = if !first_line.is_empty() && content.contains(first_line) {
-                "\nNote: The first line of your search string WAS found in the file. \
-                The full multi-line search block may have whitespace or encoding differences. \
-                Try reading the file with `file_read` first to get the exact current content."
-            } else {
-                "\nSuggestion: Use `file_read` to see the current file content, then retry \
-                with the exact text from the file."
-            };
-            return Ok(ToolResult::fail(format!(
-                "search string not found in file: '{}'{}", search_preview, suggestion
-            )));
+            return Ok(ToolResult::fail("search string not found in file"));
         }
 
         let new_content = content.replacen(search, replace, 1);

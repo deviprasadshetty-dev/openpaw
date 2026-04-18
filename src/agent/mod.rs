@@ -326,7 +326,7 @@ impl Agent {
             memory_session_id: None,
             history: Vec::new(),
             total_tokens: 0,
-            tool_cache: crate::tools::cache::ToolCache::new(300, 1000), // Default 5 min TTL, 1000 entries
+            tool_cache: crate::tools::cache::ToolCache::new(300), // Default 5 min TTL
             command_registry: commands::CommandRegistry::new(),
             task_models: TaskModelConfig::new(&model_name),
             cached_system_prompt: OnceLock::new(),
@@ -338,7 +338,7 @@ impl Agent {
                 100.0,
                 80,
             )),
-            response_cache: response_cache::ResponseCache::new(3600, 1000), // 1 hour TTL, 1000 items max
+            response_cache: response_cache::ResponseCache::new(3600), // 1 hour TTL
             multimodal_config: crate::multimodal::MultimodalConfig {
                 allowed_dirs: vec![
                     workspace_dir.clone(),
@@ -385,10 +385,10 @@ impl Agent {
     fn parse_multimodal_message(
         &self,
         content: &str,
-    ) -> (String, Option<Vec<crate::providers::ContentPart>>, Vec<String>) {
+    ) -> (String, Option<Vec<crate::providers::ContentPart>>) {
         let parse_result = crate::multimodal::parse_multimodal_markers(content);
         if parse_result.refs.is_empty() {
-            return (content.to_string(), None, Vec::new());
+            return (content.to_string(), None);
         }
 
         let mut parts = Vec::new();
@@ -396,11 +396,8 @@ impl Agent {
             parse_result.cleaned_text.clone(),
         ));
 
-        let mut file_paths = Vec::new();
-
         for m_ref in parse_result.refs {
-            let ref_path = m_ref.path.clone();
-            file_paths.push(ref_path.clone());
+            let ref_path = m_ref.path;
             match crate::multimodal::read_local_file(&ref_path, &self.multimodal_config) {
                 Ok(data) => {
                     parts.push(crate::providers::ContentPart::Media {
@@ -419,99 +416,7 @@ impl Agent {
             }
         }
 
-        (parse_result.cleaned_text, Some(parts), file_paths)
-    }
-
-    /// Process multimodal content: if the model doesn't support images/audio/video
-    /// and the vision tool is available, proactively analyze files via Gemini CLI
-    /// and use the text results instead of embedding binary content.
-    async fn process_multimodal_content(
-        &mut self,
-        content: &str,
-    ) -> (String, Option<Vec<crate::providers::ContentPart>>) {
-        let (cleaned_text, content_parts, file_paths) = self.parse_multimodal_message(content);
-
-        // If no content_parts, nothing to process
-        let parts = match content_parts {
-            Some(parts) => parts,
-            None => return (cleaned_text, None),
-        };
-
-        // Check if any parts are non-text media
-        let has_media = parts.iter().any(|p| {
-            matches!(p, crate::providers::ContentPart::Media { .. }
-                | crate::providers::ContentPart::ImageBase64 { .. }
-                | crate::providers::ContentPart::ImageUrl { .. })
-        });
-
-        if !has_media {
-            return (cleaned_text, Some(parts));
-        }
-
-        // If the model supports multimodal, embed directly
-        if self.provider.supports_multimodal() {
-            return (cleaned_text, Some(parts));
-        }
-
-        // Model doesn't support multimodal — try the vision tool first
-        let has_vision = self.tools.iter().any(|t| t.name() == "vision");
-        if !has_vision || file_paths.is_empty() {
-            // No vision tool available; strip media parts and add fallback text
-            let mut text_parts = String::new();
-            for part in &parts {
-                if let crate::providers::ContentPart::Text(t) = part {
-                    text_parts.push_str(t);
-                    text_parts.push('\n');
-                } else {
-                    text_parts.push_str("[Media file attached but this model cannot process it directly.]\n");
-                }
-            }
-            let final_text = if cleaned_text.trim().is_empty() && !text_parts.trim().is_empty() {
-                text_parts
-            } else if !text_parts.trim().is_empty() {
-                format!("{}\n{}", cleaned_text, text_parts)
-            } else {
-                cleaned_text
-            };
-            return (final_text, None);
-        }
-
-        // Call the vision tool for each file and use the text analysis
-        let context = crate::tools::ToolContext {
-            channel: String::new(),
-            chat_id: String::new(),
-            sender_id: String::new(),
-            session_key: String::new(),
-            task_kind: None,
-        };
-
-        let mut analysis = String::new();
-        if !cleaned_text.trim().is_empty() {
-            analysis.push_str(&cleaned_text);
-            analysis.push_str("\n\n");
-        }
-        analysis.push_str("--- File Analysis ---\n");
-
-        for path in &file_paths {
-            let vision_tool = self.tools.iter().find(|t| t.name() == "vision").unwrap();
-            let args = serde_json::json!({
-                "prompt": "Describe this file in detail. What is it? What do you see?",
-                "files": [path]
-            });
-            match vision_tool.execute(args, &context).await {
-                Ok(result) if !result.is_error => {
-                    analysis.push_str(&format!("[{}]: {}\n", path, result.content));
-                }
-                Ok(result) => {
-                    analysis.push_str(&format!("[{}]: Analysis unavailable - {}\n", path, result.content));
-                }
-                Err(e) => {
-                    analysis.push_str(&format!("[{}]: Analysis failed - {}\n", path, e));
-                }
-            }
-        }
-
-        (analysis, None)
+        (parse_result.cleaned_text, Some(parts))
     }
 
     fn compute_tool_hash(&self) -> u64 {
@@ -547,7 +452,7 @@ impl Agent {
 
     pub fn build_system_prompt(&mut self) -> Result<String> {
         let caps = None; // Capabilities not yet implemented
-        let conversation_context = self.conversation_context.as_ref();
+        let conversation_context = None; // Not yet integrated
 
         let ctx = prompt::PromptContext {
             workspace_dir: &self.workspace_dir,
@@ -674,7 +579,7 @@ impl Agent {
             user_message.clone()
         };
 
-        let (final_content, content_parts) = self.process_multimodal_content(&enriched_msg).await;
+        let (final_content, content_parts) = self.parse_multimodal_message(&enriched_msg);
 
         // Append user message
         self.history.push(ChatMessage {
@@ -800,53 +705,6 @@ impl Agent {
                         break;
                     }
                     Err(e) => {
-                        let err_str = e.to_string().to_lowercase();
-                        let is_image_error = err_str.contains("image")
-                            || err_str.contains("multimodal")
-                            || err_str.contains("vision")
-                            || err_str.contains("does not support")
-                            || err_str.contains("not supported")
-                            || err_str.contains("unsupported content type");
-
-                        if is_image_error && attempt == 1 {
-                            // The model doesn't support multimodal input.
-                            // Strip content_parts from all user messages and retry with text only.
-                            warn!("Model does not support image/multimodal input, stripping content_parts and retrying: {}", e);
-                            for msg in &mut self.history {
-                                if msg.role == "user" {
-                                    if let Some(ref parts) = msg.content_parts {
-                                        let mut fallback_text = String::new();
-                                        for part in parts {
-                                            match part {
-                                                crate::providers::ContentPart::Text(t) => {
-                                                    if !t.trim().is_empty() {
-                                                        fallback_text.push_str(t);
-                                                        fallback_text.push('\n');
-                                                    }
-                                                }
-                                                crate::providers::ContentPart::ImageBase64 { .. } => {
-                                                    fallback_text.push_str("[Image attached but this model does not support image input. Use the `vision` tool to analyze local images.]\n");
-                                                }
-                                                crate::providers::ContentPart::ImageUrl { .. } => {
-                                                    fallback_text.push_str("[Image URL included but this model does not support image input. Use the `vision` tool to analyze images.]\n");
-                                                }
-                                                crate::providers::ContentPart::Media { mime_type, .. } => {
-                                                    fallback_text.push_str(&format!("[{} file attached but this model does not support it directly. Use the `vision` tool to analyze local files.]\n", mime_type));
-                                                }
-                                            }
-                                        }
-                                        if !fallback_text.is_empty() && msg.content.trim().is_empty() {
-                                            msg.content = fallback_text;
-                                        } else if !fallback_text.is_empty() {
-                                            msg.content.push('\n');
-                                            msg.content.push_str(&fallback_text);
-                                        }
-                                        msg.content_parts = None;
-                                    }
-                                }
-                            }
-                            continue;
-                        }
                         warn!("Provider chat attempt {} failed: {}", attempt, e);
                         last_error = Some(e);
                         if attempt < 3 {
@@ -1396,7 +1254,7 @@ impl Agent {
             }
         }
 
-        let (final_content, content_parts) = self.process_multimodal_content(&enriched_msg).await;
+        let (final_content, content_parts) = self.parse_multimodal_message(&enriched_msg);
 
         // Append user message
         self.history.push(ChatMessage {
@@ -1495,6 +1353,20 @@ impl Agent {
                 }
             }
 
+            let request = ChatRequest {
+                messages: &history_slice,
+                model: &model_to_use,
+                temperature: self.temperature,
+                max_tokens: Some(current_max_tokens),
+                tools: if tool_specs.is_empty() {
+                    None
+                } else {
+                    Some(&tool_specs)
+                },
+                timeout_secs: 60,
+                reasoning_effort: None,
+            };
+
             // Use streaming: collect full text via shared accumulator
             let accumulated = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
             // R-2: Retry logic for streaming provider calls
@@ -1515,74 +1387,12 @@ impl Agent {
                         }
                     });
 
-                // Build request with current (possibly modified) history
-                let request = ChatRequest {
-                    messages: &self.history,
-                    model: &model_to_use,
-                    temperature: self.temperature,
-                    max_tokens: Some(current_max_tokens),
-                    tools: if tool_specs.is_empty() {
-                        None
-                    } else {
-                        Some(&tool_specs)
-                    },
-                    timeout_secs: 60,
-                    reasoning_effort: None,
-                };
-
                 match self.provider.chat_stream(&request, stream_cb) {
                     Ok(resp) => {
                         response = Some(resp);
                         break;
                     }
                     Err(e) => {
-                        let err_str = e.to_string().to_lowercase();
-                        let is_image_error = err_str.contains("image")
-                            || err_str.contains("multimodal")
-                            || err_str.contains("vision")
-                            || err_str.contains("does not support")
-                            || err_str.contains("not supported")
-                            || err_str.contains("unsupported content type");
-
-                        if is_image_error && attempt == 1 {
-                            // The model doesn't support multimodal input.
-                            // Strip content_parts from all user messages and retry with text only.
-                            warn!("Model does not support image/multimodal input, stripping content_parts and retrying: {}", e);
-                            for msg in &mut self.history {
-                                if msg.role == "user" {
-                                    if let Some(ref parts) = msg.content_parts {
-                                        let mut fallback_text = String::new();
-                                        for part in parts {
-                                            match part {
-                                                crate::providers::ContentPart::Text(t) => {
-                                                    if !t.trim().is_empty() {
-                                                        fallback_text.push_str(t);
-                                                        fallback_text.push('\n');
-                                                    }
-                                                }
-                                                crate::providers::ContentPart::ImageBase64 { .. } => {
-                                                    fallback_text.push_str("[Image attached but this model does not support image input. Use the `vision` tool to analyze local images.]\n");
-                                                }
-                                                crate::providers::ContentPart::ImageUrl { .. } => {
-                                                    fallback_text.push_str("[Image URL included but this model does not support image input. Use the `vision` tool to analyze images.]\n");
-                                                }
-                                                crate::providers::ContentPart::Media { mime_type, .. } => {
-                                                    fallback_text.push_str(&format!("[{} file attached but this model does not support it directly. Use the `vision` tool to analyze local files.]\n", mime_type));
-                                                }
-                                            }
-                                        }
-                                        if !fallback_text.is_empty() && msg.content.trim().is_empty() {
-                                            msg.content = fallback_text;
-                                        } else if !fallback_text.is_empty() {
-                                            msg.content.push('\n');
-                                            msg.content.push_str(&fallback_text);
-                                        }
-                                        msg.content_parts = None;
-                                    }
-                                }
-                            }
-                            continue;
-                        }
                         warn!("Provider chat_stream attempt {} failed: {}", attempt, e);
                         last_error = Some(e);
                         if attempt < 3 {

@@ -243,14 +243,11 @@ pub fn heartbeat_thread(
     }
 }
 
-pub fn supervisor_thread(subagent_manager: Arc<crate::subagent::SubagentManager>, plan_manager: Arc<crate::plan::PlanManager>) {
+pub fn supervisor_thread(subagent_manager: Arc<crate::subagent::SubagentManager>) {
     let _name = "supervisor";
     info!("Supervisor thread started");
     while !is_shutdown_requested() {
         subagent_manager.monitor_tick();
-        subagent_manager.cleanup_old_tasks();
-        plan_manager.cleanup_old_plans(7); // 7 days retention
-        subagent_manager.approval_manager.expire_old(300); // 5 min timeout
         thread::sleep(Duration::from_secs(60)); // Check every minute
     }
 }
@@ -345,37 +342,16 @@ pub fn inbound_dispatcher_thread(
             // Check for /stop command — cancel the running turn for this session
             let content_trimmed = msg.content.trim();
             if content_trimmed.eq_ignore_ascii_case("/stop") {
-                let session_key_clone = route.session_key.clone();
-                let sm_clone = session_manager.clone();
-                let bus_clone = bus.clone();
-                let channel_clone = msg.channel.clone();
-                let chat_id_clone = msg.chat_id.clone();
-                
-                tokio::spawn(async move {
-                    let cancelled = sm_clone.cancel_turn(&session_key_clone).await;
-                    let response = if cancelled {
-                        "⏹ Stopped."
-                    } else {
-                        "No active task found for this session."
-                    };
-                    let outbound = bus::make_outbound(&channel_clone, &chat_id_clone, response);
-                    let _ = bus_clone.publish_outbound(outbound);
-                });
-                continue;
-            }
-
-            // ── 0.5: Input length limit ───────────────────────────────────────
-            let max_bytes = session_manager.get_config().session.max_message_bytes;
-            if max_bytes > 0 && msg.content.len() > max_bytes {
-                let outbound = bus::make_outbound(
-                    &msg.channel,
-                    &msg.chat_id,
-                    &format!(
-                        "❌ Message too large ({} bytes, limit {} bytes). Please shorten your message.",
-                        msg.content.len(),
-                        max_bytes
-                    ),
-                );
+                let session_key = route.session_key.clone();
+                let cancelled = session_manager.cancel_turn(&session_key);
+                let channel = msg.channel.clone();
+                let chat_id = msg.chat_id.clone();
+                let response = if cancelled {
+                    "⏹ Stopped.".to_string()
+                } else {
+                    "No active task found for this session.".to_string()
+                };
+                let outbound = bus::make_outbound(&channel, &chat_id, &response);
                 let _ = bus.publish_outbound(outbound);
                 continue;
             }
@@ -390,24 +366,15 @@ pub fn inbound_dispatcher_thread(
             let sm = session_manager.clone();
             let bus_clone = bus.clone();
 
-            // Using task_tracker to wait on shutdown
-            let _handle = rt.spawn(async move {
+            rt.spawn(async move {
                 // Pass a callback to the agent that streams deltas back to the channel
                 let cb_channel = channel.clone();
                 let cb_chat_id = chat_id.clone();
                 let cb_bus = bus_clone.clone();
 
-                struct StreamState {
-                    acc: String,
-                    last_emitted_len: usize,
-                    last_emit: std::time::Instant,
-                }
-
-                let stream_state = Arc::new(std::sync::Mutex::new(StreamState {
-                    acc: String::new(),
-                    last_emitted_len: 0,
-                    last_emit: std::time::Instant::now(),
-                }));
+                let acc_text = Arc::new(std::sync::Mutex::new(String::new()));
+                let last_emitted_len = Arc::new(std::sync::Mutex::new(0));
+                let last_emit = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
                 let task_kind_for_stream = msg.task_kind.clone();
                 let is_heartbeat_stream = task_kind_for_stream.as_deref() == Some("heartbeat");
@@ -418,25 +385,22 @@ pub fn inbound_dispatcher_thread(
                         return;
                     }
                     if let StreamChunk::Delta(text) = chunk {
-                        let mut state = stream_state.lock().unwrap();
-                        state.acc.push_str(&text);
+                        let mut acc = acc_text.lock().unwrap();
+                        acc.push_str(&text);
 
                         let now = std::time::Instant::now();
+                        let mut last = last_emit.lock().unwrap();
 
                         // Limit to 5 chunks per second (200ms) for smoother streaming
-                        if now.duration_since(state.last_emit).as_millis() > 200 {
-                            let last_len = state.last_emitted_len;
-                            let delta = state.acc[last_len..].to_string();
+                        if now.duration_since(*last).as_millis() > 200 {
+                            let mut last_len = last_emitted_len.lock().unwrap();
+                            let delta = acc[*last_len..].to_string();
 
                             if !delta.is_empty() {
-                                state.last_emitted_len = state.acc.len();
-                                state.last_emit = now;
-                                
-                                let outbound = bus::make_outbound_chunk(
-                                    &cb_channel,
-                                    &cb_chat_id,
-                                    &delta,
-                                );
+                                *last = now;
+                                *last_len = acc.len();
+                                let outbound =
+                                    bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &delta);
                                 let _ = cb_bus.publish_outbound(outbound);
                             }
                         }
@@ -451,22 +415,12 @@ pub fn inbound_dispatcher_thread(
                     task_kind: msg.task_kind.clone(),
                 };
 
-                // Build conversation context so the agent knows which channel
-                // the user is on (e.g. Telegram, WhatsApp) and whether it's group chat.
-                let conversation_context = crate::agent::prompt::ConversationContext {
-                    channel: Some(channel.clone()),
-                    sender_number: None,
-                    sender_uuid: None,
-                    group_id: None,
-                    is_group: Some(msg.is_group),
-                };
-
                 let task_kind = msg.task_kind.clone();
                 let is_heartbeat = task_kind.as_deref() == Some("heartbeat");
                 let stop_marker: &str = "⏹ Task stopped by user.";
 
                 match sm
-                    .process_message_stream(&session_key, &agent_id, content, context, stream_cb, Some(conversation_context))
+                    .process_message_stream(&session_key, &agent_id, content, context, stream_cb)
                     .await
                 {
                     Ok(response_text) => {
@@ -508,9 +462,6 @@ pub fn inbound_dispatcher_thread(
                     }
                 }
             });
-            // We do not wait for handles here in this unbounded loop, 
-            // but we could track them. Since we are adding proper exit propagation
-            // below, we just track the core background threads.
         }
     }
     info!("Inbound dispatcher thread stopped");
@@ -551,7 +502,7 @@ pub fn init_channels(
             tg_config.account_id
         );
 
-        let channel = Arc::new(TelegramChannel::new(tg_config.clone(), config.gateway.require_pairing));
+        let channel = Arc::new(TelegramChannel::new(tg_config.clone()));
         registry.register(channel.clone());
 
         if let Some(descriptor) = find_polling_descriptor("telegram") {
@@ -587,19 +538,15 @@ pub fn init_channels(
             wa_config.account_id
         );
 
-        let _gateway_url = format!(
+        let gateway_url = format!(
             "http://{}:{}/whatsapp/webhook",
             config.gateway.host, config.gateway.port
         );
         let channel = Arc::new(
             crate::channels::whatsapp_native::WhatsAppNativeChannel::new(
                 wa_config.bridge_url.clone(),
-                format!(
-                    "http://{}:{}/whatsapp/webhook",
-                    config.gateway.host, config.gateway.port
-                ),
+                gateway_url,
                 wa_config.allow_from.clone(),
-                config.gateway.require_pairing,
             ),
         );
         registry.register_with_account(channel, &wa_config.account_id);
@@ -711,7 +658,6 @@ pub async fn build_tools(
     tools.push(Arc::new(crate::tools::file_write::FileWriteTool {
         workspace_dir: config.workspace_dir.clone(),
         allowed_paths: vec![config.workspace_dir.clone()],
-        max_content_bytes: 10 * 1024 * 1024, // 0.3: 10 MB content size limit
     }));
     tools.push(Arc::new(crate::tools::file_edit::FileEditTool {
         workspace_dir: config.workspace_dir.clone(),
@@ -722,7 +668,6 @@ pub async fn build_tools(
         workspace_dir: config.workspace_dir.clone(),
         allowed_paths: vec![config.workspace_dir.clone()],
         max_file_size: 10 * 1024 * 1024,
-        max_content_bytes: 10 * 1024 * 1024,
     }));
 
     tools.push(Arc::new(crate::tools::shell::ShellTool {
@@ -842,19 +787,6 @@ pub async fn build_tools(
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
-    // Email tools (send + read)
-    if config.email.enabled {
-        let cfg_arc = Arc::new(config.clone());
-        tools.push(Arc::new(crate::tools::email::EmailSendTool {
-            config: cfg_arc.clone(),
-        }));
-        tools.push(Arc::new(crate::tools::email::EmailReadTool {
-            config: cfg_arc.clone(),
-        }));
-        tools.push(Arc::new(crate::tools::email::EmailCheckTool {
-            config: cfg_arc,
-        }));
-    }
     // BUG-CRON-4 FIX: Register the notify_telegram tool so the agent can send
     // proactive Telegram messages to the user without creating a cron job.
     tools.push(Arc::new(
@@ -1114,60 +1046,17 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         Some(mailbox.clone()),
         Some(approval_manager.clone()),
         Some(event_registry),
-        Some(plan_manager.clone()),
+        Some(plan_manager),
     )
     .await;
 
     let session_manager = Arc::new(SessionManager::new(config.clone(), provider, tools, memory));
 
-    let mut background_threads = Vec::new();
-
-    // ── 0.4: Wire session eviction background thread ──────────────────────────
-    // evict_idle() exists in SessionManager but was never called. This thread
-    // calls it every 5 minutes to enforce the idle_minutes TTL from config.
-    {
-        let sm_evict = session_manager.clone();
-        let idle_minutes = config.session.idle_minutes as u64;
-        let h = thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(300)); // check every 5 min
-                if is_shutdown_requested() {
-                    break;
-                }
-                let n = sm_evict.evict_idle(idle_minutes * 60);
-                if n > 0 {
-                    info!("Session eviction: removed {} idle session(s) (TTL {}min)", n, idle_minutes);
-                }
-            }
-        });
-        background_threads.push(h);
-    }
-
-    // ── 0.7: Warn if any Telegram account has an open allowlist ──────────────
-    for tg in &config.channels.telegram {
-        if tg.allow_from.is_empty() {
-            warn!(
-                "[SECURITY] Telegram account '{}': allow_from is EMPTY — bot accepts messages \
-                 from ANY user. Set allow_from in config to restrict access.",
-                tg.account_id
-            );
-        }
-    }
-
-    // ── 1.4.3: Warn on insecure defaults at startup ──────────────
-    let local_bind = config.gateway.allow_public_bind.unwrap_or(false);
-    if local_bind && config.gateway.token.is_none() {
-        warn!(
-            "[SECURITY] Gateway is binding to 0.0.0.0 (publicly accessible) WITHOUT an authentication token! \
-             This exposes your configuration and API keys to the network. Set gateway.token immediately."
-        );
-    }
-
     // Start Inbound Dispatcher
     let bus_clone = bus.clone();
     let sm_clone = session_manager.clone();
     let ds_clone = daemon_state.clone();
-    background_threads.push(thread::spawn(move || inbound_dispatcher_thread(bus_clone, sm_clone, ds_clone)));
+    thread::spawn(move || inbound_dispatcher_thread(bus_clone, sm_clone, ds_clone));
 
     // Finish Subagent Manager initialization (inject session manager to break circularity)
     subagent_manager.set_session_manager(session_manager.clone());
@@ -1218,24 +1107,23 @@ pub async fn run_daemon(config: Config) -> Result<()> {
 
     // Start Outbound Dispatcher
     let ds_clone = daemon_state.clone();
-    background_threads.push(start_outbound_dispatcher(bus.clone(), registry.clone(), ds_clone));
+    let dispatcher_handle = start_outbound_dispatcher(bus.clone(), registry.clone(), ds_clone);
 
     // Start Heartbeat
     let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, bus.clone());
     let ds_clone = daemon_state.clone();
     let config_clone = config.clone();
-    background_threads.push(thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine)));
+    thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine));
 
     // Start Supervisor
     let sm_clone = subagent_manager.clone();
-    let pm_clone = plan_manager.clone();
-    background_threads.push(thread::spawn(move || supervisor_thread(sm_clone, pm_clone)));
+    thread::spawn(move || supervisor_thread(sm_clone));
 
     let config_clone2 = config.clone();
     let sched_clone = scheduler.clone();
     let ds_clone = daemon_state.clone();
     let rt_handle = tokio::runtime::Handle::current();
-    background_threads.push(thread::spawn(move || scheduler_thread(config_clone2, ds_clone, sched_clone, rt_handle)));
+    thread::spawn(move || scheduler_thread(config_clone2, ds_clone, sched_clone, rt_handle));
 
     // Start Gateway (Web UI) supervised
     let config_clone = config.clone();
@@ -1281,11 +1169,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         let _ = handle.join();
     }
 
-    info!("Waiting for background threads to exit...");
-    for handle in background_threads {
-        // give threads some time to finish cleanly
-        let _ = handle.join();
-    }
+    let _ = dispatcher_handle.join();
 
     info!("Daemon stopped");
     Ok(())

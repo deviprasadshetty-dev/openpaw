@@ -96,10 +96,6 @@ impl Provider for ReliableProvider {
         self.inner.supports_native_tools()
     }
 
-    fn supports_multimodal(&self) -> bool {
-        self.inner.supports_multimodal()
-    }
-
     fn get_name(&self) -> &str {
         self.inner.get_name()
     }

@@ -12,7 +12,6 @@ pub struct WhatsAppNativeChannel {
     webhook_url: String,
     allow_from: Vec<String>,
     client: Client,
-    require_pairing: bool,
 }
 
 #[derive(Serialize)]
@@ -28,7 +27,7 @@ struct BridgeTypingRequest {
 }
 
 impl WhatsAppNativeChannel {
-    pub fn new(bridge_url: String, webhook_url: String, allow_from: Vec<String>, require_pairing: bool) -> Self {
+    pub fn new(bridge_url: String, webhook_url: String, allow_from: Vec<String>) -> Self {
         Self {
             bridge_url: if bridge_url.is_empty() {
                 "http://localhost:18790".to_string()
@@ -38,25 +37,15 @@ impl WhatsAppNativeChannel {
             webhook_url,
             allow_from,
             client: Client::new(),
-            require_pairing,
         }
     }
 
     pub fn is_number_allowed(&self, phone: &str) -> bool {
         if self.allow_from.is_empty() {
-            if self.require_pairing {
-                return false;
-            }
             return true;
         }
         for allowed in &self.allow_from {
-            if allowed == "*" {
-                if self.require_pairing {
-                    continue;
-                }
-                return true;
-            }
-            if allowed == phone {
+            if allowed == "*" || allowed == phone {
                 return true;
             }
         }

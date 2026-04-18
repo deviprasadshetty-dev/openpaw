@@ -2,10 +2,8 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::State,
-    http::{HeaderMap, StatusCode},
-    middleware::{self, Next},
-    extract::Request,
-    response::{IntoResponse, Response},
+    http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -14,87 +12,29 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::Config;
 
 #[derive(Clone)]
 struct AppState {
     config: Arc<RwLock<Config>>,
-    /// Pre-extracted gateway token for fast auth checks (None = no auth required)
-    gateway_token: Option<String>,
-}
-
-/// Axum middleware that enforces `Authorization: Bearer <token>` or
-/// `X-API-Key: <token>` on any route that uses it.
-///
-/// Skipped entirely when `gateway_token` is `None` (no token configured).
-async fn require_auth(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    req: Request,
-    next: Next,
-) -> Response {
-    let Some(ref expected) = state.gateway_token else {
-        // No token configured — unauthenticated mode (localhost-only deployments)
-        return next.run(req).await;
-    };
-
-    // Check Authorization: Bearer <token>
-    let bearer_ok = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|t| t.trim() == expected.as_str())
-        .unwrap_or(false);
-
-    // Check X-API-Key: <token>
-    let apikey_ok = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|t| t.trim() == expected.as_str())
-        .unwrap_or(false);
-
-    if bearer_ok || apikey_ok {
-        next.run(req).await
-    } else {
-        warn!("[SECURITY] Rejected unauthenticated gateway request");
-        (
-            StatusCode::UNAUTHORIZED,
-            [("www-authenticate", "Bearer realm=\"openpaw\"")],
-            "Unauthorized: provide Authorization: Bearer <token> or X-API-Key: <token>",
-        )
-            .into_response()
-    }
 }
 
 pub async fn serve(config: Config) -> Result<()> {
-    let gateway_token = config.gateway.token.clone();
     let state = AppState {
         config: Arc::new(RwLock::new(config.clone())),
-        gateway_token: gateway_token.clone(),
     };
 
-    // ── 0.9: Auth middleware on sensitive routes ───────────────────────────────
-    // /api/health remains unauthenticated (liveness probe).
-    // /api/chat and /whatsapp/webhook are channel-specific and already have
-    // their own sender allowlists — keeping them open here.
-    // /api/config (read AND write) is the most sensitive: API keys are exposed in
-    // the GET response; the POST overwrites them. Always protect when token is set.
-    let protected_routes = Router::new()
+    let app = Router::new()
+        // API routes
+        .route("/api/health", get(health_check))
         .route("/api/config", get(get_config))
         .route("/api/config", post(save_config))
-        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
-
-    let app = Router::new()
-        // Unprotected routes
-        .route("/api/health", get(health_check))
         .route("/api/chat", post(chat_handler))
         .route("/whatsapp/webhook", post(whatsapp_webhook_handler))
         .route("/ws/chat", get(websocket_handler))
-        // Protected routes
-        .merge(protected_routes)
-        // Static files (must be last)
+        // Static files (must be first to catch all static routes)
         .fallback_service(ServeDir::new("static"))
         .with_state(state);
 
@@ -109,11 +49,6 @@ pub async fn serve(config: Config) -> Result<()> {
 
     info!("Gateway listening on {}", addr);
     info!("Web UI available at http://{}", addr);
-    if gateway_token.is_some() {
-        info!("Gateway auth: ENABLED (Bearer token / X-API-Key required for /api/config)");
-    } else {
-        warn!("[SECURITY] Gateway auth: DISABLED — set gateway.token in config to enable");
-    }
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -371,7 +306,6 @@ async fn whatsapp_webhook_handler(
         media: Vec::new(),
         metadata_json: None,
         task_kind: None,
-        is_group: false,
     };
 
     if let Some(bus) = global_bus() {

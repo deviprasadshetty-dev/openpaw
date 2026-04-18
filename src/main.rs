@@ -178,7 +178,6 @@ async fn main() -> Result<()> {
             composio: Default::default(),
             hardware: Default::default(),
             pushover: Default::default(),
-            email: Default::default(),
             mcp_servers: Default::default(),
             agents: Vec::new(),
             reliability: Default::default(),
