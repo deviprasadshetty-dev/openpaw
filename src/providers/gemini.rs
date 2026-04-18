@@ -135,8 +135,8 @@ struct RefreshResponse {
 /// - Direct API key (`GEMINI_API_KEY` env var or config)
 /// - Gemini CLI OAuth tokens (reuse existing ~/.gemini/ authentication)
 pub struct GeminiProvider {
-    auth: Option<GeminiAuth>,
-    client: Client,
+    pub auth: Option<GeminiAuth>,
+    pub client: Client,
 }
 
 impl GeminiProvider {
@@ -743,27 +743,7 @@ impl GeminiProvider {
             }
         }
 
-        let url = if auth.is_api_key() {
-            if streaming {
-                format!(
-                    "{}/{}:{}&key={}",
-                    BASE_URL,
-                    model_name,
-                    action,
-                    auth.credential()
-                )
-            } else {
-                format!(
-                    "{}/{}:{}?key={}",
-                    BASE_URL,
-                    model_name,
-                    action,
-                    auth.credential()
-                )
-            }
-        } else {
-            format!("{}/{}:{}", BASE_URL, model_name, action)
-        };
+        let url = format!("{}/{}:{}", BASE_URL, model_name, action);
         Ok((url, self.build_request_body(request)?))
     }
 
@@ -1114,7 +1094,9 @@ impl Provider for GeminiProvider {
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
 
-        if !auth.is_api_key() {
+        if auth.is_api_key() {
+            req_builder = req_builder.header("x-goog-api-key", auth.credential());
+        } else {
             req_builder =
                 req_builder.header("Authorization", format!("Bearer {}", auth.credential()));
         }
@@ -1191,7 +1173,9 @@ impl Provider for GeminiProvider {
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
 
-        if !auth.is_api_key() {
+        if auth.is_api_key() {
+            req_builder = req_builder.header("x-goog-api-key", auth.credential());
+        } else {
             req_builder =
                 req_builder.header("Authorization", format!("Bearer {}", auth.credential()));
         }

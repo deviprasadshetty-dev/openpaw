@@ -1,4 +1,4 @@
-use super::{Tool, ToolContext, ToolResult};
+use super::{Tool, ToolContext, ToolResult, ssrf_guard};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -41,6 +41,11 @@ impl Tool for WebFetchTool {
             return Ok(ToolResult::fail(
                 "Only http:// and https:// URLs are allowed",
             ));
+        }
+
+        // ── 0.1: SSRF protection — blocks private IPs and cloud metadata ──────
+        if let Err(e) = ssrf_guard::check_url(url).await {
+            return Ok(ToolResult::fail(format!("Security: {}", e)));
         }
 
         let max_chars = args

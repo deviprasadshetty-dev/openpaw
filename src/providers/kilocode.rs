@@ -37,7 +37,7 @@ pub const DEFAULT_FREE_MODELS: &[&str] = &[
 /// If it fails, we iterate through `fallback_models` in order until one
 /// succeeds. The first successful model's response is returned.
 pub struct KiloCodeProvider {
-    inner: OpenAiCompatibleProvider,
+    pub inner: OpenAiCompatibleProvider,
     /// Ordered list of fallback model IDs to try when the primary fails.
     pub fallback_models: Vec<String>,
 }
@@ -108,6 +108,10 @@ impl Provider for KiloCodeProvider {
 
     fn supports_native_tools(&self) -> bool {
         true
+    }
+
+    fn supports_multimodal(&self) -> bool {
+        true // KiloCode routes to various models; assume multimodal support
     }
 
     fn get_name(&self) -> &str {

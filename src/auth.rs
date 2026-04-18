@@ -1,7 +1,7 @@
 use crate::platform;
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::RngCore;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::{rngs::OsRng, RngCore};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,7 +20,7 @@ pub struct PkceChallenge {
 /// Generate a PKCE challenge pair (RFC 7636).
 pub fn generate_pkce() -> Result<PkceChallenge> {
     let mut random_bytes = [0u8; 64];
-    rand::thread_rng().fill_bytes(&mut random_bytes);
+    OsRng.fill_bytes(&mut random_bytes);
 
     let verifier = URL_SAFE_NO_PAD.encode(random_bytes);
 

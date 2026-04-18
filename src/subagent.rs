@@ -47,6 +47,7 @@ struct PendingTask {
 pub struct SubagentConfig {
     pub max_iterations: u32,
     pub max_concurrent: u32,
+    pub task_ttl_seconds: u64,
 }
 
 impl Default for SubagentConfig {
@@ -54,6 +55,7 @@ impl Default for SubagentConfig {
         Self {
             max_iterations: 15,
             max_concurrent: 4,
+            task_ttl_seconds: 3600,
         }
     }
 }
@@ -125,9 +127,13 @@ impl SubagentManager {
             .filter(|t| t.status == TaskStatus::Running)
             .count();
 
-        let mut next_id = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
-        let task_id = *next_id;
-        *next_id += 1;
+        // Hold next_id briefly without risking deadlock
+        let task_id = {
+            let mut next_id = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
+            let id = *next_id;
+            *next_id += 1;
+            id
+        };
 
         // If at capacity, queue the task rather than erroring
         if running_count >= self.config.max_concurrent as usize {
@@ -423,6 +429,22 @@ impl SubagentManager {
                 }
             },
         }
+    }
+
+    pub fn cleanup_old_tasks(&self) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_secs();
+        let ttl = self.config.task_ttl_seconds;
+
+        tasks.retain(|_, state| {
+            if state.status == TaskStatus::Running || state.status == TaskStatus::Queued {
+                true
+            } else if let Some(completed_at) = state.completed_at {
+                (now - completed_at) < ttl
+            } else {
+                true // completed_at is None but status is terminal - keep it to be safe or maybe prune? Let's prune.
+            }
+        });
     }
 
     pub fn get_task_status(&self, task_id: u64) -> Option<TaskStatus> {

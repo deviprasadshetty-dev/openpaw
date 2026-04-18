@@ -25,12 +25,20 @@ impl PostgresMemory {
         let table_fq = format!("\"{}\".\"{}\"", schema, table);
         let create_memories_sql = format!(
             r#"
+            CREATE TABLE IF NOT EXISTS "{schema}"."sessions" (
+                id TEXT PRIMARY KEY,
+                provider TEXT,
+                model TEXT,
+                created_at TEXT DEFAULT (now()::text),
+                updated_at TEXT DEFAULT (now()::text)
+            );
+
             CREATE TABLE IF NOT EXISTS {} (
                 id TEXT PRIMARY KEY,
                 key TEXT NOT NULL UNIQUE,
                 content TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'core',
-                session_id TEXT,
+                category TEXT NOT NULL DEFAULT 'core' CHECK (category IN ('core', 'episodic', 'semantic', 'procedural', 'skill')),
+                session_id TEXT REFERENCES "{schema}"."sessions"(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -48,8 +56,8 @@ impl PostgresMemory {
             r#"
             CREATE TABLE IF NOT EXISTS {} (
                 id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
+                session_id TEXT NOT NULL REFERENCES "{schema}"."sessions"(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
                 content TEXT NOT NULL,
                 created_at TEXT DEFAULT (now()::text)
             );

@@ -1,6 +1,6 @@
 use crate::channels::root::{Channel, ParsedMessage};
 use anyhow::Result;
-use crossbeam_channel::{Receiver, unbounded};
+use crossbeam_channel::{bounded, Receiver};
 use std::any::Any;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
@@ -14,7 +14,7 @@ pub struct CliChannel {
 
 impl CliChannel {
     pub fn new(account_id: String) -> Self {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = bounded(100);
 
         // Spawn a thread to read stdin
         thread::spawn(move || {
@@ -31,10 +31,9 @@ impl CliChannel {
                     Ok(0) => break, // EOF
                     Ok(_) => {
                         let trimmed = buffer.trim().to_string();
-                        if !trimmed.is_empty()
-                            && tx.send(trimmed).is_err() {
-                                break; // Channel closed
-                            }
+                        if !trimmed.is_empty() && tx.send(trimmed).is_err() {
+                            break; // Channel closed
+                        }
                     }
                     Err(e) => {
                         error!("Error reading stdin: {}", e);

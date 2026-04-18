@@ -235,14 +235,14 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", ".venv", "__pycac
 pub struct WorkspaceChunk {
     pub source: String, // relative path from workspace root
     pub content: String,
-    /// Pre-tokenised lowercase terms for fast scoring.
-    terms: Vec<String>,
 }
 
 /// Lightweight workspace knowledge base. Zero external dependencies.
 #[derive(Debug, Default)]
 pub struct WorkspaceRag {
     chunks: Vec<WorkspaceChunk>,
+    /// Maps term -> Vec<(chunk_index, tf_in_chunk)>
+    inverted_index: HashMap<String, Vec<(usize, f32)>>,
 }
 
 impl WorkspaceRag {
@@ -253,6 +253,7 @@ impl WorkspaceRag {
     /// Walk the workspace and index text files. Call once at startup or on demand.
     pub fn index_workspace(&mut self, workspace_dir: &Path) {
         self.chunks.clear();
+        self.inverted_index.clear();
         self.walk_dir(workspace_dir, workspace_dir);
     }
 
@@ -321,10 +322,27 @@ impl WorkspaceRag {
             let chunk_text: String = chars[start..end].iter().collect();
             let terms = tokenise(&chunk_text);
             if !terms.is_empty() {
+                let chunk_idx = self.chunks.len();
+                let n_terms = terms.len() as f32;
+
+                // Build term frequencies for this chunk
+                let mut tf_map = HashMap::new();
+                for term in &terms {
+                    *tf_map.entry(term.clone()).or_insert(0.0) += 1.0;
+                }
+
+                // Add to inverted index
+                for (term, count) in tf_map {
+                    let tf = count / n_terms;
+                    self.inverted_index
+                        .entry(term)
+                        .or_default()
+                        .push((chunk_idx, tf));
+                }
+
                 self.chunks.push(WorkspaceChunk {
                     source: source.to_string(),
                     content: chunk_text,
-                    terms,
                 });
             }
             if end == total {
@@ -346,43 +364,22 @@ impl WorkspaceRag {
         }
 
         let n_docs = self.chunks.len() as f32;
+        let mut doc_scores: HashMap<usize, f32> = HashMap::new();
 
-        // Compute IDF for each query term
-        let idf: HashMap<&str, f32> = query_terms
-            .iter()
-            .map(|term| {
-                let df = self
-                    .chunks
-                    .iter()
-                    .filter(|c| c.terms.iter().any(|t| t == term))
-                    .count() as f32;
-                let idf = if df > 0.0 {
-                    (1.0 + n_docs / df).ln()
-                } else {
-                    0.0
-                };
-                (term.as_str(), idf)
-            })
-            .collect();
-
-        let mut scored: Vec<(&WorkspaceChunk, f32)> = self
-            .chunks
-            .iter()
-            .filter_map(|chunk| {
-                let n_terms = chunk.terms.len() as f32;
-                if n_terms == 0.0 {
-                    return None;
+        for term in &query_terms {
+            if let Some(postings) = self.inverted_index.get(term) {
+                let df = postings.len() as f32;
+                let idf = (1.0 + n_docs / df).ln();
+                
+                for &(doc_id, tf) in postings {
+                    *doc_scores.entry(doc_id).or_insert(0.0) += tf * idf;
                 }
-                let score: f32 = query_terms
-                    .iter()
-                    .map(|qt| {
-                        let tf = chunk.terms.iter().filter(|t| *t == qt).count() as f32 / n_terms;
-                        let idf_val = idf.get(qt.as_str()).copied().unwrap_or(0.0);
-                        tf * idf_val
-                    })
-                    .sum();
-                if score > 0.0 { Some((chunk, score)) } else { None }
-            })
+            }
+        }
+
+        let mut scored: Vec<(&WorkspaceChunk, f32)> = doc_scores
+            .into_iter()
+            .map(|(doc_id, score)| (&self.chunks[doc_id], score))
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

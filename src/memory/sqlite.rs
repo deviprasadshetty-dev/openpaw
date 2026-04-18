@@ -1,6 +1,7 @@
 use super::{MemoryCategory, MemoryEntry, MemoryStore, MessageEntry, SessionStore};
 use anyhow::Result;
 use rusqlite::{Connection, params};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,18 +18,27 @@ impl SqliteMemory {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
-             PRAGMA temp_store = MEMORY;",
+             PRAGMA temp_store = MEMORY;
+             PRAGMA foreign_keys = ON;",
         )?;
 
         // Schema
         conn.execute_batch(
             r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+              id TEXT PRIMARY KEY,
+              provider TEXT,
+              model TEXT,
+              created_at TEXT DEFAULT (datetime('now')),
+              updated_at TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS memories (
               id         TEXT PRIMARY KEY,
               key        TEXT NOT NULL UNIQUE,
               content    TEXT NOT NULL,
               category   TEXT NOT NULL DEFAULT 'core',
-              session_id TEXT,
+              session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
@@ -57,17 +67,10 @@ impl SqliteMemory {
 
             CREATE TABLE IF NOT EXISTS messages (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              session_id TEXT NOT NULL,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
               role TEXT NOT NULL,
               content TEXT NOT NULL,
               created_at TEXT DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-              id TEXT PRIMARY KEY,
-              provider TEXT,
-              model TEXT,
-              created_at TEXT DEFAULT (datetime('now')),
-              updated_at TEXT DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS kv (
               key TEXT PRIMARY KEY,
@@ -121,11 +124,11 @@ impl SqliteMemory {
 
         let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
         let dim = embedding.len() as i64;
-        conn.execute(
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO embeddings (memory_id, embedding, dim) VALUES (?1, ?2, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
-            params![memory_id, blob, dim],
+             ON CONFLICT(memory_id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim"
         )?;
+        stmt.execute(params![memory_id, blob, dim])?;
         Ok(())
     }
 
@@ -162,17 +165,6 @@ impl SqliteMemory {
         let rand_hi: u64 = rand::random();
         format!("{}-{:x}", ts, rand_hi)
     }
-    fn store_embedding_internal(&self, memory_id: &str, embedding: &[f32]) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-        let dim = embedding.len() as i64;
-        conn.execute(
-            "INSERT INTO embeddings (memory_id, embedding, dim) VALUES (?1, ?2, ?3)
-             ON CONFLICT(memory_id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
-            params![memory_id, blob, dim],
-        )?;
-        Ok(())
-    }
 }
 
 impl MemoryStore for SqliteMemory {
@@ -188,30 +180,49 @@ impl MemoryStore for SqliteMemory {
         session_id: Option<&str>,
         importance: Option<f64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_str();
         let id = Self::nano_id();
         let cat_str = category.to_string();
         let imp = importance.unwrap_or(0.5);
 
-        conn.execute(
-            "INSERT INTO memories (id, key, content, category, session_id, created_at, updated_at, importance)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(key) DO UPDATE SET
-             content = excluded.content,
-             category = excluded.category,
-             session_id = excluded.session_id,
-             updated_at = excluded.updated_at,
-             importance = excluded.importance",
-            params![id.clone(), key, content, cat_str, session_id, now, now, imp],
-        )?;
-
-        // Auto-embed if provider is present and not an ephemeral autosave
-        if let Some(ref embedder) = self.embedder
-            && !key.starts_with("autosave_")
-                && let Ok(emb) = embedder.embed(content) {
-                    let _ = self.store_embedding_internal(&id, &emb);
+        // Fetch embedding before acquiring lock to avoid stalling the database
+        let mut embedding = None;
+        if let Some(ref embedder) = self.embedder {
+            if !key.starts_with("autosave_") {
+                if let Ok(emb) = embedder.embed(content) {
+                    embedding = Some(emb);
                 }
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO memories (id, key, content, category, session_id, created_at, updated_at, importance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(key) DO UPDATE SET
+                 content = excluded.content,
+                 category = excluded.category,
+                 session_id = excluded.session_id,
+                 updated_at = excluded.updated_at,
+                 importance = excluded.importance"
+            )?;
+            stmt.execute(params![id.clone(), key, content, cat_str, session_id, now, now, imp])?;
+
+            if let Some(emb) = embedding {
+                let blob: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+                let dim = emb.len() as i64;
+                let mut stmt_emb = tx.prepare_cached(
+                    "INSERT INTO embeddings (memory_id, embedding, dim) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(memory_id) DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim"
+                )?;
+                stmt_emb.execute(params![id.clone(), blob, dim])?;
+            }
+        }
+        
+        tx.commit()?;
 
         Ok(())
     }
@@ -334,7 +345,7 @@ impl MemoryStore for SqliteMemory {
 
     fn get(&self, key: &str) -> Result<Option<MemoryEntry>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT id, key, content, category, created_at, session_id FROM memories WHERE key = ?1")?;
+        let mut stmt = conn.prepare_cached("SELECT id, key, content, category, created_at, session_id FROM memories WHERE key = ?1")?;
 
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
@@ -365,7 +376,7 @@ impl MemoryStore for SqliteMemory {
 
         if let Some(cat) = category {
             let cat_str = cat.to_string();
-            let mut stmt = conn.prepare("SELECT id, key, content, category, created_at, session_id FROM memories WHERE category = ?1 ORDER BY updated_at DESC")?;
+            let mut stmt = conn.prepare_cached("SELECT id, key, content, category, created_at, session_id FROM memories WHERE category = ?1 ORDER BY updated_at DESC")?;
             let mapped = stmt.query_map(params![cat_str], |row| {
                 let cat_s: String = row.get(3)?;
                 Ok(MemoryEntry {
@@ -389,7 +400,7 @@ impl MemoryStore for SqliteMemory {
                 results.push(entry);
             }
         } else {
-            let mut stmt = conn.prepare("SELECT id, key, content, category, created_at, session_id FROM memories ORDER BY updated_at DESC")?;
+            let mut stmt = conn.prepare_cached("SELECT id, key, content, category, created_at, session_id FROM memories ORDER BY updated_at DESC")?;
             let mapped = stmt.query_map([], |row| {
                 let cat_s: String = row.get(3)?;
                 Ok(MemoryEntry {
@@ -419,7 +430,8 @@ impl MemoryStore for SqliteMemory {
 
     fn forget(&self, key: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let deleted = conn.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
+        let mut stmt = conn.prepare_cached("DELETE FROM memories WHERE key = ?1")?;
+        let deleted = stmt.execute(params![key])?;
         Ok(deleted > 0)
     }
 
@@ -447,7 +459,9 @@ impl MemoryStore for SqliteMemory {
     fn semantic_recall(&self, query_embedding: &[f32], limit: usize) -> Result<Vec<MemoryEntry>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
-        let mut stmt = conn.prepare("SELECT memory_id, embedding FROM embeddings")?;
+        // 3.1.1 Semantic Recall — Replace N+1 + Full Table Scan
+        // Add LIMIT 1000 to embeddings query to reduce processing on huge tables
+        let mut stmt = conn.prepare("SELECT memory_id, embedding FROM embeddings LIMIT 1000")?;
         let mut rows = stmt.query([])?;
 
         let mut scored_ids: Vec<(String, f32)> = Vec::new();
@@ -466,27 +480,47 @@ impl MemoryStore for SqliteMemory {
             return Ok(Vec::new());
         }
 
-        let mut results = Vec::new();
-        for (id, sim) in scored_ids {
-            let mut stmt = conn.prepare(
-                "SELECT key, content, category, created_at, session_id, importance FROM memories WHERE id = ?1"
-            )?;
-            let mut mem_rows = stmt.query(params![id])?;
-            if let Some(row) = mem_rows.next()? {
-                let cat_str: String = row.get(2)?;
-                results.push(MemoryEntry {
-                    id: id.clone(),
-                    key: row.get(0)?,
-                    content: row.get(1)?,
-                    category: MemoryCategory::from_str(&cat_str),
-                    timestamp: row.get(3)?,
-                    session_id: row.get(4)?,
-                    score: Some(sim as f64),
-                    importance: row.get(5)?,
-                    embedding: None,
-                });
-            }
+        // Fix Option A: Build WHERE id IN (...) for memory fetch
+        let placeholders: Vec<String> = scored_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let in_clause = placeholders.join(",");
+        let sql = format!(
+            "SELECT id, key, content, category, created_at, session_id, importance FROM memories WHERE id IN ({})",
+            in_clause
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for (id, _) in &scored_ids {
+            params_vec.push(Box::new(id.clone()));
         }
+
+        let mut mem_rows = stmt.query(rusqlite::params_from_iter(params_vec.iter()))?;
+        
+        // Map the results back to their scores
+        let score_map: HashMap<String, f32> = scored_ids.into_iter().collect();
+        let mut results = Vec::new();
+
+        while let Some(row) = mem_rows.next()? {
+            let id: String = row.get(0)?;
+            let cat_str: String = row.get(3)?;
+            let score = score_map.get(&id).copied().unwrap_or(0.0);
+            
+            results.push(MemoryEntry {
+                id,
+                key: row.get(1)?,
+                content: row.get(2)?,
+                category: MemoryCategory::from_str(&cat_str),
+                timestamp: row.get(4)?,
+                session_id: row.get(5)?,
+                score: Some(score as f64),
+                importance: row.get(6)?,
+                embedding: None,
+            });
+        }
+
+        // Sort by score descending since IN (...) doesn't guarantee order
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
         Ok(results)
     }
@@ -498,10 +532,10 @@ impl MemoryStore for SqliteMemory {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        conn.execute(
-            "UPDATE memories SET importance = importance * 0.9 WHERE ?1 - CAST(updated_at AS INTEGER) > 86400",
-            params![now],
+        let mut stmt = conn.prepare_cached(
+            "UPDATE memories SET importance = importance * 0.9 WHERE ?1 - CAST(updated_at AS INTEGER) > 86400"
         )?;
+        stmt.execute(params![now])?;
         Ok(())
     }
 }
@@ -509,17 +543,15 @@ impl MemoryStore for SqliteMemory {
 impl SessionStore for SqliteMemory {
     fn save_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-            params![session_id, role, content],
-        )?;
+        let mut stmt = conn.prepare_cached("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)")?;
+        stmt.execute(params![session_id, role, content])?;
         Ok(())
     }
 
     fn load_messages(&self, session_id: &str) -> Result<Vec<MessageEntry>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
-            .prepare("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC")?;
+            .prepare_cached("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC")?;
 
         let records = stmt.query_map(params![session_id], |row| {
             Ok(MessageEntry {
@@ -537,22 +569,19 @@ impl SessionStore for SqliteMemory {
 
     fn clear_messages(&self, session_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM messages WHERE session_id = ?",
-            params![session_id],
-        )?;
+        let mut stmt = conn.prepare_cached("DELETE FROM messages WHERE session_id = ?")?;
+        stmt.execute(params![session_id])?;
         Ok(())
     }
 
     fn clear_autosaved(&self, session_id: Option<&str>) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sid) = session_id {
-            conn.execute(
-                "DELETE FROM memories WHERE key LIKE 'autosave_%' AND session_id = ?1",
-                params![sid],
-            )?;
+            let mut stmt = conn.prepare_cached("DELETE FROM memories WHERE key LIKE 'autosave_%' AND session_id = ?1")?;
+            stmt.execute(params![sid])?;
         } else {
-            conn.execute("DELETE FROM memories WHERE key LIKE 'autosave_%'", [])?;
+            let mut stmt = conn.prepare_cached("DELETE FROM memories WHERE key LIKE 'autosave_%'")?;
+            stmt.execute([])?;
         }
         Ok(())
     }

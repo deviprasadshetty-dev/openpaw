@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct FileWriteTool {
     pub workspace_dir: String,
     pub allowed_paths: Vec<String>,
+    /// Maximum content size allowed (bytes). Default: 10 MB.
+    pub max_content_bytes: usize,
 }
 
 use async_trait::async_trait;
@@ -37,6 +39,15 @@ impl Tool for FileWriteTool {
             Some(c) => c,
             None => return Ok(ToolResult::fail("Missing 'content' parameter")),
         };
+
+        // ── 0.3: Content size limit ───────────────────────────────────────────
+        if content.len() > self.max_content_bytes {
+            return Ok(ToolResult::fail(format!(
+                "Content too large: {} bytes (limit: {} bytes)",
+                content.len(),
+                self.max_content_bytes
+            )));
+        }
 
         let full_path = if Path::new(path_str).is_absolute() {
             if self.allowed_paths.is_empty() {
@@ -87,6 +98,20 @@ impl Tool for FileWriteTool {
             return Ok(ToolResult::fail("Path is outside allowed areas"));
         }
 
+        let target_path = resolved_parent.join(full_path.file_name().unwrap_or_default());
+
+        // Skip writing if content is unchanged
+        if target_path.exists() {
+            if let Ok(existing_content) = fs::read_to_string(&target_path) {
+                if existing_content == content {
+                    return Ok(ToolResult::ok(format!(
+                        "File {} is unchanged (skipped write).",
+                        path_str
+                    )));
+                }
+            }
+        }
+
         // Write to temp file first
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -110,7 +135,11 @@ impl Tool for FileWriteTool {
             return Ok(ToolResult::fail(format!("Failed to write file: {}", e)));
         }
 
-        let target_path = resolved_parent.join(full_path.file_name().unwrap_or_default());
+        if let Err(e) = file.sync_all() {
+            let _ = fs::remove_file(&tmp_path);
+            return Ok(ToolResult::fail(format!("Failed to sync file: {}", e)));
+        }
+
         if let Err(e) = fs::rename(&tmp_path, &target_path) {
             let _ = fs::remove_file(&tmp_path);
             return Ok(ToolResult::fail(format!("Failed to replace file: {}", e)));

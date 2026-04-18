@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-// â”€â”€ Autonomy Level â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Autonomy Level ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +13,7 @@ pub enum AutonomyLevel {
     Autonomous,
 }
 
-// â”€â”€ Named agent config (for agents map in JSON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Named agent config (for agents map in JSON) ──────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NamedAgentConfig {
@@ -34,7 +34,7 @@ fn default_max_depth() -> u32 {
     3
 }
 
-// â”€â”€ Session Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Session Config ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,6 +142,15 @@ pub struct SessionConfig {
     pub identity_links: Vec<IdentityLink>,
     #[serde(default = "default_typing_interval_secs")]
     pub typing_interval_secs: u32,
+    /// Maximum inbound message size in bytes. Messages exceeding this are
+    /// rejected before they reach the agent. Default: 50,000 bytes.
+    /// Set to 0 to disable the limit.
+    #[serde(default = "default_max_message_bytes")]
+    pub max_message_bytes: usize,
+    /// Maximum number of active sessions to keep in memory before the oldest are
+    /// evicted to free up resources.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sessions: Option<usize>,
 }
 
 impl Default for SessionConfig {
@@ -151,6 +160,8 @@ impl Default for SessionConfig {
             idle_minutes: default_idle_minutes(),
             identity_links: Vec::new(),
             typing_interval_secs: default_typing_interval_secs(),
+            max_message_bytes: default_max_message_bytes(),
+            max_sessions: Some(1000),
         }
     }
 }
@@ -163,7 +174,11 @@ fn default_typing_interval_secs() -> u32 {
     5
 }
 
-// â”€â”€ HTTP request config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+fn default_max_message_bytes() -> usize {
+    50_000
+}
+
+// ── HTTP request config ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpRequestConfig {
@@ -218,7 +233,7 @@ fn default_search_provider() -> String {
     "gemini_cli".to_string()
 }
 
-// â”€â”€ OpenCode CLI config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── OpenCode CLI config ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OpencodeCliConfig {
@@ -258,7 +273,7 @@ fn default_opencode_max_output_bytes() -> u32 {
     1_000_000
 }
 
-// â”€â”€ Browser config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Browser config ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BrowserComputerUseConfig {
@@ -364,7 +379,7 @@ fn default_cdp_host() -> String {
     "127.0.0.1".to_string()
 }
 
-// â”€â”€ Composio config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Composio config ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ComposioConfig {
@@ -390,7 +405,7 @@ fn default_composio_entity_id() -> String {
     "default".to_string()
 }
 
-// â”€â”€ Hardware config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Hardware config ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -436,7 +451,7 @@ fn default_baud_rate() -> u32 {
     115200
 }
 
-// â”€â”€ Memory config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Memory config ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MemoryConfig {
@@ -459,7 +474,7 @@ fn default_memory_backend() -> String {
     "markdown".to_string()
 }
 
-// â”€â”€ Channels configs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Channels configs ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
@@ -519,7 +534,7 @@ pub struct ChannelsConfig {
     pub webhook: Option<WebhookConfig>,
 }
 
-// â”€â”€ MCP config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── MCP config ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerEnv {
@@ -540,7 +555,8 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub inherit: Vec<String>,
 }
-// â”€â”€ Pushover config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// ── Pushover config ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PushoverConfig {
@@ -551,7 +567,84 @@ pub struct PushoverConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_key: Option<String>,
 }
-// â”€â”€ Reliability config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// ── Email config ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// Override SMTP host (auto-detected from email domain if not set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smtp_host: Option<String>,
+    /// Override SMTP port (default: 587).
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    /// Override IMAP host (auto-detected from email domain if not set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imap_host: Option<String>,
+    /// Override IMAP port (default: 993).
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+
+impl EmailConfig {
+    /// Resolve SMTP host from explicit override or auto-detect from email domain.
+    pub fn resolve_smtp_host(&self) -> String {
+        if let Some(ref h) = self.smtp_host {
+            return h.clone();
+        }
+        Self::detect_smtp(self.address.as_deref())
+    }
+
+    /// Resolve IMAP host from explicit override or auto-detect from email domain.
+    pub fn resolve_imap_host(&self) -> String {
+        if let Some(ref h) = self.imap_host {
+            return h.clone();
+        }
+        Self::detect_imap(self.address.as_deref())
+    }
+
+    fn detect_smtp(address: Option<&str>) -> String {
+        let domain = address
+            .and_then(|a| a.split('@').last())
+            .unwrap_or("gmail.com");
+        match domain {
+            "gmail.com" => "smtp.gmail.com".to_string(),
+            "outlook.com" | "hotmail.com" | "live.com" => "smtp.office365.com".to_string(),
+            "yahoo.com" | "yahoo.co.in" | "yahoo.co.uk" => "smtp.mail.yahoo.com".to_string(),
+            "icloud.com" | "me.com" | "mac.com" => "smtp.mail.me.com".to_string(),
+            _ => format!("smtp.{}", domain),
+        }
+    }
+
+    fn detect_imap(address: Option<&str>) -> String {
+        let domain = address
+            .and_then(|a| a.split('@').last())
+            .unwrap_or("gmail.com");
+        match domain {
+            "gmail.com" => "imap.gmail.com".to_string(),
+            "outlook.com" | "hotmail.com" | "live.com" => "outlook.office365.com".to_string(),
+            "yahoo.com" | "yahoo.co.in" | "yahoo.co.uk" => "imap.mail.yahoo.com".to_string(),
+            "icloud.com" | "me.com" | "mac.com" => "imap.mail.me.com".to_string(),
+            _ => format!("imap.{}", domain),
+        }
+    }
+}
+
+// ── Reliability config ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReliabilityConfig {
@@ -586,7 +679,7 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
-// â”€â”€ Scheduler config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Scheduler config ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchedulerConfig {
@@ -616,7 +709,7 @@ fn default_agent_timeout_secs() -> u64 {
     300
 }
 
-// â”€â”€ Task-based model routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Task-based model routing ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskModelsConfig {
@@ -684,12 +777,20 @@ impl TaskModelsConfig {
     }
 }
 
-// u{2500}u{2500} SkillMint config u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}u{2500}
+// ── SkillMint config ─────────────────────────────────────────────────────────
 
-fn default_mint_min_duration() -> u64 { 60 }
-fn default_mint_high_importance_secs() -> u64 { 300 }
-fn default_mint_min_tasks() -> usize { 3 }
-fn default_skillmint_true() -> bool { true }
+fn default_mint_min_duration() -> u64 {
+    60
+}
+fn default_mint_high_importance_secs() -> u64 {
+    300
+}
+fn default_mint_min_tasks() -> usize {
+    3
+}
+fn default_skillmint_true() -> bool {
+    true
+}
 
 /// Configuration for the SkillMint self-learning system.
 ///

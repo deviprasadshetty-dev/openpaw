@@ -124,6 +124,10 @@ impl Provider for AnthropicProvider {
         true
     }
 
+    fn supports_multimodal(&self) -> bool {
+        true // Claude 3+ models support vision
+    }
+
     fn get_name(&self) -> &str {
         "anthropic"
     }

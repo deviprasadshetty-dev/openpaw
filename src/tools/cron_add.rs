@@ -79,6 +79,13 @@ impl Tool for CronAddTool {
             _ => crate::cron::JobType::Shell,
         };
 
+        if job_type == crate::cron::JobType::Shell {
+            let meta_chars = ['&', '|', ';', '$', '>', '<', '`', '\\', '!'];
+            if command.chars().any(|c| meta_chars.contains(&c)) {
+                return Ok(ToolResult::fail("Command contains forbidden shell metacharacters. If you intend to run an agent task, use job_type: 'agent'. Shell jobs are restricted for security."));
+            }
+        }
+
         // Generate a unique ID: timestamp + slugified name
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::agent::memory_loader::Memory;
+use crate::agent::prompt::ConversationContext;
 use crate::providers::Provider;
 use crate::tools::{Tool, ToolContext};
 
@@ -16,7 +17,7 @@ pub struct Session {
     pub last_active: AtomicU64,
     pub session_key: String,
     pub turn_count: AtomicU64,
-    pub cancel_token: std::sync::Mutex<CancellationToken>,
+    pub cancel_token: tokio::sync::Mutex<CancellationToken>,
 }
 
 impl Session {
@@ -32,7 +33,7 @@ impl Session {
             last_active: AtomicU64::new(now),
             session_key,
             turn_count: AtomicU64::new(0),
-            cancel_token: std::sync::Mutex::new(CancellationToken::new()),
+            cancel_token: tokio::sync::Mutex::new(CancellationToken::new()),
         }
     }
 }
@@ -46,6 +47,7 @@ pub struct SessionManager {
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
     memory: Option<Arc<dyn Memory>>,
+    pub max_sessions: usize,
 }
 
 impl SessionManager {
@@ -55,12 +57,14 @@ impl SessionManager {
         tools: Vec<Arc<dyn Tool>>,
         memory: Option<Arc<dyn Memory>>,
     ) -> Self {
+        let max_sessions = config.session.max_sessions.unwrap_or(1000);
         Self {
             sessions: Mutex::new(HashMap::new()),
             config,
             provider,
             tools,
             memory,
+            max_sessions,
         }
     }
 
@@ -68,59 +72,72 @@ impl SessionManager {
     pub fn get_or_create(&self, session_key: &str, agent_id: &str) -> Arc<Session> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some(session) = sessions.get(session_key) {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            session.last_active.store(now, Ordering::SeqCst);
-            return Arc::clone(session);
+        // Evict if over capacity (and we are not already in it)
+        if !sessions.contains_key(session_key) && sessions.len() >= self.max_sessions {
+            let mut oldest_key = None;
+            let mut oldest_time = u64::MAX;
+            for (k, v) in sessions.iter() {
+                let last_active = v.last_active.load(Ordering::SeqCst);
+                if last_active < oldest_time {
+                    oldest_time = last_active;
+                    oldest_key = Some(k.clone());
+                }
+            }
+            if let Some(k) = oldest_key {
+                sessions.remove(&k);
+            }
         }
 
-        // Look up agent config
-        let agent_cfg = self.config.agents.iter().find(|a| a.name == agent_id);
+        let entry = sessions.entry(session_key.to_string()).or_insert_with(|| {
+            // Look up agent config
+            let agent_cfg = self.config.agents.iter().find(|a| a.name == agent_id);
 
-        let provider = Arc::clone(&self.provider);
-        let model = agent_cfg.map(|a| a.model.clone()).unwrap_or_else(|| {
-            self.config
-                .get_model_for_provider(&self.config.default_provider)
-                .unwrap_or_else(|| "gpt-4o".to_string())
+            let provider = Arc::clone(&self.provider);
+            let model = agent_cfg.map(|a| a.model.clone()).unwrap_or_else(|| {
+                self.config
+                    .get_model_for_provider(&self.config.default_provider)
+                    .unwrap_or_else(|| "gpt-4o".to_string())
+            });
+
+            // Create new agent with the shared provider, tools, memory, etc.
+            let mut agent = Agent::new(
+                provider,
+                self.tools.clone(),
+                model.clone(),
+                self.config.workspace_dir.clone(),
+            );
+            agent.config_path = if self.config.config_path.is_empty() {
+                None
+            } else {
+                Some(self.config.config_path.clone())
+            };
+
+            // Apply task-based model routing from config
+            let task_config = crate::model_router::TaskModelConfig::with_overrides(
+                &model,
+                &self.config.task_models.to_map(),
+            );
+            agent = agent.with_task_models(&task_config);
+
+            if let Some(cfg) = agent_cfg
+                && let Some(prompt) = &cfg.system_prompt {
+                    agent = agent.with_system_prompt(prompt);
+                }
+
+            if let Some(mem) = &self.memory {
+                agent = agent.with_memory(Arc::clone(mem));
+            }
+            agent.memory_session_id = Some(session_key.to_string());
+
+            Arc::new(Session::new(agent, session_key.to_string()))
         });
 
-        // Create new agent with the shared provider, tools, memory, etc.
-        let mut agent = Agent::new(
-            provider,
-            self.tools.clone(),
-            model.clone(),
-            self.config.workspace_dir.clone(),
-        );
-        agent.config_path = if self.config.config_path.is_empty() {
-            None
-        } else {
-            Some(self.config.config_path.clone())
-        };
-
-        // Apply task-based model routing from config
-        let task_config = crate::model_router::TaskModelConfig::with_overrides(
-            &model,
-            &self.config.task_models.to_map(),
-        );
-        agent = agent.with_task_models(&task_config);
-
-        if let Some(cfg) = agent_cfg
-            && let Some(prompt) = &cfg.system_prompt {
-                agent = agent.with_system_prompt(prompt);
-            }
-
-        if let Some(mem) = &self.memory {
-            agent = agent.with_memory(Arc::clone(mem));
-        }
-        agent.memory_session_id = Some(session_key.to_string());
-
-        let new_session = Arc::new(Session::new(agent, session_key.to_string()));
-        sessions.insert(session_key.to_string(), Arc::clone(&new_session));
-
-        new_session
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        entry.last_active.store(now, Ordering::SeqCst);
+        Arc::clone(entry)
     }
 
     /// Safely process a message for a specific session.
@@ -156,12 +173,15 @@ impl SessionManager {
 
     /// Cancel any in-progress turn for the given session key.
     /// Returns true if a session was found (and its token was cancelled).
-    pub fn cancel_turn(&self, session_key: &str) -> bool {
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(session) = sessions.get(session_key) {
-            if let Ok(token) = session.cancel_token.lock() {
-                token.cancel();
-            }
+    pub async fn cancel_turn(&self, session_key: &str) -> bool {
+        let session = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.get(session_key).map(Arc::clone)
+        };
+
+        if let Some(session) = session {
+            let token = session.cancel_token.lock().await;
+            token.cancel();
             true
         } else {
             false
@@ -171,6 +191,8 @@ impl SessionManager {
     /// Safely process a message with a streaming callback for a specific session.
     /// Resets the cancellation token before starting so previous cancellations
     /// don't block new turns.
+    /// `conversation_context` is set on the agent before processing so the
+    /// system prompt includes channel-aware context (e.g. Telegram group chat).
     pub async fn process_message_stream(
         &self,
         session_key: &str,
@@ -178,6 +200,7 @@ impl SessionManager {
         message: String,
         context: ToolContext,
         callback: crate::providers::StreamCallback,
+        conversation_context: Option<ConversationContext>,
     ) -> Result<String> {
         let session_arc = self.get_or_create(session_key, agent_id);
 
@@ -189,14 +212,18 @@ impl SessionManager {
 
         // Reset cancellation token so a new turn can start even if the
         // previous one was cancelled with /stop.
-        if let Ok(mut token) = session_arc.cancel_token.lock() {
+        let cancel_token = {
+            let mut token = session_arc.cancel_token.lock().await;
             *token = CancellationToken::new();
-        }
+            token.clone()
+        };
 
         let mut agent_guard = session_arc.agent.lock().await;
-        let cancel_token = session_arc.cancel_token.lock().ok().map(|t| t.clone());
+        if let Some(cc) = conversation_context {
+            agent_guard.conversation_context = Some(cc);
+        }
         let response = agent_guard
-            .turn_stream(message, &context, callback, cancel_token)
+            .turn_stream(message, &context, callback, Some(cancel_token))
             .await?;
 
         session_arc.turn_count.fetch_add(1, Ordering::SeqCst);

@@ -12,13 +12,15 @@ pub struct ResponseCacheEntry {
 pub struct ResponseCache {
     entries: Arc<Mutex<HashMap<String, ResponseCacheEntry>>>,
     ttl_secs: u64,
+    max_entries: usize,
 }
 
 impl ResponseCache {
-    pub fn new(ttl_secs: u64) -> Self {
+    pub fn new(ttl_secs: u64, max_entries: usize) -> Self {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
             ttl_secs,
+            max_entries,
         }
     }
 
@@ -52,6 +54,23 @@ impl ResponseCache {
     pub fn insert(&self, messages: &[ChatMessage], model: &str, response: String) {
         let key = Self::compute_key(messages, model);
         let mut cache = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+
+        if cache.len() >= self.max_entries {
+            let mut oldest_key = None;
+            let mut oldest_time = Instant::now();
+
+            for (k, v) in cache.iter() {
+                if v.timestamp < oldest_time {
+                    oldest_time = v.timestamp;
+                    oldest_key = Some(k.clone());
+                }
+            }
+
+            if let Some(k) = oldest_key {
+                cache.remove(&k);
+            }
+        }
+
         cache.insert(
             key,
             ResponseCacheEntry {
@@ -67,6 +86,7 @@ impl Clone for ResponseCache {
         Self {
             entries: self.entries.clone(),
             ttl_secs: self.ttl_secs,
+            max_entries: self.max_entries,
         }
     }
 }

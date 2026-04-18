@@ -23,16 +23,18 @@ impl TokenUsage {
         input_price_per_million: f64,
         output_price_per_million: f64,
     ) -> Self {
-        let safe_input_price = if input_price_per_million.is_finite() && input_price_per_million > 0.0 {
-            input_price_per_million
-        } else {
-            0.0
-        };
-        let safe_output_price = if output_price_per_million.is_finite() && output_price_per_million > 0.0 {
-            output_price_per_million
-        } else {
-            0.0
-        };
+        let safe_input_price =
+            if input_price_per_million.is_finite() && input_price_per_million > 0.0 {
+                input_price_per_million
+            } else {
+                0.0
+            };
+        let safe_output_price =
+            if output_price_per_million.is_finite() && output_price_per_million > 0.0 {
+                output_price_per_million
+            } else {
+                0.0
+            };
 
         let total = input_tokens.saturating_add(output_tokens);
         let input_cost = (input_tokens as f64 / 1_000_000.0) * safe_input_price;
@@ -85,6 +87,7 @@ pub struct CostTracker {
     monthly_limit_usd: f64,
     warn_at_percent: u32,
     session_records: Vec<CostRecord>,
+    total_session_cost: f64,
     storage_path: PathBuf,
 }
 
@@ -96,19 +99,22 @@ impl CostTracker {
         monthly_limit: f64,
         warn_pct: u32,
     ) -> Self {
-        let path = PathBuf::from(workspace_dir).join("state").join("costs.jsonl");
+        let path = PathBuf::from(workspace_dir)
+            .join("state")
+            .join("costs.jsonl");
         Self {
             enabled,
             daily_limit_usd: daily_limit,
             monthly_limit_usd: monthly_limit,
             warn_at_percent: warn_pct,
             session_records: Vec::new(),
+            total_session_cost: 0.0,
             storage_path: path,
         }
     }
 
     pub fn session_cost(&self) -> f64 {
-        self.session_records.iter().map(|r| r.usage.cost_usd).sum()
+        self.total_session_cost
     }
 
     pub fn check_budget(&self, estimated_cost_usd: f64) -> BudgetCheck {
@@ -160,11 +166,18 @@ impl CostTracker {
             return Ok(());
         }
 
+        self.total_session_cost += usage.cost_usd;
+
         let record = CostRecord {
             usage,
             session_id: "current".to_string(),
         };
         self.session_records.push(record.clone());
+
+        // Keep only recent 1000 records to prevent memory leak
+        if self.session_records.len() > 1000 {
+            self.session_records.remove(0);
+        }
 
         self.append_to_jsonl(&record)?;
         Ok(())

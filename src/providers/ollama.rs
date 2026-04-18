@@ -166,6 +166,10 @@ impl Provider for OllamaProvider {
         true
     }
 
+    fn supports_multimodal(&self) -> bool {
+        true // Depends on loaded model; assume true and handle errors gracefully
+    }
+
     fn get_name(&self) -> &str {
         "ollama"
     }

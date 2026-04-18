@@ -42,6 +42,10 @@ dialoguer = "0.11"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 url = "2"
+zeroize = "1.8.2"
+cron = "0.16.0"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+imap = { version = "3.0.0-alpha", features = ["native-tls"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

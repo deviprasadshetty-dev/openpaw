@@ -276,11 +276,33 @@ impl Tool for BrowserTool {
                     .get("data")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| self.default_screenshot_path(""));
+
+                // ── 0.6: Validate screenshot save path ───────────────────────
+                let path = if let Some(user_path) = args.get("path").and_then(|v| v.as_str()) {
+                    // If user specified a path, ensure it stays within workspace
+                    let candidate = if Path::new(user_path).is_absolute() {
+                        std::path::PathBuf::from(user_path)
+                    } else {
+                        Path::new(&self.workspace_dir).join(user_path)
+                    };
+                    // Resolve as much of the path as possible for traversal check
+                    let parent = candidate.parent().unwrap_or(&candidate);
+                    let ws_root = std::fs::canonicalize(&self.workspace_dir)
+                        .unwrap_or_else(|_| std::path::PathBuf::from(&self.workspace_dir));
+                    // If parent already exists we can canonicalize it; otherwise check string prefix
+                    let resolved_parent = std::fs::canonicalize(parent)
+                        .unwrap_or_else(|_| parent.to_path_buf());
+                    if !resolved_parent.starts_with(&ws_root) {
+                        return Ok(ToolResult::fail(format!(
+                            "Screenshot path '{}' is outside the workspace directory",
+                            user_path
+                        )));
+                    }
+                    candidate.to_string_lossy().into_owned()
+                } else {
+                    self.default_screenshot_path("")
+                };
+
                 match self.save_base64_image(data, &path) {
                     Ok(p) => Ok(ToolResult::ok(format!("Screenshot saved to: {}", p))),
                     Err(e) => Ok(ToolResult::fail(format!("Failed to save screenshot: {}", e))),

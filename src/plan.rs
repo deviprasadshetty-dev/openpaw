@@ -380,6 +380,26 @@ impl PlanManager {
         Ok(plan_id)
     }
 
+    pub fn cleanup_old_plans(&self, retention_days: u64) {
+        let mut plans = self.plans.lock().unwrap_or_else(|e| e.into_inner());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let retention_secs = retention_days * 86400;
+
+        plans.retain(|_, plan| {
+            if plan.status == PlanStatus::Running {
+                true
+            } else if let Some(completed_at) = plan.completed_at {
+                (now - completed_at) < retention_secs
+            } else {
+                (now - plan.started_at) < retention_secs
+            }
+        });
+    }
+
     /// Get a human-readable status summary for a plan.
     pub fn get_status(&self, plan_id: u64) -> Option<String> {
         let guard = self.plans.lock().unwrap_or_else(|e| e.into_inner());

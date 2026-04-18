@@ -1,4 +1,4 @@
-use super::{Tool, ToolContext, ToolResult};
+use super::{Tool, ToolContext, ToolResult, ssrf_guard};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Url};
@@ -31,6 +31,12 @@ impl Tool for HttpRequestTool {
             None => return Ok(ToolResult::fail("Missing 'url' parameter")),
         };
 
+        // ── 0.1: SSRF protection ─────────────────────────────────────────────
+        if let Err(e) = ssrf_guard::check_url(url).await {
+            return Ok(ToolResult::fail(format!("Security: {}", e)));
+        }
+
+        // ── Optional domain allowlist ─────────────────────────────────────────
         if !self.allowed_domains.is_empty() {
             let host = match Url::parse(url) {
                 Ok(u) => u.host_str().map(|h| h.to_string()),
@@ -71,10 +77,22 @@ impl Tool for HttpRequestTool {
             _ => return Ok(ToolResult::fail(format!("Unsupported method: {}", method))),
         };
 
+        // ── 0.8: CRLF injection validation ───────────────────────────────────
         if let Some(h_val) = headers_json
             && let Some(h_map) = h_val.as_object() {
                 for (k, v) in h_map {
+                    // Reject header name or value containing CRLF characters
+                    if k.contains('\r') || k.contains('\n') {
+                        return Ok(ToolResult::fail(format!(
+                            "Header name '{}' contains invalid characters (CRLF)", k
+                        )));
+                    }
                     if let Some(v_str) = v.as_str() {
+                        if v_str.contains('\r') || v_str.contains('\n') {
+                            return Ok(ToolResult::fail(format!(
+                                "Header '{}' value contains invalid characters (CRLF)", k
+                            )));
+                        }
                         req = req.header(k, v_str);
                     }
                 }
@@ -92,21 +110,38 @@ impl Tool for HttpRequestTool {
         let status = resp.status();
         let success = status.is_success();
 
-        let text = match resp.text().await {
-            Ok(t) => {
-                if t.len() > self.max_response_size {
-                    format!("{}\n\n[Content truncated]", &t[..self.max_response_size])
-                } else {
-                    t
-                }
-            }
-            Err(e) => {
+        if let Some(content_length) = resp.content_length() {
+            if content_length > (self.max_response_size as u64) {
                 return Ok(ToolResult::fail(format!(
-                    "Failed to read response body: {}",
-                    e
+                    "HTTP {}: Response too large (Content-Length: {} bytes, limit: {} bytes)",
+                    status, content_length, self.max_response_size
                 )));
             }
-        };
+        }
+
+        let mut text = String::new();
+        let mut total_size = 0;
+        let mut truncated = false;
+
+        let mut resp = resp;
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    total_size += chunk.len();
+                    if total_size > self.max_response_size {
+                        truncated = true;
+                        break;
+                    }
+                    text.push_str(&String::from_utf8_lossy(&chunk));
+                }
+                Ok(None) => break,
+                Err(e) => return Ok(ToolResult::fail(format!("Failed to read response body: {}", e))),
+            }
+        }
+
+        if truncated {
+            text.push_str("\n\n[Content truncated]");
+        }
 
         if success {
             Ok(ToolResult::ok(format!(

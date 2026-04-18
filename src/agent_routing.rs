@@ -252,6 +252,8 @@ pub fn resolve_route(
         identity_links: vec![],
         idle_minutes: 60,
         typing_interval_secs: 5,
+        max_message_bytes: 50_000,
+        max_sessions: Some(1000),
     };
     resolve_route_with_session(input, bindings, agents, &default_session_config)
 }

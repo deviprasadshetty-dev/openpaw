@@ -19,6 +19,8 @@ pub struct InboundMessage {
     pub metadata_json: Option<String>, // channel-specific JSON (message_id, thread_ts, is_group)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_kind: Option<String>, // "cron", "heartbeat", "event", "subagent" — for task-based model routing
+    #[serde(default)]
+    pub is_group: bool, // true if message came from a group chat
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -53,6 +55,7 @@ pub fn make_inbound(
         media: Vec::new(),
         metadata_json: None,
         task_kind: None,
+        is_group: false,
     }
 }
 
@@ -74,6 +77,7 @@ pub fn make_inbound_full(
         media: media_src.to_vec(),
         metadata_json: metadata_json.map(|s| s.to_string()),
         task_kind: None,
+        is_group: false,
     }
 }
 
