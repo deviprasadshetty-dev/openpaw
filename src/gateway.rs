@@ -305,6 +305,7 @@ async fn whatsapp_webhook_handler(
         session_key: format!("whatsapp_native:{}", msg.chat_id),
         media: Vec::new(),
         metadata_json: None,
+        task_kind: None,
     };
 
     if let Some(bus) = global_bus() {

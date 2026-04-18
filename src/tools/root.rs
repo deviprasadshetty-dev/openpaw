@@ -28,6 +28,7 @@ pub struct ToolContext {
     pub sender_id: String,
     pub chat_id: String,
     pub session_key: String,
+    pub task_kind: Option<String>,
 }
 
 #[async_trait]

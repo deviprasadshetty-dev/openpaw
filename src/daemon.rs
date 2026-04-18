@@ -339,6 +339,23 @@ pub fn inbound_dispatcher_thread(
                 &session_manager.get_config().session,
             );
 
+            // Check for /stop command — cancel the running turn for this session
+            let content_trimmed = msg.content.trim();
+            if content_trimmed.eq_ignore_ascii_case("/stop") {
+                let session_key = route.session_key.clone();
+                let cancelled = session_manager.cancel_turn(&session_key);
+                let channel = msg.channel.clone();
+                let chat_id = msg.chat_id.clone();
+                let response = if cancelled {
+                    "⏹ Stopped.".to_string()
+                } else {
+                    "No active task found for this session.".to_string()
+                };
+                let outbound = bus::make_outbound(&channel, &chat_id, &response);
+                let _ = bus.publish_outbound(outbound);
+                continue;
+            }
+
             // Process message in the local runtime
             let session_key = route.session_key.clone();
             let agent_id = route.agent_id.clone();
@@ -359,8 +376,14 @@ pub fn inbound_dispatcher_thread(
                 let last_emitted_len = Arc::new(std::sync::Mutex::new(0));
                 let last_emit = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
+                let task_kind_for_stream = msg.task_kind.clone();
+                let is_heartbeat_stream = task_kind_for_stream.as_deref() == Some("heartbeat");
+
                 let stream_cb: crate::providers::StreamCallback = Box::new(move |chunk| {
                     use crate::providers::StreamChunk;
+                    if is_heartbeat_stream {
+                        return;
+                    }
                     if let StreamChunk::Delta(text) = chunk {
                         let mut acc = acc_text.lock().unwrap();
                         acc.push_str(&text);
@@ -389,16 +412,40 @@ pub fn inbound_dispatcher_thread(
                     chat_id: chat_id.clone(),
                     sender_id: sender_id.clone(),
                     session_key: session_key.clone(),
+                    task_kind: msg.task_kind.clone(),
                 };
+
+                let task_kind = msg.task_kind.clone();
+                let is_heartbeat = task_kind.as_deref() == Some("heartbeat");
+                let stop_marker: &str = "⏹ Task stopped by user.";
 
                 match sm
                     .process_message_stream(&session_key, &agent_id, content, context, stream_cb)
                     .await
                 {
                     Ok(response_text) => {
-                        let outbound = bus::make_outbound(&channel, &chat_id, &response_text);
-                        if let Err(e) = bus_clone.publish_outbound(outbound) {
-                            error!("Failed to publish outbound message: {}", e);
+                        let is_empty_response = response_text.trim().is_empty()
+                            || response_text.trim().eq_ignore_ascii_case("[NO_REPLY]")
+                            || response_text.trim().eq_ignore_ascii_case("HEARTBEAT_OK")
+                            || response_text.trim().eq_ignore_ascii_case("[NO_REPLY].");
+
+                        // Suppress the cancellation-acknowledgment response. The /stop
+                        // handler already sent "⏹ Stopped." — we don't need a duplicate.
+                        if response_text == stop_marker {
+                            tracing::debug!(
+                                "Suppressed duplicate stop-acknowledgment for session {}",
+                                session_key
+                            );
+                        } else if is_heartbeat && is_empty_response {
+                            tracing::debug!(
+                                "Suppressed empty heartbeat response for session {}",
+                                session_key
+                            );
+                        } else {
+                            let outbound = bus::make_outbound(&channel, &chat_id, &response_text);
+                            if let Err(e) = bus_clone.publish_outbound(outbound) {
+                                error!("Failed to publish outbound message: {}", e);
+                            }
                         }
                     }
                     Err(e) => {
@@ -406,7 +453,6 @@ pub fn inbound_dispatcher_thread(
                             "Failed to process message for session {}: {}",
                             session_key, e
                         );
-                        // FIXED: Send error back to user instead of silent failure
                         let error_msg = format!(
                             "⚠️ I encountered an error while processing your request: {}",
                             e

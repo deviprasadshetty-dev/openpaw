@@ -244,6 +244,7 @@ impl SubagentManager {
                 sender_id: "subagent".to_string(),
                 chat_id: origin_chat_copy.clone(),
                 session_key: subagent_session_key.clone(),
+                task_kind: Some("subagent".to_string()),
             };
 
             let provider = create_provider(&sub_config);
@@ -265,12 +266,20 @@ impl SubagentManager {
             )
             .await;
 
+            let sub_model = sub_config.default_model.clone().unwrap_or("gpt-4o".to_string());
             let mut agent = Agent::new(
                 provider,
                 subagent_tools,
-                sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
+                sub_model.clone(),
                 sub_config.workspace_dir.clone(),
             );
+
+            // Apply task-based model routing from config
+            let task_config = crate::model_router::TaskModelConfig::with_overrides(
+                &sub_model,
+                &sub_config.task_models.to_map(),
+            );
+            agent = agent.with_task_models(&task_config);
             agent.max_tool_iterations = max_iterations;
 
             if let Some(prompt) = custom_system_prompt {
@@ -567,6 +576,7 @@ fn drain_pending(
                         sender_id: "subagent".to_string(),
                         chat_id: origin_chat_copy.clone(),
                         session_key: subagent_session_key.clone(),
+                        task_kind: Some("subagent".to_string()),
                     };
 
                     let provider = create_provider(&sub_config);
@@ -584,12 +594,20 @@ fn drain_pending(
                     )
                     .await;
 
+                    let sub_model2 = sub_config.default_model.clone().unwrap_or("gpt-4o".to_string());
                     let mut agent = Agent::new(
                         provider,
                         subagent_tools,
-                        sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
+                        sub_model2.clone(),
                         sub_config.workspace_dir.clone(),
                     );
+
+                    // Apply task-based model routing from config
+                    let task_config = crate::model_router::TaskModelConfig::with_overrides(
+                        &sub_model2,
+                        &sub_config.task_models.to_map(),
+                    );
+                    agent = agent.with_task_models(&task_config);
                     agent.max_tool_iterations = max_iterations;
 
                     if let Some(prompt) = custom_system_prompt {

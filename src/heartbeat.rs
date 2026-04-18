@@ -1,11 +1,11 @@
-use anyhow::Result;
-use std::path::PathBuf;
-use std::fs;
-use std::sync::Arc;
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use tracing::{info, debug, warn};
 use crate::bus::{Bus, InboundMessage};
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HeartbeatState {
@@ -100,12 +100,12 @@ impl HeartbeatEngine {
                 if let Some(at_idx) = task_part.find("@every") {
                     let description = task_part[..at_idx].trim();
                     let interval_str = task_part[at_idx + 6..].trim();
-                    
+
                     if let Ok(interval_secs) = crate::cron::parse_duration(interval_str) {
                         let last_run = state.last_runs.get(description).cloned().unwrap_or(0);
                         if now >= last_run + (interval_secs as u64) {
                             info!("Heartbeat triggering proactive task: {}", description);
-                            
+
                             let msg = InboundMessage {
                                 channel: "internal".to_string(),
                                 sender_id: "heartbeat".to_string(),
@@ -114,8 +114,9 @@ impl HeartbeatEngine {
                                 session_key: "internal:proactive".to_string(),
                                 media: Vec::new(),
                                 metadata_json: None,
+                                task_kind: Some("heartbeat".to_string()),
                             };
-                            
+
                             if let Err(e) = self.bus.publish_inbound(msg) {
                                 warn!("Failed to publish heartbeat task to bus: {}", e);
                             } else {

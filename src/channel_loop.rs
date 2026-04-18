@@ -242,6 +242,7 @@ fn telegram_polling_loop(
                         session_key: msg.session_key,
                         media: Vec::new(),
                         metadata_json: None,
+                        task_kind: None,
                     };
 
                     if let Some(bus) = global_bus() {

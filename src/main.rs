@@ -52,6 +52,7 @@ pub mod secrets;
 pub mod service;
 pub mod session;
 pub mod skillforge;
+pub mod skillmint;
 pub mod skills;
 pub mod sse_client;
 pub mod state;
@@ -167,6 +168,7 @@ async fn main() -> Result<()> {
         let mut cfg = config::Config {
             default_temperature: Some(0.7),
             models: None,
+            task_models: Default::default(),
             gateway: config::GatewayConfig::default(),
             channels: Default::default(),
             memory: Default::default(),
@@ -182,6 +184,7 @@ async fn main() -> Result<()> {
             scheduler: Default::default(),
             session: Default::default(),
             bindings: Vec::new(),
+            skillmint: Default::default(),
             config_path: "./config.json".to_string(),
             workspace_dir: ".".to_string(),
             default_model: None,
@@ -223,10 +226,18 @@ async fn main() -> Result<()> {
                     );
                 } else {
                     let allow_from = std::env::var("TELEGRAM_ALLOW_FROM")
-                        .unwrap_or_else(|_| "*".to_string())
+                        .unwrap_or_default()
                         .split(',')
                         .map(|s| s.trim().to_string())
-                        .collect();
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<String>>();
+
+                    if allow_from.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "TELEGRAM_ALLOW_FROM must be set to specific user IDs or chat IDs (comma-separated). \
+                             Wildcard '*' is not allowed for security reasons."
+                        ));
+                    }
 
                     config.channels.telegram.push(TelegramConfig {
                         account_id: "env_main".to_string(),
@@ -293,7 +304,14 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     .await;
 
     // Create agent with tools
-    let mut agent = Agent::new(provider, tools, model_name, config.workspace_dir);
+    let mut agent = Agent::new(provider, tools, model_name.clone(), config.workspace_dir);
+
+    // Apply task-based model routing from config
+    let task_config = crate::model_router::TaskModelConfig::with_overrides(
+        &model_name,
+        &config.task_models.to_map(),
+    );
+    agent = agent.with_task_models(&task_config);
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {
@@ -301,6 +319,7 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
         sender_id: "cli_user".to_string(),
         chat_id: "cli_chat".to_string(),
         session_key: "cli_session".to_string(),
+        task_kind: None,
     };
 
     // Run the agent turn

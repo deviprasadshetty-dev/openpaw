@@ -100,6 +100,15 @@ struct PartialConfig {
     pushover: Option<Option<(String, String)>>,
     custom_base_url: Option<Option<String>>,
     custom_model: Option<Option<String>>,
+    task_models_secondary: Option<SecondaryModel>,
+}
+
+#[derive(Debug, Clone)]
+struct SecondaryModel {
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +123,7 @@ fn theme() -> ColorfulTheme {
 // Main onboarding flow
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOTAL_STEPS: u8 = 8;
+const TOTAL_STEPS: u8 = 9;
 
 const COMMON_TIMEZONES: &[(&str, &str)] = &[
     ("UTC", "UTC / GMT+0"),
@@ -200,13 +209,14 @@ fn print_fresh_setup(partial: &mut PartialConfig) -> Result<()> {
     println!("  {}  Press Ctrl+C at any time to cancel.\n", dim("·"));
 
     partial.step_provider(1)?;
-    partial.step_timezone(2)?;
-    partial.step_memory(3)?;
-    partial.step_voice(4)?;
-    partial.step_channels(5)?;
-    partial.step_composio(6)?;
-    partial.step_brave(7)?;
-    partial.step_pushover(8)?;
+    partial.step_task_models(2)?;
+    partial.step_timezone(3)?;
+    partial.step_memory(4)?;
+    partial.step_voice(5)?;
+    partial.step_channels(6)?;
+    partial.step_composio(7)?;
+    partial.step_brave(8)?;
+    partial.step_pushover(9)?;
     Ok(())
 }
 
@@ -215,6 +225,7 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
         println!();
         let items = &[
             "AI Provider & Model  — Change provider, model, or API key",
+            "Task Models          — Secondary model for cheap/background tasks",
             "Timezone             — Your local timezone",
             "Memory & Embeddings  — Switch memory backend or embeddings",
             "Voice                — Groq Whisper transcription",
@@ -230,20 +241,21 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
         let choice = Select::with_theme(&theme())
             .with_prompt("Which section would you like to edit?")
             .items(items)
-            .default(9)
+            .default(10)
             .interact()?;
 
         match choice {
             0 => partial.step_provider(1)?,
-            1 => partial.step_timezone(2)?,
-            2 => partial.step_memory(3)?,
-            3 => partial.step_voice(4)?,
-            4 => partial.step_channels(5)?,
-            5 => partial.step_composio(6)?,
-            6 => partial.step_brave(7)?,
-            7 => partial.step_pushover(8)?,
-            8 => {} // separator — do nothing
-            9 => break,
+            1 => partial.step_task_models(2)?,
+            2 => partial.step_timezone(3)?,
+            3 => partial.step_memory(4)?,
+            4 => partial.step_voice(5)?,
+            5 => partial.step_channels(6)?,
+            6 => partial.step_composio(7)?,
+            7 => partial.step_brave(8)?,
+            8 => partial.step_pushover(9)?,
+            9 => {} // separator
+            10 => break,
             _ => return Ok(()),
         }
     }
@@ -728,6 +740,169 @@ impl PartialConfig {
         Ok(())
     }
 
+    fn step_task_models(&mut self, step: u8) -> Result<()> {
+        step_header(
+            step,
+            TOTAL_STEPS,
+            "Task Models",
+            "Use a cheaper model for background & simple tasks?",
+        );
+
+        let default_model = self
+            .selected_default_model
+            .as_deref()
+            .unwrap_or("gemini-2.0-flash");
+        let provider_name = self
+            .provider
+            .as_ref()
+            .map(|p| p.name.as_str())
+            .unwrap_or("gemini");
+
+        println!(
+            "  {} Your main model: {} ({})\n",
+            dim("·"),
+            bold(default_model),
+            provider_name
+        );
+        println!(
+            "  {} Background tasks (reminders, greetings, summaries) can use\n  {} a cheaper model to save costs.\n",
+            dim("·"), dim("·")
+        );
+
+        let items = &[
+            "Yes  — Configure a secondary model for cheap tasks",
+            "No   — Use the same model for everything",
+        ];
+
+        let choice = Select::with_theme(&theme())
+            .with_prompt("Set up a secondary model?")
+            .items(items)
+            .default(0)
+            .interact()?;
+
+        if choice == 0 {
+            // Provider selection for secondary model
+            let secondary_providers: &[(&str, &str, &str, &str)] = &[
+                ("gemini", "Gemini Flash", "Google", "gemini-2.0-flash"),
+                ("openai", "GPT-4o Mini", "OpenAI", "gpt-4o-mini"),
+                (
+                    "anthropic",
+                    "Claude Haiku",
+                    "Anthropic",
+                    "claude-3-5-haiku-latest",
+                ),
+                (
+                    "openrouter",
+                    "OpenRouter (free models)",
+                    "OpenRouter",
+                    "deepseek/deepseek-chat-v3-0324:free",
+                ),
+                (
+                    "kilocode",
+                    "Kilocode (free models)",
+                    "Kilo.ai",
+                    "minimax/minimax-m2.1:free",
+                ),
+                ("ollama", "Ollama (local)", "Local", "llama3.2"),
+                (
+                    "groq",
+                    "Groq (fast/cheap)",
+                    "Groq",
+                    "llama-3.3-70b-versatile",
+                ),
+                ("same", "Same provider as main", "—", ""),
+            ];
+
+            let items_str: Vec<String> = secondary_providers
+                .iter()
+                .map(|(_, label, source, model)| {
+                    if model.is_empty() {
+                        format!(
+                            "{:<24} {:<14} (uses main key)",
+                            label,
+                            format!("[{}]", source)
+                        )
+                    } else {
+                        format!("{:<24} {:<14} {}", label, format!("[{}]", source), model)
+                    }
+                })
+                .collect();
+
+            let sp_choice = Select::with_theme(&theme())
+                .with_prompt("Select secondary provider")
+                .items(&items_str)
+                .default(0)
+                .interact()?;
+
+            let (sp_name, _, _, sp_default_model) = secondary_providers[sp_choice];
+
+            let (secondary_key, secondary_base_url, secondary_model);
+
+            if sp_name == "same" {
+                secondary_key = self.api_key.clone().unwrap_or_default();
+                secondary_base_url = self.provider.as_ref().and_then(|p| p.base_url.clone());
+                let default_val = if default_model.is_empty() {
+                    "gpt-4o-mini".to_string()
+                } else {
+                    default_model.to_string()
+                };
+                let model: String = Input::with_theme(&theme())
+                    .with_prompt("Secondary model name")
+                    .default(default_val)
+                    .interact_text()?;
+                secondary_model = model;
+            } else {
+                let key_prompt = format!("{} API key (leave blank if using main key)", sp_name);
+                secondary_key = Password::with_theme(&theme())
+                    .with_prompt(&key_prompt)
+                    .allow_empty_password(true)
+                    .interact()?;
+
+                secondary_base_url = match sp_name {
+                    "openrouter" => Some("https://openrouter.ai/api/v1".to_string()),
+                    "kilocode" => Some("https://api.kilo.ai/api/gateway".to_string()),
+                    "ollama" => Some("http://localhost:11434/v1".to_string()),
+                    "groq" => Some("https://api.groq.com/openai/v1".to_string()),
+                    _ => None,
+                };
+
+                let model_default = if sp_default_model.is_empty() {
+                    default_model.to_string()
+                } else {
+                    sp_default_model.to_string()
+                };
+                secondary_model = Input::with_theme(&theme())
+                    .with_prompt("Secondary model name")
+                    .default(model_default)
+                    .interact_text()?;
+            }
+
+            self.task_models_secondary = Some(SecondaryModel {
+                provider: sp_name.to_string(),
+                api_key: secondary_key,
+                base_url: secondary_base_url,
+                model: secondary_model,
+            });
+
+            step_done(&format!(
+                "Task models · {} ({})",
+                self.task_models_secondary
+                    .as_ref()
+                    .map(|s| s.model.as_str())
+                    .unwrap_or("?"),
+                self.task_models_secondary
+                    .as_ref()
+                    .map(|s| s.provider.as_str())
+                    .unwrap_or("?")
+            ));
+        } else {
+            self.task_models_secondary = None;
+            step_skip("Task models");
+        }
+
+        Ok(())
+    }
+
     fn step_memory(&mut self, step: u8) -> Result<()> {
         step_header(
             step,
@@ -1165,6 +1340,36 @@ impl PartialConfig {
                 "provider": "groq", "api_key": key, "model": "whisper-large-v3"
             });
         }
+
+        // Add secondary provider and task_models config
+        if let Some(sec) = &self.task_models_secondary {
+            // Add the secondary provider to the providers map if it's different from main
+            if sec.provider != p_name {
+                let sec_key = if sec.api_key.is_empty() {
+                    self.api_key.clone().unwrap_or_default()
+                } else {
+                    sec.api_key.clone()
+                };
+                config["models"]["providers"][&sec.provider] = json!({
+                    "api_key": sec_key
+                });
+                if let Some(ref url) = sec.base_url {
+                    config["models"]["providers"][&sec.provider]["base_url"] = json!(url);
+                }
+                config["models"]["providers"][&sec.provider]["model"] = json!(sec.model);
+            }
+
+            // Set task_models: use the secondary model for cheap tasks
+            config["task_models"] = json!({
+                "greeting": sec.model,
+                "summarize": sec.model,
+                "cron": sec.model,
+                "heartbeat": sec.model,
+                "event": sec.model,
+                "subagent": sec.model
+            });
+        }
+
         config
     }
 }

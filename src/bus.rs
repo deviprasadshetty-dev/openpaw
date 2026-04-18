@@ -1,5 +1,5 @@
 use crate::streaming::OutboundStage;
-use crossbeam_channel::{bounded, Receiver, Sender, SendError};
+use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -8,15 +8,17 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InboundMessage {
-    pub channel: String, // "telegram", "discord", "webhook", "system"
-    pub sender_id: String, // sender identifier
-    pub chat_id: String, // chat/room identifier
-    pub content: String, // message text
+    pub channel: String,     // "telegram", "discord", "webhook", "system"
+    pub sender_id: String,   // sender identifier
+    pub chat_id: String,     // chat/room identifier
+    pub content: String,     // message text
     pub session_key: String, // "channel:chatID" for session lookup
     #[serde(default)]
     pub media: Vec<String>, // file paths/URLs (images, voice, docs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_json: Option<String>, // channel-specific JSON (message_id, thread_ts, is_group)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_kind: Option<String>, // "cron", "heartbeat", "event", "subagent" — for task-based model routing
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -50,6 +52,7 @@ pub fn make_inbound(
         session_key: session_key.to_string(),
         media: Vec::new(),
         metadata_json: None,
+        task_kind: None,
     }
 }
 
@@ -70,22 +73,15 @@ pub fn make_inbound_full(
         session_key: session_key.to_string(),
         media: media_src.to_vec(),
         metadata_json: metadata_json.map(|s| s.to_string()),
+        task_kind: None,
     }
 }
 
-pub fn make_outbound(
-    channel: &str,
-    chat_id: &str,
-    content: &str,
-) -> OutboundMessage {
+pub fn make_outbound(channel: &str, chat_id: &str, content: &str) -> OutboundMessage {
     make_outbound_with_stage(channel, chat_id, content, OutboundStage::Final)
 }
 
-pub fn make_outbound_chunk(
-    channel: &str,
-    chat_id: &str,
-    content: &str,
-) -> OutboundMessage {
+pub fn make_outbound_chunk(channel: &str, chat_id: &str, content: &str) -> OutboundMessage {
     make_outbound_with_stage(channel, chat_id, content, OutboundStage::Chunk)
 }
 
@@ -219,13 +215,13 @@ impl Bus {
     // without dropping `Bus` or wrapping Senders in Option and taking them out.
     // Or we can just let it be. Zig's manual close is to unblock waiters.
     // Crossbeam handles this automatically on drop.
-    
+
     // If manual closing is required while Bus is alive (e.g. for shutdown signal),
     // we would need to redesign Bus to hold Option<Sender> or similar.
     // For now, I'll assume standard RAII is enough or I can implement a close by using `Option`.
     // Actually, `Sender` is clonable, so even if we drop `Bus`'s sender, others might exist.
     // But `Bus` seems to be the owner/coordinator.
-    
+
     // Zig's `close` sets a flag and broadcasts condition variable.
     // I won't implement explicit close for now as standard Rust patterns rely on Drop.
     // If specific shutdown logic is needed, we'd need to know more about ownership.

@@ -105,7 +105,7 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 
 ## 💓 Heartbeats — Be Proactive
 
-When you receive a heartbeat poll, read `HEARTBEAT.md` and follow its checklist. If nothing needs attention, stay silent — do not send a message to the user.
+When you receive a heartbeat poll, read `HEARTBEAT.md` and follow its checklist. If nothing needs attention, respond with exactly `[NO_REPLY]` — do not send status messages like "HEARTBEAT_OK", "all clear", or "nothing to report" to the user. Only send a real message if there is actionable information the user needs to know.
 
 Heartbeat tasks are defined in `HEARTBEAT.md`. Edit that file to add or remove periodic checks.
 
