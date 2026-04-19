@@ -1,8 +1,8 @@
-use crate::tools::{Tool, ToolContext, ToolResult, path_security};
 use crate::multimodal::{is_gemini_cli_available, process_with_gemini_cli};
+use crate::tools::{Tool, ToolContext, ToolResult, path_security};
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub struct VisionTool {
@@ -37,13 +37,14 @@ impl Tool for VisionTool {
                 }
             },
             "required": ["prompt", "files"]
-        }).to_string()
+        })
+        .to_string()
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let prompt = args["prompt"].as_str().unwrap_or("What is in this file?");
         let files_val = &args["files"];
-        
+
         let mut files = Vec::new();
         if let Some(arr) = files_val.as_array() {
             for v in arr {
@@ -56,7 +57,9 @@ impl Tool for VisionTool {
         }
 
         if files.is_empty() {
-            return Ok(ToolResult::fail(json!({ "error": "No files provided" }).to_string()));
+            return Ok(ToolResult::fail(
+                json!({ "error": "No files provided" }).to_string(),
+            ));
         }
 
         let validated_files = match self.validate_and_resolve_files(&files) {
@@ -82,7 +85,10 @@ impl Tool for VisionTool {
 }
 
 impl VisionTool {
-    fn validate_and_resolve_files(&self, files: &[String]) -> std::result::Result<Vec<String>, String> {
+    fn validate_and_resolve_files(
+        &self,
+        files: &[String],
+    ) -> std::result::Result<Vec<String>, String> {
         let workspace_resolved = std::fs::canonicalize(&self.workspace_dir)
             .map_err(|e| format!("Failed to resolve workspace_dir: {}", e))?;
 

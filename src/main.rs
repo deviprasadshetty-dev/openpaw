@@ -5,7 +5,6 @@ pub mod approval;
 pub mod auth;
 pub mod build_options;
 pub mod bus;
-pub mod events;
 pub mod capabilities;
 pub mod channel_adapters;
 pub mod channel_catalog;
@@ -20,6 +19,7 @@ pub mod cost;
 pub mod cron;
 pub mod daemon;
 pub mod doctor;
+pub mod events;
 pub mod gateway;
 pub mod goals;
 pub mod hardware;
@@ -167,6 +167,7 @@ async fn main() -> Result<()> {
         let mut cfg = config::Config {
             default_temperature: Some(0.7),
             models: None,
+            task_models: Default::default(),
             gateway: config::GatewayConfig::default(),
             channels: Default::default(),
             memory: Default::default(),
@@ -293,7 +294,7 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     .await;
 
     // Create agent with tools
-    let mut agent = Agent::new(provider, tools, model_name, config.workspace_dir);
+    let mut agent = Agent::new(provider, tools, model_name, config.workspace_dir.clone(), Some(&config));
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {

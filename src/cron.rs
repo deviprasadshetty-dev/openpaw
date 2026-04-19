@@ -226,7 +226,11 @@ impl CronScheduler {
 
             if job.next_run_secs > 0 && now >= job.next_run_secs {
                 let is_ephemeral = job.delete_after_run || job.one_shot;
-                let snapshot = if is_ephemeral { Some(job.clone()) } else { None };
+                let snapshot = if is_ephemeral {
+                    Some(job.clone())
+                } else {
+                    None
+                };
                 to_fire.push((id.clone(), snapshot));
                 job.last_run_secs = Some(now);
                 job.last_status = Some("running".to_string());

@@ -41,7 +41,12 @@ impl Provider for FallbackProvider {
                     let kind = classify(status, &msg);
 
                     if kind.is_retryable()
-                        || matches!(kind, crate::providers::error_classify::ApiErrorKind::Quota)
+                        || matches!(
+                            kind,
+                            crate::providers::error_classify::ApiErrorKind::Quota
+                                | crate::providers::error_classify::ApiErrorKind::ModelDown
+                                | crate::providers::error_classify::ApiErrorKind::Unknown
+                        )
                     {
                         warn!(
                             provider = provider.get_name(),
@@ -73,7 +78,12 @@ impl Provider for FallbackProvider {
                     let kind = classify(status, &msg);
 
                     if kind.is_retryable()
-                        || matches!(kind, crate::providers::error_classify::ApiErrorKind::Quota)
+                        || matches!(
+                            kind,
+                            crate::providers::error_classify::ApiErrorKind::Quota
+                                | crate::providers::error_classify::ApiErrorKind::ModelDown
+                                | crate::providers::error_classify::ApiErrorKind::Unknown
+                        )
                     {
                         info!(
                             provider = provider.get_name(),
@@ -108,9 +118,10 @@ impl Provider for FallbackProvider {
 fn extract_status_from_message(msg: &str) -> u16 {
     for part in msg.split_whitespace() {
         if let Ok(n) = part.trim_end_matches(':').parse::<u16>()
-            && (100..=599).contains(&n) {
-                return n;
-            }
+            && (100..=599).contains(&n)
+        {
+            return n;
+        }
     }
     0
 }

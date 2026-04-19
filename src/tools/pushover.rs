@@ -37,11 +37,12 @@ impl Tool for PushoverTool {
         let priority = args.get("priority").and_then(|v| v.as_i64());
 
         if let Some(p) = priority
-            && (!(-2..=2).contains(&p)) {
-                return Ok(ToolResult::fail(
-                    "Invalid 'priority': expected integer in range -2..=2",
-                ));
-            }
+            && (!(-2..=2).contains(&p))
+        {
+            return Ok(ToolResult::fail(
+                "Invalid 'priority': expected integer in range -2..=2",
+            ));
+        }
 
         let env_path = std::path::Path::new(&self.workspace_dir).join(".env");
         let content = fs::read_to_string(&env_path).await.unwrap_or_default();

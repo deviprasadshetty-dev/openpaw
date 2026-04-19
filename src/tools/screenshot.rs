@@ -48,10 +48,9 @@ impl Tool for ScreenshotTool {
         let result = take_screenshot(&out_str).await;
 
         match result {
-            Ok(_) if out_path.exists() => Ok(ToolResult::ok(format!(
-                "Screenshot saved to: {}",
-                out_str
-            ))),
+            Ok(_) if out_path.exists() => {
+                Ok(ToolResult::ok(format!("Screenshot saved to: {}", out_str)))
+            }
             Ok(msg) => Ok(ToolResult::fail(format!(
                 "Screenshot command ran but file not found: {}\n{}",
                 out_str, msg
@@ -83,7 +82,10 @@ async fn take_screenshot(out_path: &str) -> Result<String, String> {
                 return run_cmd(bin, args).await;
             }
         }
-        Err("No screenshot utility found. Install scrot, gnome-screenshot, or imagemagick.".to_string())
+        Err(
+            "No screenshot utility found. Install scrot, gnome-screenshot, or imagemagick."
+                .to_string(),
+        )
     }
 
     #[cfg(target_os = "windows")]

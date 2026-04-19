@@ -109,30 +109,34 @@ async fn execute_linux(args: Value) -> Result<ToolResult> {
             };
             let out = run("i2cset", &["-y", &bus, &address, &register, &value]).await?;
             Ok(ToolResult::ok(if out.is_empty() {
-                format!("Written {} to register {} on device {} (bus {})", value, register, address, bus)
+                format!(
+                    "Written {} to register {} on device {} (bus {})",
+                    value, register, address, bus
+                )
             } else {
                 out
             }))
         }
 
-        _ => Ok(ToolResult::fail("Unknown action. Use: detect, scan, read, write")),
+        _ => Ok(ToolResult::fail(
+            "Unknown action. Use: detect, scan, read, write",
+        )),
     }
 }
 
 #[cfg(target_os = "linux")]
 async fn run(bin: &str, args: &[&str]) -> Result<String> {
     use tokio::process::Command;
-    let out = Command::new(bin)
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!("'{}' not found. Install i2c-tools: sudo apt install i2c-tools", bin)
-            } else {
-                anyhow::anyhow!("Failed to run {}: {}", bin, e)
-            }
-        })?;
+    let out = Command::new(bin).args(args).output().await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!(
+                "'{}' not found. Install i2c-tools: sudo apt install i2c-tools",
+                bin
+            )
+        } else {
+            anyhow::anyhow!("Failed to run {}: {}", bin, e)
+        }
+    })?;
 
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();

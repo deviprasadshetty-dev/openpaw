@@ -93,6 +93,7 @@ impl SessionManager {
             self.tools.clone(),
             model,
             self.config.workspace_dir.clone(),
+            Some(&self.config),
         );
         agent.config_path = if self.config.config_path.is_empty() {
             None
@@ -101,9 +102,10 @@ impl SessionManager {
         };
 
         if let Some(cfg) = agent_cfg
-            && let Some(prompt) = &cfg.system_prompt {
-                agent = agent.with_system_prompt(prompt);
-            }
+            && let Some(prompt) = &cfg.system_prompt
+        {
+            agent = agent.with_system_prompt(prompt);
+        }
 
         if let Some(mem) = &self.memory {
             agent = agent.with_memory(Arc::clone(mem));

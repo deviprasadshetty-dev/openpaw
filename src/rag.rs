@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// A chunk of datasheet content with board metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,9 +130,10 @@ pub fn infer_board_from_path(path_str: &str) -> Option<String> {
 
     if let Some(parent) = path.parent()
         && let Some(parent_name) = parent.file_name()
-            && parent_name == "_generic" {
-                return None;
-            }
+        && parent_name == "_generic"
+    {
+        return None;
+    }
 
     Some(stem.to_string())
 }
@@ -203,9 +204,10 @@ impl HardwareRag {
 
             if score > 0.0 {
                 if let Some(board) = &chunk.board
-                    && boards.contains(&board.as_str()) {
-                        score += 2.0;
-                    }
+                    && boards.contains(&board.as_str())
+                {
+                    score += 2.0;
+                }
                 scored.push((chunk, score));
             }
         }
@@ -223,12 +225,19 @@ impl HardwareRag {
 // General-purpose workspace knowledge base (lightweight TF-IDF)
 // ─────────────────────────────────────────────────────────────
 
-const CHUNK_SIZE: usize = 600;          // chars per chunk
-const CHUNK_OVERLAP: usize = 100;       // overlap between adjacent chunks
+const CHUNK_SIZE: usize = 600; // chars per chunk
+const CHUNK_OVERLAP: usize = 100; // overlap between adjacent chunks
 const MAX_INDEX_FILE_BYTES: u64 = 512 * 1024; // 512 KB per file
 const INDEXED_EXTENSIONS: &[&str] = &["md", "txt", "rst", "org", "log"];
 // Directories to skip when walking the workspace
-const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", ".venv", "__pycache__", "skills"];
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".venv",
+    "__pycache__",
+    "skills",
+];
 
 /// A single indexed chunk.
 #[derive(Debug, Clone)]
@@ -264,10 +273,7 @@ impl WorkspaceRag {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             if path.is_dir() {
                 if !SKIP_DIRS.contains(&name) {
@@ -381,7 +387,11 @@ impl WorkspaceRag {
                         tf * idf_val
                     })
                     .sum();
-                if score > 0.0 { Some((chunk, score)) } else { None }
+                if score > 0.0 {
+                    Some((chunk, score))
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -402,10 +412,9 @@ impl WorkspaceRag {
 /// Stop-words are filtered to reduce noise.
 fn tokenise(text: &str) -> Vec<String> {
     const STOP: &[&str] = &[
-        "the", "and", "for", "are", "was", "were", "this", "that", "with",
-        "have", "has", "had", "not", "but", "from", "you", "your", "its",
-        "will", "can", "all", "one", "our", "out", "use", "used", "also",
-        "than", "then", "into", "more", "their", "they", "been", "being",
+        "the", "and", "for", "are", "was", "were", "this", "that", "with", "have", "has", "had",
+        "not", "but", "from", "you", "your", "its", "will", "can", "all", "one", "our", "out",
+        "use", "used", "also", "than", "then", "into", "more", "their", "they", "been", "being",
     ];
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.len() >= 3)

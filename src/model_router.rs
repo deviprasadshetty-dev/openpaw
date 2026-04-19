@@ -12,11 +12,11 @@ pub fn complexity_score(query: &str) -> u32 {
 
     // ── Length signal ──────────────────────────────────────────────
     score += match word_count {
-        0..=3   => 0,
-        4..=10  => 5,
+        0..=3 => 0,
+        4..=10 => 5,
         11..=30 => 10,
         31..=60 => 20,
-        _       => 30,
+        _ => 30,
     };
 
     // ── Code / technical signal ────────────────────────────────────
@@ -24,10 +24,28 @@ pub fn complexity_score(query: &str) -> u32 {
         score += 15;
     }
     const CODE_KEYWORDS: &[&str] = &[
-        "implement", "refactor", "debug", "fix the", "write a", "write code",
-        "function", "class ", "struct ", "algorithm", "compile", "build",
-        "deploy", "pipeline", "script", "api ", "endpoint", "database",
-        "migrate", "optimize", "performance", "benchmark",
+        "implement",
+        "refactor",
+        "debug",
+        "fix the",
+        "write a",
+        "write code",
+        "function",
+        "class ",
+        "struct ",
+        "algorithm",
+        "compile",
+        "build",
+        "deploy",
+        "pipeline",
+        "script",
+        "api ",
+        "endpoint",
+        "database",
+        "migrate",
+        "optimize",
+        "performance",
+        "benchmark",
     ];
     for kw in CODE_KEYWORDS {
         if lower.contains(kw) {
@@ -38,9 +56,20 @@ pub fn complexity_score(query: &str) -> u32 {
 
     // ── Multi-step / planning signal ──────────────────────────────
     const PLAN_KEYWORDS: &[&str] = &[
-        "step by step", "first.*then", "multiple", "each ", "for each",
-        "plan ", "strategy", "roadmap", "schedule", "coordinate",
-        "analyze", "evaluate", "compare", "research",
+        "step by step",
+        "first.*then",
+        "multiple",
+        "each ",
+        "for each",
+        "plan ",
+        "strategy",
+        "roadmap",
+        "schedule",
+        "coordinate",
+        "analyze",
+        "evaluate",
+        "compare",
+        "research",
     ];
     for kw in PLAN_KEYWORDS {
         if lower.contains(kw) {
@@ -60,9 +89,22 @@ pub fn complexity_score(query: &str) -> u32 {
 
     // ── Tool-action signal ─────────────────────────────────────────
     const TOOL_KEYWORDS: &[&str] = &[
-        "create", "generate", "summarize", "translate", "convert",
-        "search ", "find ", "install", "run ", "execute", "schedule",
-        "remind", "send ", "fetch ", "download", "upload",
+        "create",
+        "generate",
+        "summarize",
+        "translate",
+        "convert",
+        "search ",
+        "find ",
+        "install",
+        "run ",
+        "execute",
+        "schedule",
+        "remind",
+        "send ",
+        "fetch ",
+        "download",
+        "upload",
     ];
     for kw in TOOL_KEYWORDS {
         if lower.contains(kw) {
@@ -73,10 +115,23 @@ pub fn complexity_score(query: &str) -> u32 {
 
     // ── Cheap-signal overrides (explicit reductions) ───────────────
     const GREETINGS: &[&str] = &[
-        "hi", "hello", "hey", "thanks", "thank you", "ok", "yes",
-        "no", "please", "good morning", "good night",
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank you",
+        "ok",
+        "yes",
+        "no",
+        "please",
+        "good morning",
+        "good night",
     ];
-    if word_count <= 4 && GREETINGS.iter().any(|g| lower.trim() == *g || lower.starts_with(g)) {
+    if word_count <= 4
+        && GREETINGS
+            .iter()
+            .any(|g| lower.trim() == *g || lower.starts_with(g))
+    {
         return 0;
     }
 

@@ -61,10 +61,7 @@ impl Tool for AgentRecvTool {
             .map(|n| n.min(50) as usize)
             .unwrap_or(10);
 
-        let peek = args
-            .get("peek")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let peek = args.get("peek").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let messages = if peek {
             self.mailbox.peek(mailbox, limit)

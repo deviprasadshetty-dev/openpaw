@@ -101,7 +101,12 @@ impl Tool for PlanCreateTool {
             };
             let description = match t.get("description").and_then(|v| v.as_str()) {
                 Some(s) if !s.trim().is_empty() => s.trim().to_string(),
-                _ => return Ok(ToolResult::fail(format!("Task '{}' missing 'description'", id))),
+                _ => {
+                    return Ok(ToolResult::fail(format!(
+                        "Task '{}' missing 'description'",
+                        id
+                    )));
+                }
             };
             let depends_on: Vec<String> = t
                 .get("depends_on")

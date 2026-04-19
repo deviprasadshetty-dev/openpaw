@@ -4,7 +4,7 @@ use crate::providers::openrouter::{
 };
 use crate::workspace_templates::*;
 use anyhow::{Context, Result};
-use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, Password, Select, theme::ColorfulTheme};
 use std::fs;
 use std::path::Path;
 
@@ -100,6 +100,8 @@ struct PartialConfig {
     pushover: Option<Option<(String, String)>>,
     custom_base_url: Option<Option<String>>,
     custom_model: Option<Option<String>>,
+    secondary_model: Option<String>,
+    secondary_provider_key: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ fn theme() -> ColorfulTheme {
 // Main onboarding flow
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOTAL_STEPS: u8 = 8;
+const TOTAL_STEPS: u8 = 9;
 
 const COMMON_TIMEZONES: &[(&str, &str)] = &[
     ("UTC", "UTC / GMT+0"),
@@ -200,13 +202,14 @@ fn print_fresh_setup(partial: &mut PartialConfig) -> Result<()> {
     println!("  {}  Press Ctrl+C at any time to cancel.\n", dim("·"));
 
     partial.step_provider(1)?;
-    partial.step_timezone(2)?;
-    partial.step_memory(3)?;
-    partial.step_voice(4)?;
-    partial.step_channels(5)?;
-    partial.step_composio(6)?;
-    partial.step_brave(7)?;
-    partial.step_pushover(8)?;
+    partial.step_secondary_model(2)?;
+    partial.step_timezone(3)?;
+    partial.step_memory(4)?;
+    partial.step_voice(5)?;
+    partial.step_channels(6)?;
+    partial.step_composio(7)?;
+    partial.step_brave(8)?;
+    partial.step_pushover(9)?;
     Ok(())
 }
 
@@ -215,6 +218,7 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
         println!();
         let items = &[
             "AI Provider & Model  — Change provider, model, or API key",
+            "Background Tasks     — Secondary cheaper model for background tasks",
             "Timezone             — Your local timezone",
             "Memory & Embeddings  — Switch memory backend or embeddings",
             "Voice                — Groq Whisper transcription",
@@ -230,20 +234,21 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
         let choice = Select::with_theme(&theme())
             .with_prompt("Which section would you like to edit?")
             .items(items)
-            .default(9)
+            .default(10)
             .interact()?;
 
         match choice {
             0 => partial.step_provider(1)?,
-            1 => partial.step_timezone(2)?,
-            2 => partial.step_memory(3)?,
-            3 => partial.step_voice(4)?,
-            4 => partial.step_channels(5)?,
-            5 => partial.step_composio(6)?,
-            6 => partial.step_brave(7)?,
-            7 => partial.step_pushover(8)?,
-            8 => {} // separator — do nothing
-            9 => break,
+            1 => partial.step_secondary_model(2)?,
+            2 => partial.step_timezone(3)?,
+            3 => partial.step_memory(4)?,
+            4 => partial.step_voice(5)?,
+            5 => partial.step_channels(6)?,
+            6 => partial.step_composio(7)?,
+            7 => partial.step_brave(8)?,
+            8 => partial.step_pushover(9)?,
+            9 => {} // separator — do nothing
+            10 => break,
             _ => return Ok(()),
         }
     }
@@ -812,6 +817,55 @@ impl PartialConfig {
         Ok(())
     }
 
+    fn step_secondary_model(&mut self, step: u8) -> Result<()> {
+        step_header(
+            step,
+            TOTAL_STEPS,
+            "Background Tasks Model",
+            "Optional: Choose a cheaper model for background tasks (e.g., cron, summarization)",
+        );
+
+        let choice = Confirm::with_theme(&theme())
+            .with_prompt("Configure a secondary model for background tasks?")
+            .default(false)
+            .interact()?;
+
+        if !choice {
+            step_skip("Using default model for all tasks");
+            return Ok(());
+        }
+
+        let model: String = Input::with_theme(&theme())
+            .with_prompt(
+                "Enter the secondary model ID (e.g., nvidia/nemotron-3-super-120b-a12b:free)",
+            )
+            .interact_text()?;
+
+        self.secondary_model = Some(model.trim().to_string());
+
+        let use_openrouter = Confirm::with_theme(&theme())
+            .with_prompt("Is this an OpenRouter model?")
+            .default(self.secondary_model.as_ref().unwrap().contains("/"))
+            .interact()?;
+
+        if use_openrouter {
+            let key: String = Input::with_theme(&theme())
+                .with_prompt("OpenRouter API key (leave blank to skip if already configured as default provider)")
+                .allow_empty(true)
+                .interact_text()?;
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                self.secondary_provider_key = Some(key);
+            }
+        }
+
+        step_done(&format!(
+            "Background tasks model set to {}",
+            self.secondary_model.as_ref().unwrap()
+        ));
+        Ok(())
+    }
+
     fn step_timezone(&mut self, step: u8) -> Result<()> {
         step_header(
             step,
@@ -1116,6 +1170,24 @@ impl PartialConfig {
             }
         }
 
+        if let Some(sec_model) = &self.secondary_model {
+            if sec_model.contains("/") {
+                // Assuming openrouter if it has a slash (as in nvidia/nemotron...)
+                if "openrouter" != p_name.as_str() {
+                    let key = self
+                        .secondary_provider_key
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_default();
+                    providers["openrouter"] = json!({
+                        "api_key": key,
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "model": sec_model
+                    });
+                }
+            }
+        }
+
         let telegram_vec = match &self.telegram {
             Some(Some((token, user))) => json!([{
                 "account_id": "main", "bot_token": token,
@@ -1156,6 +1228,17 @@ impl PartialConfig {
                 "user_key": self.pushover.as_ref().and_then(|p| p.as_ref()).map(|p| p.1.clone())
             }
         });
+
+        if let Some(sec_model) = &self.secondary_model {
+            config["task_models"] = json!({
+                "cron": sec_model,
+                "event": sec_model,
+                "greeting": sec_model,
+                "heartbeat": sec_model,
+                "subagent": sec_model,
+                "summarize": sec_model
+            });
+        }
 
         if let Some(Some(m)) = &self.embed_model {
             config["memory"]["embedding_model"] = json!(m);

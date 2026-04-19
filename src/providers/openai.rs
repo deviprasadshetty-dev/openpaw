@@ -2,8 +2,8 @@ use crate::providers::{
     ChatMessage, ChatRequest, ChatResponse, ContentPart, FunctionCall, Provider, StreamCallback,
     StreamChunk, TokenUsage, ToolCall,
 };
-use base64::Engine;
 use anyhow::Result;
+use base64::Engine;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -80,7 +80,10 @@ impl OpenAiCompatibleProvider {
             });
 
             if !system_prompt.is_empty() && msg.role == "user" {
-                let enriched_content = format!("[System Instructions]:\n{}\n\n{}", system_prompt, msg.content);
+                let enriched_content = format!(
+                    "[System Instructions]:\n{}\n\n{}",
+                    system_prompt, msg.content
+                );
                 msg_json["content"] = json!(enriched_content);
                 system_prompt.clear();
             } else if let Some(parts) = &msg.content_parts {
@@ -164,32 +167,41 @@ impl OpenAiCompatibleProvider {
         }
 
         if let Some(tools) = request.tools
-            && !tools.is_empty() {
-                let tool_defs: Vec<_> = tools
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": t.name,
-                                "description": t.description,
-                                "parameters": t.parameters
-                            }
-                        })
+            && !tools.is_empty()
+        {
+            let tool_defs: Vec<_> = tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters
+                        }
                     })
-                    .collect();
-                obj.insert("tools".to_string(), json!(tool_defs));
-            }
+                })
+                .collect();
+            obj.insert("tools".to_string(), json!(tool_defs));
+        }
 
         body
     }
 
-    fn apply_auth(&self, builder: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    fn apply_auth(
+        &self,
+        builder: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
         match self.auth_style {
-            AuthStyle::Bearer => builder.header("Authorization", format!("Bearer {}", self.api_key)),
+            AuthStyle::Bearer => {
+                builder.header("Authorization", format!("Bearer {}", self.api_key))
+            }
             AuthStyle::XApiKey => builder.header("x-api-key", &self.api_key),
             AuthStyle::Custom(ref name) => {
-                let header = name.map(|s| s.to_string()).or_else(|| self.custom_header.clone()).unwrap_or_else(|| "Authorization".to_string());
+                let header = name
+                    .map(|s| s.to_string())
+                    .or_else(|| self.custom_header.clone())
+                    .unwrap_or_else(|| "Authorization".to_string());
                 builder.header(header, &self.api_key)
             }
         }
@@ -201,7 +213,9 @@ fn extract_reasoning(text: &str) -> (Option<String>, String) {
     if let Some(start_idx) = text.find("<think>") {
         if let Some(end_idx) = text.find("</think>") {
             let reasoning = text[start_idx + 7..end_idx].trim().to_string();
-            let content = format!("{}{}", &text[..start_idx], &text[end_idx + 8..]).trim().to_string();
+            let content = format!("{}{}", &text[..start_idx], &text[end_idx + 8..])
+                .trim()
+                .to_string();
             return (Some(reasoning), content);
         } else {
             // Unclosed think tag
@@ -221,7 +235,11 @@ struct ThinkStripper {
 
 impl ThinkStripper {
     fn new(strip: bool) -> Self {
-        Self { in_think: false, buffer: String::new(), strip }
+        Self {
+            in_think: false,
+            buffer: String::new(),
+            strip,
+        }
     }
 
     fn process(&mut self, delta: &str) -> (Option<String>, Option<String>) {
@@ -264,8 +282,16 @@ impl ThinkStripper {
             }
         }
 
-        let v = if visible.is_empty() { None } else { Some(visible) };
-        let t = if thought.is_empty() { None } else { Some(thought) };
+        let v = if visible.is_empty() {
+            None
+        } else {
+            Some(visible)
+        };
+        let t = if thought.is_empty() {
+            None
+        } else {
+            Some(thought)
+        };
         (t, v)
     }
 }
@@ -281,10 +307,12 @@ impl Provider for OpenAiCompatibleProvider {
 
         let body = self.build_request_body(request, false);
 
-        let mut req = self.client.post(&endpoint)
+        let mut req = self
+            .client
+            .post(&endpoint)
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
-        
+
         req = self.apply_auth(req);
 
         let res = req.json(&body).send()?;
@@ -300,7 +328,7 @@ impl Provider for OpenAiCompatibleProvider {
         let msg = &choice["message"];
 
         let mut raw_content = msg["content"].as_str().unwrap_or("").to_string();
-        
+
         // Native reasoning fields
         let mut reasoning_content = msg["reasoning_content"]
             .as_str()
@@ -328,8 +356,14 @@ impl Provider for OpenAiCompatibleProvider {
                     id: tc["id"].as_str().unwrap_or_default().to_string(),
                     kind: tc["type"].as_str().unwrap_or("function").to_string(),
                     function: FunctionCall {
-                        name: tc["function"]["name"].as_str().unwrap_or_default().to_string(),
-                        arguments: tc["function"]["arguments"].as_str().unwrap_or_default().to_string(),
+                        name: tc["function"]["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        arguments: tc["function"]["arguments"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
                         thought_signature: None,
                     },
                 });
@@ -344,7 +378,11 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         Ok(ChatResponse {
-            content: if raw_content.is_empty() { None } else { Some(raw_content) },
+            content: if raw_content.is_empty() {
+                None
+            } else {
+                Some(raw_content)
+            },
             tool_calls,
             usage,
             model: request.model.to_string(),
@@ -377,10 +415,12 @@ impl Provider for OpenAiCompatibleProvider {
 
         let body = self.build_request_body(request, true);
 
-        let mut req = self.client.post(&endpoint)
+        let mut req = self
+            .client
+            .post(&endpoint)
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
-        
+
         req = self.apply_auth(req);
 
         let res = req.json(&body).send()?;
@@ -396,17 +436,23 @@ impl Provider for OpenAiCompatibleProvider {
         let mut full_reasoning = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tc_arg_bufs: Vec<String> = Vec::new();
-        
+
         let mut stripper = ThinkStripper::new(true); // Default to true for better UX
 
         while let Some(data) = sse_reader.next_data() {
-            if data == "[DONE]" { break; }
+            if data == "[DONE]" {
+                break;
+            }
 
             if let Ok(parsed) = serde_json::from_str::<Value>(&data) {
                 let delta = &parsed["choices"][0]["delta"];
-                
+
                 // Native reasoning delta
-                if let Some(reasoning) = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(|v| v.as_str()) {
+                if let Some(reasoning) = delta
+                    .get("reasoning_content")
+                    .or_else(|| delta.get("reasoning"))
+                    .and_then(|v| v.as_str())
+                {
                     full_reasoning.push_str(reasoning);
                     // For now, we don't stream reasoning content deltas separately in our StreamChunk enum,
                     // but we could extend it if needed.
@@ -441,8 +487,12 @@ impl Provider for OpenAiCompatibleProvider {
                             tc_arg_bufs.push(String::new());
                         }
 
-                        if let Some(id) = tc_delta["id"].as_str() { tool_calls[idx].id = id.to_string(); }
-                        if let Some(name) = tc_delta["function"]["name"].as_str() { tool_calls[idx].function.name = name.to_string(); }
+                        if let Some(id) = tc_delta["id"].as_str() {
+                            tool_calls[idx].id = id.to_string();
+                        }
+                        if let Some(name) = tc_delta["function"]["name"].as_str() {
+                            tool_calls[idx].function.name = name.to_string();
+                        }
                         let args = tc_delta["function"]["arguments"].as_str().unwrap_or("");
                         tc_arg_bufs[idx].push_str(args);
 
@@ -458,7 +508,9 @@ impl Provider for OpenAiCompatibleProvider {
         }
 
         for (i, buf) in tc_arg_bufs.into_iter().enumerate() {
-            if i < tool_calls.len() { tool_calls[i].function.arguments = buf; }
+            if i < tool_calls.len() {
+                tool_calls[i].function.arguments = buf;
+            }
         }
 
         let usage = TokenUsage {
@@ -470,13 +522,20 @@ impl Provider for OpenAiCompatibleProvider {
         callback(StreamChunk::Done(usage.clone()));
 
         Ok(ChatResponse {
-            content: if full_content.is_empty() { None } else { Some(full_content) },
+            content: if full_content.is_empty() {
+                None
+            } else {
+                Some(full_content)
+            },
             tool_calls,
             usage,
             model: request.model.to_string(),
-            reasoning_content: if full_reasoning.is_empty() { None } else { Some(full_reasoning) },
+            reasoning_content: if full_reasoning.is_empty() {
+                None
+            } else {
+                Some(full_reasoning)
+            },
             thought_signature: None,
         })
     }
 }
-

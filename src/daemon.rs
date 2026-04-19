@@ -735,9 +735,11 @@ pub async fn build_tools(
     tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
-    tools.push(Arc::new(crate::tools::workspace_search::WorkspaceSearchTool {
-        workspace_dir: config.workspace_dir.clone(),
-    }));
+    tools.push(Arc::new(
+        crate::tools::workspace_search::WorkspaceSearchTool {
+            workspace_dir: config.workspace_dir.clone(),
+        },
+    ));
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
@@ -811,13 +813,17 @@ pub async fn build_tools(
             .as_ref()
             .cloned()
             .unwrap_or_else(|| Arc::new(Bus::new()));
-        tools.push(Arc::new(crate::tools::request_approval::RequestApprovalTool {
-            approval_manager: am.clone(),
-            bus: approval_bus,
-        }));
-        tools.push(Arc::new(crate::tools::approval_respond::ApprovalRespondTool {
-            approval_manager: am,
-        }));
+        tools.push(Arc::new(
+            crate::tools::request_approval::RequestApprovalTool {
+                approval_manager: am.clone(),
+                bus: approval_bus,
+            },
+        ));
+        tools.push(Arc::new(
+            crate::tools::approval_respond::ApprovalRespondTool {
+                approval_manager: am,
+            },
+        ));
     }
 
     // Feature 1: Reactive event triggers (main agent only)

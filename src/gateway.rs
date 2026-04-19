@@ -176,21 +176,22 @@ async fn save_config(
 
     // Update channels
     if let Some(channels) = req.channels
-        && let Some(telegram_list) = channels.telegram {
-            use crate::config_types::TelegramConfig;
-            config.channels.telegram = telegram_list
-                .into_iter()
-                .map(|t| TelegramConfig {
-                    account_id: t.account_id.unwrap_or_else(|| "main".to_string()),
-                    bot_token: t.bot_token,
-                    allow_from: t.allow_from.unwrap_or_default(),
-                    group_policy: t.group_policy.unwrap_or_else(|| "allowlist".to_string()),
-                    reply_in_private: true,
-                    group_allow_from: vec![],
-                    proxy: None,
-                })
-                .collect();
-        }
+        && let Some(telegram_list) = channels.telegram
+    {
+        use crate::config_types::TelegramConfig;
+        config.channels.telegram = telegram_list
+            .into_iter()
+            .map(|t| TelegramConfig {
+                account_id: t.account_id.unwrap_or_else(|| "main".to_string()),
+                bot_token: t.bot_token,
+                allow_from: t.allow_from.unwrap_or_default(),
+                group_policy: t.group_policy.unwrap_or_else(|| "allowlist".to_string()),
+                reply_in_private: true,
+                group_allow_from: vec![],
+                proxy: None,
+            })
+            .collect();
+    }
 
     // Update http_request
     if let Some(http_req) = req.http_request {
@@ -207,9 +208,10 @@ async fn save_config(
 
     // Update browser
     if let Some(ref browser) = req.browser
-        && let Some(enabled) = browser.enabled {
-            config.browser.enabled = enabled;
-        }
+        && let Some(enabled) = browser.enabled
+    {
+        config.browser.enabled = enabled;
+    }
     if let Some(browser) = req.browser {
         if let Some(host) = browser.cdp_host {
             config.browser.cdp_host = host;
@@ -292,9 +294,7 @@ struct WhatsAppWebhookMessage {
     platform: String,
 }
 
-async fn whatsapp_webhook_handler(
-    Json(msg): Json<WhatsAppWebhookMessage>,
-) -> impl IntoResponse {
+async fn whatsapp_webhook_handler(Json(msg): Json<WhatsAppWebhookMessage>) -> impl IntoResponse {
     use crate::bus::{InboundMessage, global_bus};
 
     let inbound = InboundMessage {

@@ -109,115 +109,115 @@ pub fn html_to_text(html: &str) -> String {
 
     while i < html.len() {
         if bytes[i] == b'<'
-            && let Some(tag_end_rel) = bytes[i..].iter().position(|&c| c == b'>') {
-                let tag_end = i + tag_end_rel;
-                let tag_content = &html[i + 1..tag_end];
-                let tag_lower_str = tag_content.to_ascii_lowercase();
-                let tag_lower = tag_lower_str.split_whitespace().next().unwrap_or("");
+            && let Some(tag_end_rel) = bytes[i..].iter().position(|&c| c == b'>')
+        {
+            let tag_end = i + tag_end_rel;
+            let tag_content = &html[i + 1..tag_end];
+            let tag_lower_str = tag_content.to_ascii_lowercase();
+            let tag_lower = tag_lower_str.split_whitespace().next().unwrap_or("");
 
-                if let Some(stripped) = tag_content.strip_prefix('/') {
-                    let close_tag = stripped.to_ascii_lowercase();
-                    let close_tag = close_tag.split_whitespace().next().unwrap_or("");
-                    if close_tag == "script" {
-                        in_script = false;
-                    }
-                    if close_tag == "style" {
-                        in_style = false;
-                    }
-                    i = tag_end + 1;
-                    continue;
+            if let Some(stripped) = tag_content.strip_prefix('/') {
+                let close_tag = stripped.to_ascii_lowercase();
+                let close_tag = close_tag.split_whitespace().next().unwrap_or("");
+                if close_tag == "script" {
+                    in_script = false;
                 }
-
-                if tag_lower == "script" {
-                    in_script = true;
-                    i = tag_end + 1;
-                    continue;
+                if close_tag == "style" {
+                    in_style = false;
                 }
-                if tag_lower == "style" {
-                    in_style = true;
-                    i = tag_end + 1;
-                    continue;
-                }
-
-                if in_script || in_style {
-                    i = tag_end + 1;
-                    continue;
-                }
-
-                let block_tags = [
-                    "p",
-                    "div",
-                    "section",
-                    "article",
-                    "main",
-                    "header",
-                    "footer",
-                    "nav",
-                    "aside",
-                    "blockquote",
-                    "pre",
-                    "table",
-                    "tr",
-                    "th",
-                    "td",
-                    "ul",
-                    "ol",
-                    "dl",
-                    "dt",
-                    "dd",
-                    "form",
-                    "fieldset",
-                    "figure",
-                ];
-                if block_tags.contains(&tag_lower)
-                    && !last_was_newline && !buf.is_empty() {
-                        append_newline(&mut buf, &mut consecutive_newlines);
-                    }
-
-                if tag_lower.len() == 2
-                    && tag_lower.starts_with('h')
-                    && tag_lower
-                        .chars()
-                        .nth(1)
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or(false)
-                {
-                    let level = tag_lower.as_bytes()[1] - b'0';
-                    if !last_was_newline && !buf.is_empty() {
-                        append_newline(&mut buf, &mut consecutive_newlines);
-                    }
-                    buf.push_str(&"#".repeat(level as usize));
-                    buf.push(' ');
-                    last_was_newline = false;
-                    consecutive_newlines = 0;
-                }
-
-                if tag_lower == "li" {
-                    if !last_was_newline && !buf.is_empty() {
-                        append_newline(&mut buf, &mut consecutive_newlines);
-                    }
-                    buf.push_str("- ");
-                    last_was_newline = false;
-                    consecutive_newlines = 0;
-                }
-
-                if tag_lower == "br" || tag_lower == "br/" {
-                    append_newline(&mut buf, &mut consecutive_newlines);
-                    last_was_newline = true;
-                }
-
-                if tag_lower == "hr" || tag_lower == "hr/" {
-                    if !last_was_newline {
-                        append_newline(&mut buf, &mut consecutive_newlines);
-                    }
-                    buf.push_str("---");
-                    append_newline(&mut buf, &mut consecutive_newlines);
-                    last_was_newline = true;
-                }
-
                 i = tag_end + 1;
                 continue;
             }
+
+            if tag_lower == "script" {
+                in_script = true;
+                i = tag_end + 1;
+                continue;
+            }
+            if tag_lower == "style" {
+                in_style = true;
+                i = tag_end + 1;
+                continue;
+            }
+
+            if in_script || in_style {
+                i = tag_end + 1;
+                continue;
+            }
+
+            let block_tags = [
+                "p",
+                "div",
+                "section",
+                "article",
+                "main",
+                "header",
+                "footer",
+                "nav",
+                "aside",
+                "blockquote",
+                "pre",
+                "table",
+                "tr",
+                "th",
+                "td",
+                "ul",
+                "ol",
+                "dl",
+                "dt",
+                "dd",
+                "form",
+                "fieldset",
+                "figure",
+            ];
+            if block_tags.contains(&tag_lower) && !last_was_newline && !buf.is_empty() {
+                append_newline(&mut buf, &mut consecutive_newlines);
+            }
+
+            if tag_lower.len() == 2
+                && tag_lower.starts_with('h')
+                && tag_lower
+                    .chars()
+                    .nth(1)
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+            {
+                let level = tag_lower.as_bytes()[1] - b'0';
+                if !last_was_newline && !buf.is_empty() {
+                    append_newline(&mut buf, &mut consecutive_newlines);
+                }
+                buf.push_str(&"#".repeat(level as usize));
+                buf.push(' ');
+                last_was_newline = false;
+                consecutive_newlines = 0;
+            }
+
+            if tag_lower == "li" {
+                if !last_was_newline && !buf.is_empty() {
+                    append_newline(&mut buf, &mut consecutive_newlines);
+                }
+                buf.push_str("- ");
+                last_was_newline = false;
+                consecutive_newlines = 0;
+            }
+
+            if tag_lower == "br" || tag_lower == "br/" {
+                append_newline(&mut buf, &mut consecutive_newlines);
+                last_was_newline = true;
+            }
+
+            if tag_lower == "hr" || tag_lower == "hr/" {
+                if !last_was_newline {
+                    append_newline(&mut buf, &mut consecutive_newlines);
+                }
+                buf.push_str("---");
+                append_newline(&mut buf, &mut consecutive_newlines);
+                last_was_newline = true;
+            }
+
+            i = tag_end + 1;
+            continue;
+        }
 
         if in_script || in_style {
             let ch = html[i..].chars().next().unwrap_or('\0');

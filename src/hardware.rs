@@ -113,14 +113,15 @@ pub fn get_system_temperature() -> Result<String> {
             .output();
 
         if let Ok(out) = output
-            && out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if let Ok(temp_k) = s.parse::<f64>() {
-                    // Kelvin/10 to Celsius
-                    let temp_c = (temp_k / 10.0) - 273.15;
-                    return Ok(format!("{:.1}°C (CPU)", temp_c));
-                }
+            && out.status.success()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Ok(temp_k) = s.parse::<f64>() {
+                // Kelvin/10 to Celsius
+                let temp_c = (temp_k / 10.0) - 273.15;
+                return Ok(format!("{:.1}°C (CPU)", temp_c));
             }
+        }
 
         // Fallback to GPU temperature via nvidia-smi
         let gpu_output = Command::new("nvidia-smi")
@@ -131,10 +132,11 @@ pub fn get_system_temperature() -> Result<String> {
             .output();
 
         if let Ok(out) = gpu_output
-            && out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                return Ok(format!("{}°C (GPU)", s));
-            }
+            && out.status.success()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            return Ok(format!("{}°C (GPU)", s));
+        }
 
         Ok("Temperature data unavailable (check permissions or drivers)".to_string())
     }

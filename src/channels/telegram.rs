@@ -94,7 +94,10 @@ impl TagFilter {
             } else if let Some(pos) = self.buffer.find('<') {
                 out.push_str(&self.buffer[..pos]);
                 let rest = &self.buffer[pos..];
-                if rest.starts_with("<tool_call") || rest.starts_with("<tool_result") || rest.starts_with("<|") {
+                if rest.starts_with("<tool_call")
+                    || rest.starts_with("<tool_result")
+                    || rest.starts_with("<|")
+                {
                     self.inside_tag = true;
                     if let Some(end_pos) = rest.find('>') {
                         self.buffer.drain(..pos + end_pos + 1);
@@ -282,9 +285,10 @@ impl TelegramChannel {
     /// Stop the typing heartbeat for a chat (if one is running).
     fn stop_typing_heartbeat(&self, chat_id: &str) {
         if let Ok(mut map) = self.typing_stops.lock()
-            && let Some(flag) = map.remove(chat_id) {
-                flag.store(true, Ordering::Relaxed);
-            }
+            && let Some(flag) = map.remove(chat_id)
+        {
+            flag.store(true, Ordering::Relaxed);
+        }
     }
 
     // ── inbound file download ───────────────────────────────────────────────
@@ -345,29 +349,30 @@ impl TelegramChannel {
 
         // Photo — pick highest-res photo (last in array)
         if let Some(photos) = message.get("photo").and_then(|v| v.as_array())
-            && let Some(last_photo) = photos.last() {
-                let file_id = last_photo
-                    .get("file_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if let Some(path) = self.download_tg_file(file_id, "photo", "jpg") {
-                    let cap = if caption.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\nCaption: {}", caption)
-                    };
-                    return format!("[User sent photo: {}{}]", path.display(), cap);
-                }
-                return format!(
-                    "[Photo: file_id={}]{}",
-                    file_id,
-                    if caption.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" Caption: {}", caption)
-                    }
-                );
+            && let Some(last_photo) = photos.last()
+        {
+            let file_id = last_photo
+                .get("file_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Some(path) = self.download_tg_file(file_id, "photo", "jpg") {
+                let cap = if caption.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nCaption: {}", caption)
+                };
+                return format!("[User sent photo: {}{}]", path.display(), cap);
             }
+            return format!(
+                "[Photo: file_id={}]{}",
+                file_id,
+                if caption.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Caption: {}", caption)
+                }
+            );
+        }
 
         // Document
         if let Some(doc) = message.get("document") {
@@ -564,20 +569,22 @@ impl TelegramChannel {
             let mut to_remove = Vec::new();
             for (mgid, pending) in map.iter() {
                 if let Some(last) = pending.last()
-                    && last.received_at.elapsed().as_secs() >= 3 {
-                        to_remove.push(mgid.clone());
-                    }
+                    && last.received_at.elapsed().as_secs() >= 3
+                {
+                    to_remove.push(mgid.clone());
+                }
             }
             for mgid in to_remove {
                 if let Some(mut pending) = map.remove(&mgid)
-                    && !pending.is_empty() {
-                        let mut first = pending.remove(0).message;
-                        for extra in pending {
-                            first.content.push('\n');
-                            first.content.push_str(&extra.message.content);
-                        }
-                        messages.push(first);
+                    && !pending.is_empty()
+                {
+                    let mut first = pending.remove(0).message;
+                    for extra in pending {
+                        first.content.push('\n');
+                        first.content.push_str(&extra.message.content);
                     }
+                    messages.push(first);
+                }
             }
         }
 
@@ -587,20 +594,22 @@ impl TelegramChannel {
             let mut to_remove = Vec::new();
             for (chat_id, pending) in map.iter() {
                 if let Some(last) = pending.last()
-                    && last.received_at.elapsed().as_secs() >= 2 {
-                        to_remove.push(chat_id.clone());
-                    }
+                    && last.received_at.elapsed().as_secs() >= 2
+                {
+                    to_remove.push(chat_id.clone());
+                }
             }
             for chat_id in to_remove {
                 if let Some(mut pending) = map.remove(&chat_id)
-                    && !pending.is_empty() {
-                        let mut first = pending.remove(0).message;
-                        for extra in pending {
-                            first.content.push('\n');
-                            first.content.push_str(&extra.message.content);
-                        }
-                        messages.push(first);
+                    && !pending.is_empty()
+                {
+                    let mut first = pending.remove(0).message;
+                    for extra in pending {
+                        first.content.push('\n');
+                        first.content.push_str(&extra.message.content);
                     }
+                    messages.push(first);
+                }
             }
         }
     }
@@ -867,13 +876,15 @@ impl TelegramChannel {
         if line.starts_with("data:image/") {
             return Some(line);
         }
-        if line.starts_with("![") && line.ends_with(')')
-            && let Some(paren_idx) = line.rfind('(') {
-                let uri = &line[paren_idx + 1..line.len().saturating_sub(1)];
-                if uri.starts_with("data:image/") {
-                    return Some(uri);
-                }
+        if line.starts_with("![")
+            && line.ends_with(')')
+            && let Some(paren_idx) = line.rfind('(')
+        {
+            let uri = &line[paren_idx + 1..line.len().saturating_sub(1)];
+            if uri.starts_with("data:image/") {
+                return Some(uri);
             }
+        }
         None
     }
 
@@ -1212,7 +1223,12 @@ impl Channel for TelegramChannel {
             if let Some(msg_id) = stream_msg_id {
                 // If the final text is too long, we edit the first part and split the rest
                 if text_to_send.len() <= MAX_MESSAGE_LEN {
-                    let _ = self.send_single_message_internal(chat_id, text_to_send, None, Some(msg_id));
+                    let _ = self.send_single_message_internal(
+                        chat_id,
+                        text_to_send,
+                        None,
+                        Some(msg_id),
+                    );
                 } else {
                     let chunks = self.smart_split(text_to_send, MAX_MESSAGE_LEN - 12);
                     for (i, chunk) in chunks.iter().enumerate() {
@@ -1224,7 +1240,12 @@ impl Channel for TelegramChannel {
                         };
 
                         if i == 0 {
-                            let _ = self.send_single_message_internal(chat_id, &to_send, None, Some(msg_id));
+                            let _ = self.send_single_message_internal(
+                                chat_id,
+                                &to_send,
+                                None,
+                                Some(msg_id),
+                            );
                         } else {
                             self.send_single_message(chat_id, &to_send, None)?;
                         }
@@ -1234,9 +1255,11 @@ impl Channel for TelegramChannel {
                 self.send_message_with_splitting(chat_id, text_to_send, None)?;
             }
         } else if attachments.is_empty() {
-            // No message and no attachments? Log it but don't send a confusing "✅ Done." 
+            // No message and no attachments? Log it but don't send a confusing "✅ Done."
             // The agent loop should have nudged for a summary.
-            tracing::warn!("Telegram channel received empty response from agent with no attachments.");
+            tracing::warn!(
+                "Telegram channel received empty response from agent with no attachments."
+            );
         }
 
         for attachment in &attachments {
@@ -1255,7 +1278,9 @@ impl Channel for TelegramChannel {
         // 1. Filter tool markup
         let filtered_chunk = {
             let mut filters = self.tag_filters.lock().unwrap();
-            let filter = filters.entry(chat_id.to_string()).or_insert_with(TagFilter::new);
+            let filter = filters
+                .entry(chat_id.to_string())
+                .or_insert_with(TagFilter::new);
             filter.process(text)
         };
 
@@ -1265,7 +1290,9 @@ impl Channel for TelegramChannel {
 
         // 2. Accumulate in draft
         let mut drafts = self.draft_buffers.lock().unwrap();
-        let draft = drafts.entry(chat_id.to_string()).or_insert_with(DraftState::new);
+        let draft = drafts
+            .entry(chat_id.to_string())
+            .or_insert_with(DraftState::new);
         draft.buffer.push_str(&filtered_chunk);
 
         // 3. Flush if needed
@@ -1288,8 +1315,10 @@ impl Channel for TelegramChannel {
 
             if let Some(msg_id) = msg_id_opt {
                 let _ = self.send_single_message_internal(chat_id, &safe_text, None, Some(msg_id));
-            } else if let Ok(new_id) = self.send_single_message_internal(chat_id, &safe_text, None, None)
-            && new_id != 0 {
+            } else if let Ok(new_id) =
+                self.send_single_message_internal(chat_id, &safe_text, None, None)
+                && new_id != 0
+            {
                 let mut streams = self.active_streams.lock().unwrap();
                 streams.insert(chat_id.to_string(), new_id);
             }

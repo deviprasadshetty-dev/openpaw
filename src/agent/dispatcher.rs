@@ -25,9 +25,10 @@ pub struct ToolExecutionResult {
 pub fn parse_tool_calls(response: &str) -> ParseResult {
     if is_native_json_format(response)
         && let Some(result) = parse_native_tool_calls(response)
-            && !result.calls.is_empty() {
-                return result;
-            }
+        && !result.calls.is_empty()
+    {
+        return result;
+    }
 
     parse_xml_tool_calls(response)
 }
@@ -102,13 +103,11 @@ fn parse_native_tool_calls(response: &str) -> Option<ParseResult> {
     Some(ParseResult { text, calls })
 }
 
-
-
 use regex::Regex;
 
 fn parse_xml_tool_calls(response: &str) -> ParseResult {
     let re = Regex::new(r"(?s)(<tool_call>|\[TOOL_CALL\]|\[tool_call\])(.*?)(</tool_call>|\[/TOOL_CALL\]|\[/tool_call\])").unwrap();
-    
+
     let mut calls = Vec::new();
     let mut last_end = 0;
     let mut text_parts = Vec::new();
@@ -128,31 +127,33 @@ fn parse_xml_tool_calls(response: &str) -> ParseResult {
             // Try to find JSON inside (in case of extra whitespace or characters)
             if let Some(json_start) = inner_str.find('{').or_else(|| inner_str.find('[')) {
                 let json_end = inner_str.rfind('}').or_else(|| inner_str.rfind(']'));
-                
-                if let Some(end) = json_end
-                    && end >= json_start {
-                        let json_slice = &inner_str[json_start..=end];
-                        if let Ok(Value::Object(obj)) = serde_json::from_str(json_slice)
-                             && let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
-                                let args = obj
-                                    .get("arguments")
-                                    .map(|v| {
-                                        if let Value::String(s) = v {
-                                            s.to_string()
-                                        } else {
-                                            v.to_string()
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "{}".to_string());
 
-                                calls.push(ParsedToolCall {
-                                    name: name.to_string(),
-                                    arguments_json: args,
-                                    tool_call_id: None,
-                                    thought_signature: None,
-                                });
-                            }
+                if let Some(end) = json_end
+                    && end >= json_start
+                {
+                    let json_slice = &inner_str[json_start..=end];
+                    if let Ok(Value::Object(obj)) = serde_json::from_str(json_slice)
+                        && let Some(name) = obj.get("name").and_then(|v| v.as_str())
+                    {
+                        let args = obj
+                            .get("arguments")
+                            .map(|v| {
+                                if let Value::String(s) = v {
+                                    s.to_string()
+                                } else {
+                                    v.to_string()
+                                }
+                            })
+                            .unwrap_or_else(|| "{}".to_string());
+
+                        calls.push(ParsedToolCall {
+                            name: name.to_string(),
+                            arguments_json: args,
+                            tool_call_id: None,
+                            thought_signature: None,
+                        });
                     }
+                }
             }
         }
     }

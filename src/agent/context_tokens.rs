@@ -283,13 +283,15 @@ fn lookup_model_candidates(model_id_raw: &str) -> Option<u64> {
         return Some(n);
     }
     if no_latest != model_id_raw
-        && let Some(n) = lookup_table(MODEL_WINDOWS, no_latest) {
-            return Some(n);
-        }
+        && let Some(n) = lookup_table(MODEL_WINDOWS, no_latest)
+    {
+        return Some(n);
+    }
     if no_date != no_latest
-        && let Some(n) = lookup_table(MODEL_WINDOWS, no_date) {
-            return Some(n);
-        }
+        && let Some(n) = lookup_table(MODEL_WINDOWS, no_date)
+    {
+        return Some(n);
+    }
 
     infer_from_model_pattern(no_date)
         .or_else(|| infer_from_model_pattern(no_latest))
@@ -331,9 +333,10 @@ pub fn lookup_context_tokens(model_ref_raw: &str) -> Option<u64> {
     }
 
     if let Some(provider) = split.provider
-        && let Some(n) = lookup_table(PROVIDER_WINDOWS, provider) {
-            return Some(n);
-        }
+        && let Some(n) = lookup_table(PROVIDER_WINDOWS, provider)
+    {
+        return Some(n);
+    }
 
     None
 }

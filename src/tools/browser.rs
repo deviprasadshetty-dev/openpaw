@@ -1,9 +1,9 @@
-use super::{Tool, ToolContext, ToolResult};
 use super::cdp::CdpClient;
+use super::{Tool, ToolContext, ToolResult};
 use crate::config_types::BrowserConfig;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -74,7 +74,10 @@ impl BrowserTool {
                             if attempt == 4 {
                                 return Err(conn_err);
                             }
-                            tracing::debug!("Browser not ready yet, retrying... ({}/5)", attempt + 1);
+                            tracing::debug!(
+                                "Browser not ready yet, retrying... ({}/5)",
+                                attempt + 1
+                            );
                             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                         }
                     }
@@ -93,7 +96,9 @@ impl BrowserTool {
     }
 
     fn screenshot_path(&self, name: &str) -> String {
-        let path = Path::new(&self.workspace_dir).join("screenshots").join(name);
+        let path = Path::new(&self.workspace_dir)
+            .join("screenshots")
+            .join(name);
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         path.to_string_lossy().to_string()
     }
@@ -213,7 +218,10 @@ impl Tool for BrowserTool {
 
         match action {
             "navigate" => {
-                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("about:blank");
                 cdp_err!(cdp.navigate(url).await);
                 Ok(ToolResult::ok(format!("Navigated to {}", url)))
             }
@@ -240,7 +248,10 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(format!("Filled {}", selector)))
             }
             "scroll" => {
-                let direction = args.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+                let direction = args
+                    .get("direction")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("down");
                 let amount = args.get("amount").and_then(|v| v.as_i64()).unwrap_or(500);
                 cdp_err!(cdp.scroll(direction, amount).await);
                 Ok(ToolResult::ok(format!("Scrolled {} {}", direction, amount)))
@@ -272,10 +283,7 @@ impl Tool for BrowserTool {
             }
             "screenshot" => {
                 let result = cdp_err!(cdp.screenshot("png", None).await);
-                let data = result
-                    .get("data")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let data = result.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -283,29 +291,32 @@ impl Tool for BrowserTool {
                     .unwrap_or_else(|| self.default_screenshot_path(""));
                 match self.save_base64_image(data, &path) {
                     Ok(p) => Ok(ToolResult::ok(format!("Screenshot saved to: {}", p))),
-                    Err(e) => Ok(ToolResult::fail(format!("Failed to save screenshot: {}", e))),
+                    Err(e) => Ok(ToolResult::fail(format!(
+                        "Failed to save screenshot: {}",
+                        e
+                    ))),
                 }
             }
             "screenshot_element" => {
                 let selector = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let result = cdp_err!(cdp.screenshot_element(selector, "png").await);
-                let data = result
-                    .get("data")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let data = result.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
                 let path = self.screenshot_path(&format!("element_{}.png", ts));
                 match self.save_base64_image(data, &path) {
-                    Ok(p) => Ok(ToolResult::ok(format!("Element screenshot saved to: {}", p))),
-                    Err(e) => Ok(ToolResult::fail(format!("Failed to save screenshot: {}", e))),
+                    Ok(p) => Ok(ToolResult::ok(format!(
+                        "Element screenshot saved to: {}",
+                        p
+                    ))),
+                    Err(e) => Ok(ToolResult::fail(format!(
+                        "Failed to save screenshot: {}",
+                        e
+                    ))),
                 }
             }
             "pdf" => {
                 let result = cdp_err!(cdp.print_pdf().await);
-                let data = result
-                    .get("data")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let data = result.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
                 let downloads = Path::new(&self.workspace_dir).join("downloads");
                 let _ = std::fs::create_dir_all(&downloads);
@@ -325,7 +336,9 @@ impl Tool for BrowserTool {
             }
             "read_dom" => {
                 let dom = cdp_err!(cdp.snapshot_dom(Some(-1)).await);
-                Ok(ToolResult::ok(serde_json::to_string_pretty(&dom).unwrap_or_default()))
+                Ok(ToolResult::ok(
+                    serde_json::to_string_pretty(&dom).unwrap_or_default(),
+                ))
             }
             "back" => {
                 cdp_err!(cdp.go_back().await);
@@ -348,12 +361,18 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(title))
             }
             "get_text" => {
-                let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("body");
+                let s = args
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("body");
                 let text = cdp_err!(cdp.get_text(s).await);
                 Ok(ToolResult::ok(text))
             }
             "get_html" => {
-                let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("body");
+                let s = args
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("body");
                 let html = cdp_err!(cdp.get_html(s).await);
                 Ok(ToolResult::ok(html))
             }
@@ -376,12 +395,16 @@ impl Tool for BrowserTool {
             "get_box" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let box_val = cdp_err!(cdp.get_bounding_box(s).await);
-                Ok(ToolResult::ok(serde_json::to_string_pretty(&box_val).unwrap_or_default()))
+                Ok(ToolResult::ok(
+                    serde_json::to_string_pretty(&box_val).unwrap_or_default(),
+                ))
             }
             "get_styles" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let styles = cdp_err!(cdp.get_computed_styles(s).await);
-                Ok(ToolResult::ok(serde_json::to_string_pretty(&styles).unwrap_or_default()))
+                Ok(ToolResult::ok(
+                    serde_json::to_string_pretty(&styles).unwrap_or_default(),
+                ))
             }
             "is_visible" => {
                 let s = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
@@ -408,21 +431,28 @@ impl Tool for BrowserTool {
                     use base64::{Engine, engine::general_purpose::STANDARD};
                     match STANDARD.decode(js_code) {
                         Ok(decoded) => String::from_utf8_lossy(&decoded).to_string(),
-                        Err(e) => return Ok(ToolResult::fail(format!("Base64 decode error: {}", e))),
+                        Err(e) => {
+                            return Ok(ToolResult::fail(format!("Base64 decode error: {}", e)));
+                        }
                     }
                 } else {
                     js_code.to_string()
                 };
                 let result = cdp_err!(cdp.evaluate(&js, true).await);
                 if let Some(err) = result.get("exceptionDetails") {
-                    Ok(ToolResult::fail(format!("JS error: {}", serde_json::to_string_pretty(err).unwrap_or_default())))
+                    Ok(ToolResult::fail(format!(
+                        "JS error: {}",
+                        serde_json::to_string_pretty(err).unwrap_or_default()
+                    )))
                 } else {
                     let val = result
                         .get("result")
                         .and_then(|r| r.get("value"))
                         .cloned()
                         .unwrap_or(json!(null));
-                    Ok(ToolResult::ok(serde_json::to_string_pretty(&val).unwrap_or_default()))
+                    Ok(ToolResult::ok(
+                        serde_json::to_string_pretty(&val).unwrap_or_default(),
+                    ))
                 }
             }
             "select_option" => {
@@ -443,11 +473,17 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(format!("Mouse moved to ({},{})", x, y)))
             }
             "mouse_click" => {
-                let button = args.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+                let button = args
+                    .get("button")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("left");
                 let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 cdp_err!(cdp.mouse_click(x, y, button, 1).await);
-                Ok(ToolResult::ok(format!("Clicked {} at ({},{})", button, x, y)))
+                Ok(ToolResult::ok(format!(
+                    "Clicked {} at ({},{})",
+                    button, x, y
+                )))
             }
             "mouse_wheel" => {
                 let a = args.get("amount").and_then(|v| v.as_f64()).unwrap_or(100.0);
@@ -456,7 +492,9 @@ impl Tool for BrowserTool {
             }
             "get_cookies" => {
                 let result = cdp_err!(cdp.get_cookies().await);
-                Ok(ToolResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()))
+                Ok(ToolResult::ok(
+                    serde_json::to_string_pretty(&result).unwrap_or_default(),
+                ))
             }
             "set_cookie" => {
                 let n = args
@@ -482,10 +520,14 @@ impl Tool for BrowserTool {
                     Ok(ToolResult::ok(format!("Set localStorage[{}]", k)))
                 } else if let Some(k) = key {
                     let result = cdp_err!(cdp.get_local_storage(Some(k)).await);
-                    Ok(ToolResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()))
+                    Ok(ToolResult::ok(
+                        serde_json::to_string_pretty(&result).unwrap_or_default(),
+                    ))
                 } else {
                     let result = cdp_err!(cdp.get_local_storage(None).await);
-                    Ok(ToolResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()))
+                    Ok(ToolResult::ok(
+                        serde_json::to_string_pretty(&result).unwrap_or_default(),
+                    ))
                 }
             }
             "storage_session" => {
@@ -548,10 +590,7 @@ impl Tool for BrowserTool {
             }
             "set_viewport" => {
                 let w = args.get("width").and_then(|v| v.as_i64()).unwrap_or(1280);
-                let h = args
-                    .get("height")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(800);
+                let h = args.get("height").and_then(|v| v.as_i64()).unwrap_or(800);
                 cdp_err!(cdp.set_viewport(w, h, None).await);
                 Ok(ToolResult::ok(format!("Viewport set to {}x{}", w, h)))
             }
@@ -561,16 +600,16 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(format!("Device emulation set to {}", d)))
             }
             "set_geo" => {
-                let lat = args
-                    .get("latitude")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
+                let lat = args.get("latitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let lon = args
                     .get("longitude")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0);
                 cdp_err!(cdp.set_geolocation(lat, lon).await);
-                Ok(ToolResult::ok(format!("Geolocation set to {}, {}", lat, lon)))
+                Ok(ToolResult::ok(format!(
+                    "Geolocation set to {}, {}",
+                    lat, lon
+                )))
             }
             "set_offline" => {
                 cdp_err!(cdp.set_network_offline(true).await);

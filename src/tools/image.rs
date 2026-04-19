@@ -88,15 +88,18 @@ pub fn detect_format(bytes: &[u8]) -> &'static str {
     if bytes[0] == b'G' && bytes[1] == b'I' && bytes[2] == b'F' && bytes[3] == b'8' {
         return "gif";
     }
-    if bytes[0] == b'R' && bytes[1] == b'I' && bytes[2] == b'F' && bytes[3] == b'F'
+    if bytes[0] == b'R'
+        && bytes[1] == b'I'
+        && bytes[2] == b'F'
+        && bytes[3] == b'F'
         && bytes.len() >= 12
-            && bytes[8] == b'W'
-            && bytes[9] == b'E'
-            && bytes[10] == b'B'
-            && bytes[11] == b'P'
-        {
-            return "webp";
-        }
+        && bytes[8] == b'W'
+        && bytes[9] == b'E'
+        && bytes[10] == b'B'
+        && bytes[11] == b'P'
+    {
+        return "webp";
+    }
     if bytes[0] == b'B' && bytes[1] == b'M' {
         return "bmp";
     }

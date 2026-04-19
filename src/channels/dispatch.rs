@@ -212,7 +212,7 @@ fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &D
                 let is_empty = msg.content.trim().is_empty() && msg.media.is_empty();
                 info!(
                     "Dispatched final message to {} ({}){}",
-                    msg.channel, 
+                    msg.channel,
                     msg.chat_id,
                     if is_empty { " (empty)" } else { "" }
                 );

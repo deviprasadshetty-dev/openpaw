@@ -30,7 +30,10 @@ impl Tool for MemoryRecallTool {
         };
 
         match self.memory.get(key) {
-            Ok(Some(entry)) => Ok(ToolResult::ok(format!("Key: {}\nValue: {}", key, entry.content))),
+            Ok(Some(entry)) => Ok(ToolResult::ok(format!(
+                "Key: {}\nValue: {}",
+                key, entry.content
+            ))),
             Ok(None) => Ok(ToolResult::fail(format!(
                 "No memory found for key: {}",
                 key

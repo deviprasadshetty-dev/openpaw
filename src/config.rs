@@ -1,7 +1,7 @@
 use crate::config_types::{
     AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
     McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig, PushoverConfig,
-    ReliabilityConfig, SchedulerConfig, SessionConfig,
+    ReliabilityConfig, SchedulerConfig, SessionConfig, TaskModelsConfig,
 };
 use crate::secrets::SecretStore;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,8 @@ pub struct Config {
     pub default_model: Option<String>,
     pub default_temperature: Option<f32>,
     pub models: Option<ModelsConfig>,
+    #[serde(default)]
+    pub task_models: TaskModelsConfig,
     #[serde(default)]
     pub gateway: GatewayConfig,
     #[serde(default)]

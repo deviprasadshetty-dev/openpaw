@@ -17,9 +17,7 @@ pub fn parse_slash_command(message: &str) -> Option<SlashCommand> {
     }
 
     let body = &body[1..];
-    let split_idx = body
-        .find([':', ' ', '\t'])
-        .unwrap_or(body.len());
+    let split_idx = body.find([':', ' ', '\t']).unwrap_or(body.len());
 
     let raw_name = &body[..split_idx];
     if raw_name.is_empty() {
@@ -148,29 +146,37 @@ impl Command for ProviderCommand {
             let mut msg = String::from("Configured providers:\n");
             if let Some(path) = &agent.config_path
                 && let Ok(content) = std::fs::read_to_string(path)
-                    && let Ok(cfg) = serde_json::from_str::<crate::config::Config>(&content) {
-                        let mut sorted_keys: Vec<_> = if let Some(models) = &cfg.models {
-                            models.providers.keys().collect()
-                        } else {
-                            Vec::new()
-                        };
-                        sorted_keys.sort();
+                && let Ok(cfg) = serde_json::from_str::<crate::config::Config>(&content)
+            {
+                let mut sorted_keys: Vec<_> = if let Some(models) = &cfg.models {
+                    models.providers.keys().collect()
+                } else {
+                    Vec::new()
+                };
+                sorted_keys.sort();
 
-                        for name in sorted_keys {
-                            let marker = if name == &cfg.default_provider {
-                                " (current)"
-                            } else {
-                                ""
-                            };
-                            msg.push_str(&format!("- {}{}\n", name, marker));
-                        }
-                        return Some(msg);
-                    }
+                for name in sorted_keys {
+                    let marker = if name == &cfg.default_provider {
+                        " (current)"
+                    } else {
+                        ""
+                    };
+                    msg.push_str(&format!("- {}{}\n", name, marker));
+                }
+                return Some(msg);
+            }
             return Some("Could not list providers: config not found.".to_string());
         }
 
         let (provider_name, api_key) = if parts[0] == "set" && parts.len() >= 2 {
-            (parts[1], if parts.len() >= 3 { Some(parts[2].to_string()) } else { None })
+            (
+                parts[1],
+                if parts.len() >= 3 {
+                    Some(parts[2].to_string())
+                } else {
+                    None
+                },
+            )
         } else {
             (parts[0], None)
         };
@@ -202,15 +208,23 @@ impl Command for ProviderCommand {
                                             model: None,
                                         },
                                     );
-                                    cfg.models =
-                                        Some(crate::config::ModelsConfig { providers });
+                                    cfg.models = Some(crate::config::ModelsConfig { providers });
                                 }
                             }
 
                             // Verify provider exists in config
-                            if cfg.models.as_ref().and_then(|m| m.providers.get(provider_name)).is_none() 
-                               && provider_name != "ollama" && provider_name != "lmstudio" {
-                                return Some(format!("Provider '{}' not found in config. Use '/provider set {} <key>' first.", provider_name, provider_name));
+                            if cfg
+                                .models
+                                .as_ref()
+                                .and_then(|m| m.providers.get(provider_name))
+                                .is_none()
+                                && provider_name != "ollama"
+                                && provider_name != "lmstudio"
+                            {
+                                return Some(format!(
+                                    "Provider '{}' not found in config. Use '/provider set {} <key>' first.",
+                                    provider_name, provider_name
+                                ));
                             }
 
                             // 2. Update default provider in config

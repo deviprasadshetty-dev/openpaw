@@ -33,9 +33,10 @@ impl Tool for GitTool {
         // Sanitize string args
         for field in &["message", "paths", "branch", "files", "action"] {
             if let Some(val) = args.get(field).and_then(|v| v.as_str())
-                && !Self::sanitize_git_args(val) {
-                    return Ok(ToolResult::fail("Unsafe git arguments detected"));
-                }
+                && !Self::sanitize_git_args(val)
+            {
+                return Ok(ToolResult::fail("Unsafe git arguments detected"));
+            }
         }
 
         // Resolve cwd
@@ -132,30 +133,48 @@ impl Tool for GitTool {
             }
             "stash" => {
                 // Sub-action: push (save), pop (restore), list (default)
-                let sub = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+                let sub = args
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("list");
                 match sub {
                     "push" => self.run_git(&effective_cwd, &["stash", "push"]).await,
-                    "pop"  => self.run_git(&effective_cwd, &["stash", "pop"]).await,
-                    _      => self.run_git(&effective_cwd, &["stash", "list"]).await,
+                    "pop" => self.run_git(&effective_cwd, &["stash", "pop"]).await,
+                    _ => self.run_git(&effective_cwd, &["stash", "list"]).await,
                 }
             }
             "push" => {
-                let remote = args.get("remote").and_then(|v| v.as_str()).unwrap_or("origin");
-                let branch = args.get("branch").and_then(|v| v.as_str()).unwrap_or("HEAD");
+                let remote = args
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("origin");
+                let branch = args
+                    .get("branch")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("HEAD");
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
                 if force {
-                    self.run_git(&effective_cwd, &["push", "--force-with-lease", remote, branch]).await
+                    self.run_git(
+                        &effective_cwd,
+                        &["push", "--force-with-lease", remote, branch],
+                    )
+                    .await
                 } else {
-                    self.run_git(&effective_cwd, &["push", remote, branch]).await
+                    self.run_git(&effective_cwd, &["push", remote, branch])
+                        .await
                 }
             }
             "pull" => {
-                let remote = args.get("remote").and_then(|v| v.as_str()).unwrap_or("origin");
+                let remote = args
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("origin");
                 let branch = args.get("branch").and_then(|v| v.as_str()).unwrap_or("");
                 if branch.is_empty() {
                     self.run_git(&effective_cwd, &["pull", remote]).await
                 } else {
-                    self.run_git(&effective_cwd, &["pull", remote, branch]).await
+                    self.run_git(&effective_cwd, &["pull", remote, branch])
+                        .await
                 }
             }
             _ => Ok(ToolResult::fail(format!(

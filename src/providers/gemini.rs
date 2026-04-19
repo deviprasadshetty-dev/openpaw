@@ -1,8 +1,8 @@
 use crate::providers::{
     ChatRequest, ChatResponse, ContentPart, Provider, StreamCallback, TokenUsage,
 };
-use base64::Engine;
 use anyhow::{Context, Result};
+use base64::Engine;
 use regex::Regex;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
