@@ -113,19 +113,19 @@ fn interpreter_for(filename: &str) -> Option<&'static str> {
         .to_lowercase();
 
     match ext.as_str() {
-        "py" => Some("python3"),
-        "js" => Some("node"),
-        "ts" => Some("npx ts-node"), // common enough to support
-        "rb" => Some("ruby"),
-        "pl" => Some("perl"),
-        "php" => Some("php"),
-        "r" => Some("Rscript"),
-        "lua" => Some("lua"),
-        "sh" => Some("sh"),
-        "bash" => Some("bash"),
-        "zsh" => Some("zsh"),
-        "fish" => Some("fish"),
-        "ps1" => Some("powershell"),
-        _ => None,
+        "py"    => Some("python3"),
+        "js"    => Some("node"),
+        "ts"    => Some("npx ts-node"),  // common enough to support
+        "rb"    => Some("ruby"),
+        "pl"    => Some("perl"),
+        "php"   => Some("php"),
+        "r"     => Some("Rscript"),
+        "lua"   => Some("lua"),
+        "sh"    => Some("sh"),
+        "bash"  => Some("bash"),
+        "zsh"   => Some("zsh"),
+        "fish"  => Some("fish"),
+        "ps1"   => Some("powershell"),
+        _       => None,
     }
 }

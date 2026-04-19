@@ -82,10 +82,7 @@ impl Tool for EventWatchTool {
                 let action_desc = match &w.action {
                     WatcherAction::AgentTask { prompt, agent_id } => format!(
                         "agent_task{}:\n  {}",
-                        agent_id
-                            .as_deref()
-                            .map(|a| format!(" ({})", a))
-                            .unwrap_or_default(),
+                        agent_id.as_deref().map(|a| format!(" ({})", a)).unwrap_or_default(),
                         &prompt[..prompt.len().min(80)]
                     ),
                     WatcherAction::ShellCommand { command } => {
@@ -103,7 +100,10 @@ impl Tool for EventWatchTool {
         // Unwatch mode
         if let Some(unwatch_id) = args.get("unwatch_id").and_then(|v| v.as_u64()) {
             if self.event_registry.unwatch(unwatch_id) {
-                return Ok(ToolResult::ok(format!("Watcher {} removed.", unwatch_id)));
+                return Ok(ToolResult::ok(format!(
+                    "Watcher {} removed.",
+                    unwatch_id
+                )));
             } else {
                 return Ok(ToolResult::fail(format!(
                     "Watcher {} not found.",
@@ -127,11 +127,7 @@ impl Tool for EventWatchTool {
             "agent_task" => {
                 let prompt = match args.get("prompt").and_then(|v| v.as_str()) {
                     Some(p) if !p.trim().is_empty() => p.trim().to_string(),
-                    _ => {
-                        return Ok(ToolResult::fail(
-                            "'prompt' is required for action_type='agent_task'",
-                        ));
-                    }
+                    _ => return Ok(ToolResult::fail("'prompt' is required for action_type='agent_task'")),
                 };
                 let agent_id = args
                     .get("agent_id")
@@ -142,11 +138,7 @@ impl Tool for EventWatchTool {
             "shell_command" => {
                 let command = match args.get("command").and_then(|v| v.as_str()) {
                     Some(c) if !c.trim().is_empty() => c.trim().to_string(),
-                    _ => {
-                        return Ok(ToolResult::fail(
-                            "'command' is required for action_type='shell_command'",
-                        ));
-                    }
+                    _ => return Ok(ToolResult::fail("'command' is required for action_type='shell_command'")),
                 };
                 WatcherAction::ShellCommand { command }
             }

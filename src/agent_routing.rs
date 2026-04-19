@@ -145,15 +145,13 @@ pub fn peer_matches(binding_peer: Option<&PeerRef>, input_peer: Option<&PeerRef>
 /// match the input. A null constraint means "any" (matches everything).
 pub fn binding_matches_scope(binding: &AgentBinding, input: &RouteInput) -> bool {
     if let Some(bc) = &binding.r#match.channel
-        && bc != &input.channel
-    {
-        return false;
-    }
+        && bc != &input.channel {
+            return false;
+        }
     if let Some(ba) = &binding.r#match.account_id
-        && ba != &input.account_id
-    {
-        return false;
-    }
+        && ba != &input.account_id {
+            return false;
+        }
     true
 }
 
@@ -216,9 +214,10 @@ fn all_constraints_match(
         }
     }
     // Roles constraint
-    if !b.r#match.roles.is_empty() && !has_matching_role(&b.r#match.roles, &input.member_role_ids) {
-        return false;
-    }
+    if !b.r#match.roles.is_empty()
+        && !has_matching_role(&b.r#match.roles, &input.member_role_ids) {
+            return false;
+        }
     true
 }
 
@@ -275,35 +274,33 @@ pub fn resolve_route_with_session(
 
     // 1. Peer Match (exact kind + id)
     if matched_agent.is_none()
-        && let Some(input_peer) = &input.peer
-    {
-        for b in &scoped_bindings {
-            if let Some(bp) = &b.r#match.peer
-                && peer_matches(Some(bp), Some(input_peer))
-                && all_constraints_match(b, input, Some(input_peer))
-            {
-                matched_agent = Some(b.agent_id.clone());
-                matched_by = MatchedBy::Peer;
-                break;
+        && let Some(input_peer) = &input.peer {
+            for b in &scoped_bindings {
+                if let Some(bp) = &b.r#match.peer
+                    && peer_matches(Some(bp), Some(input_peer))
+                        && all_constraints_match(b, input, Some(input_peer))
+                    {
+                        matched_agent = Some(b.agent_id.clone());
+                        matched_by = MatchedBy::Peer;
+                        break;
+                    }
             }
         }
-    }
 
     // 2. Parent Peer Match
     if matched_agent.is_none()
-        && let Some(parent_peer) = &input.parent_peer
-    {
-        for b in &scoped_bindings {
-            if let Some(bp) = &b.r#match.peer
-                && peer_matches(Some(bp), Some(parent_peer))
-                && all_constraints_match(b, input, Some(parent_peer))
-            {
-                matched_agent = Some(b.agent_id.clone());
-                matched_by = MatchedBy::ParentPeer;
-                break;
+        && let Some(parent_peer) = &input.parent_peer {
+            for b in &scoped_bindings {
+                if let Some(bp) = &b.r#match.peer
+                    && peer_matches(Some(bp), Some(parent_peer))
+                        && all_constraints_match(b, input, Some(parent_peer))
+                    {
+                        matched_agent = Some(b.agent_id.clone());
+                        matched_by = MatchedBy::ParentPeer;
+                        break;
+                    }
             }
         }
-    }
 
     // 3. Guild Roles Match
     if matched_agent.is_none() && input.guild_id.is_some() && !input.member_role_ids.is_empty() {
@@ -318,39 +315,37 @@ pub fn resolve_route_with_session(
 
     // 4. Guild Match
     if matched_agent.is_none()
-        && let Some(guild_id) = &input.guild_id
-    {
-        for b in &scoped_bindings {
-            // Must have guild_id, no peer, no team, no roles
-            if b.r#match.guild_id.as_deref() == Some(guild_id)
-                && b.r#match.peer.is_none()
-                && b.r#match.team_id.is_none()
-                && b.r#match.roles.is_empty()
-            {
-                matched_agent = Some(b.agent_id.clone());
-                matched_by = MatchedBy::Guild;
-                break;
+        && let Some(guild_id) = &input.guild_id {
+            for b in &scoped_bindings {
+                // Must have guild_id, no peer, no team, no roles
+                if b.r#match.guild_id.as_deref() == Some(guild_id)
+                    && b.r#match.peer.is_none()
+                    && b.r#match.team_id.is_none()
+                    && b.r#match.roles.is_empty()
+                {
+                    matched_agent = Some(b.agent_id.clone());
+                    matched_by = MatchedBy::Guild;
+                    break;
+                }
             }
         }
-    }
 
     // 5. Team Match
     if matched_agent.is_none()
-        && let Some(team_id) = &input.team_id
-    {
-        for b in &scoped_bindings {
-            // Must have team_id, no peer, no guild, no roles
-            if b.r#match.team_id.as_deref() == Some(team_id)
-                && b.r#match.peer.is_none()
-                && b.r#match.guild_id.is_none()
-                && b.r#match.roles.is_empty()
-            {
-                matched_agent = Some(b.agent_id.clone());
-                matched_by = MatchedBy::Team;
-                break;
+        && let Some(team_id) = &input.team_id {
+            for b in &scoped_bindings {
+                // Must have team_id, no peer, no guild, no roles
+                if b.r#match.team_id.as_deref() == Some(team_id)
+                    && b.r#match.peer.is_none()
+                    && b.r#match.guild_id.is_none()
+                    && b.r#match.roles.is_empty()
+                {
+                    matched_agent = Some(b.agent_id.clone());
+                    matched_by = MatchedBy::Team;
+                    break;
+                }
             }
         }
-    }
 
     // 6. Account Match
     if matched_agent.is_none() {

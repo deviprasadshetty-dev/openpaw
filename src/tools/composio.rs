@@ -125,10 +125,9 @@ impl ComposioTool {
             query.push(("toolkit_slug", slug.clone()));
         }
         if let Some(search) = &search_term
-            && !search.is_empty()
-        {
-            query.push(("query", search.clone()));
-        }
+            && !search.is_empty() {
+                query.push(("query", search.clone()));
+            }
 
         let mut resp = self
             .api_request(Method::GET, "/tools", &query, None)
@@ -145,15 +144,16 @@ impl ComposioTool {
             && extract_array_entries(json_body)
                 .map(|a| a.is_empty())
                 .unwrap_or(false)
-        {
-            let fallback_query = vec![("limit", "100".to_string()), ("query", slug.to_string())];
-            let fallback_resp = self
-                .api_request(Method::GET, "/tools", &fallback_query, None)
-                .await?;
-            if is_success(fallback_resp.status) {
-                resp = fallback_resp;
+            {
+                let fallback_query =
+                    vec![("limit", "100".to_string()), ("query", slug.to_string())];
+                let fallback_resp = self
+                    .api_request(Method::GET, "/tools", &fallback_query, None)
+                    .await?;
+                if is_success(fallback_resp.status) {
+                    resp = fallback_resp;
+                }
             }
-        }
 
         let Some(json_body) = resp.body_json else {
             return Ok(ToolResult::ok(resp.body_text));
@@ -349,9 +349,7 @@ impl ComposioTool {
 
     async fn find_toolkit_slug(&self, query: &str) -> Result<Option<String>> {
         let params = vec![("query", query.to_string()), ("limit", "1".to_string())];
-        let resp = self
-            .api_request(Method::GET, "/tools", &params, None)
-            .await?;
+        let resp = self.api_request(Method::GET, "/tools", &params, None).await?;
         if !is_success(resp.status) {
             return Ok(None);
         }
@@ -443,15 +441,14 @@ impl ComposioTool {
         }
 
         if let Some(ref v) = resp.body_json
-            && let Some(url) = extract_auth_url(v)
-        {
-            return Ok(ToolResult::ok(format!(
-                "Open this URL to authenticate {}: {}\n\n{}",
-                user_id,
-                url,
-                pretty_json_or_text(resp.body_json, resp.body_text)
-            )));
-        }
+            && let Some(url) = extract_auth_url(v) {
+                return Ok(ToolResult::ok(format!(
+                    "Open this URL to authenticate {}: {}\n\n{}",
+                    user_id,
+                    url,
+                    pretty_json_or_text(resp.body_json, resp.body_text)
+                )));
+            }
 
         Ok(ToolResult::ok(pretty_json_or_text(
             resp.body_json,
@@ -699,10 +696,9 @@ fn extract_auth_url(value: &Value) -> Option<String> {
     }
 
     if let Some(link_obj) = value.get("link")
-        && let Some(url) = link_obj.get("url").and_then(Value::as_str)
-    {
-        return Some(url.to_string());
-    }
+        && let Some(url) = link_obj.get("url").and_then(Value::as_str) {
+            return Some(url.to_string());
+        }
 
     if let Some(data) = value.get("data") {
         return extract_auth_url(data);

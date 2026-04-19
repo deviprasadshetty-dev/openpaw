@@ -114,11 +114,10 @@ fn start_ngrok(port: u16) -> Result<TunnelHandle> {
         // Look for JSON with "url" field
         for l in reader.lines().map_while(Result::ok) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l)
-                && let Some(url) = json.get("url").and_then(|v| v.as_str())
-            {
-                let _ = tx.send(url.to_string());
-                break;
-            }
+                && let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                    let _ = tx.send(url.to_string());
+                    break;
+                }
         }
     });
 

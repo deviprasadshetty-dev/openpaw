@@ -66,11 +66,9 @@ impl Tool for ApprovalRespondTool {
 
         let approval_id = match args.get("approval_id").and_then(|v| v.as_u64()) {
             Some(id) => id,
-            None => {
-                return Ok(ToolResult::fail(
-                    "Missing 'approval_id'. Provide an approval_id to respond to, or set list=true to see pending approvals.",
-                ));
-            }
+            None => return Ok(ToolResult::fail(
+                "Missing 'approval_id'. Provide an approval_id to respond to, or set list=true to see pending approvals."
+            )),
         };
 
         let approved = match args.get("approved").and_then(|v| v.as_bool()) {

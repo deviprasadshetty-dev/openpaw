@@ -36,10 +36,9 @@ impl AnthropicProvider {
     /// Resolve API key: explicit > ANTHROPIC_API_KEY env var
     pub fn resolve_key(explicit: Option<&str>) -> String {
         if let Some(k) = explicit
-            && !k.is_empty()
-        {
-            return k.to_string();
-        }
+            && !k.is_empty() {
+                return k.to_string();
+            }
         std::env::var("ANTHROPIC_API_KEY").unwrap_or_default()
     }
 }
@@ -92,11 +91,10 @@ impl Provider for AnthropicProvider {
 
         // ── Tools ────────────────────────────────────────────────
         if let Some(tools) = request.tools
-            && !tools.is_empty()
-        {
-            body["tools"] = json!(tools.iter().map(anthropic_tool).collect::<Vec<_>>());
-            body["tool_choice"] = json!({"type": "auto"});
-        }
+            && !tools.is_empty() {
+                body["tools"] = json!(tools.iter().map(anthropic_tool).collect::<Vec<_>>());
+                body["tool_choice"] = json!({"type": "auto"});
+            }
 
         debug!("Anthropic request to model={}", request.model);
 
@@ -199,11 +197,7 @@ fn parse_response(v: Value, model: &str) -> Result<ChatResponse> {
                 tool_calls.push(ToolCall {
                     id,
                     kind: "function".to_string(),
-                    function: FunctionCall {
-                        name,
-                        arguments,
-                        thought_signature: None,
-                    },
+                    function: FunctionCall { name, arguments, thought_signature: None },
                 });
             }
             _ => {}

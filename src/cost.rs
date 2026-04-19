@@ -23,18 +23,16 @@ impl TokenUsage {
         input_price_per_million: f64,
         output_price_per_million: f64,
     ) -> Self {
-        let safe_input_price =
-            if input_price_per_million.is_finite() && input_price_per_million > 0.0 {
-                input_price_per_million
-            } else {
-                0.0
-            };
-        let safe_output_price =
-            if output_price_per_million.is_finite() && output_price_per_million > 0.0 {
-                output_price_per_million
-            } else {
-                0.0
-            };
+        let safe_input_price = if input_price_per_million.is_finite() && input_price_per_million > 0.0 {
+            input_price_per_million
+        } else {
+            0.0
+        };
+        let safe_output_price = if output_price_per_million.is_finite() && output_price_per_million > 0.0 {
+            output_price_per_million
+        } else {
+            0.0
+        };
 
         let total = input_tokens.saturating_add(output_tokens);
         let input_cost = (input_tokens as f64 / 1_000_000.0) * safe_input_price;
@@ -98,9 +96,7 @@ impl CostTracker {
         monthly_limit: f64,
         warn_pct: u32,
     ) -> Self {
-        let path = PathBuf::from(workspace_dir)
-            .join("state")
-            .join("costs.jsonl");
+        let path = PathBuf::from(workspace_dir).join("state").join("costs.jsonl");
         Self {
             enabled,
             daily_limit_usd: daily_limit,

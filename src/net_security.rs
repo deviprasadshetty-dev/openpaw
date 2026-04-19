@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::net::{IpAddr, ToSocketAddrs};
 
 /// Extract the hostname from an HTTP(S) URL, stripping port, path, query, fragment.
@@ -28,9 +28,7 @@ pub fn extract_host(url: &str) -> Option<String> {
     let host = if host_port.starts_with('[') {
         // IPv6 literal
         if let Some(close_bracket) = host_port.find(']') {
-            if close_bracket + 1 < host_port.len()
-                && host_port.as_bytes()[close_bracket + 1] == b':'
-            {
+            if close_bracket + 1 < host_port.len() && host_port.as_bytes()[close_bracket + 1] == b':' {
                 // [ipv6]:port
                 &host_port[..close_bracket + 1]
             } else {
@@ -65,13 +63,12 @@ pub fn host_matches_allowlist(host: &str, allowed: &[String]) -> bool {
         }
         // Wildcard subdomain: "*.example.com" matches "api.example.com"
         if let Some(domain) = pattern.strip_prefix("*.")
-            && host.ends_with(domain)
-        {
-            let prefix_len = host.len().saturating_sub(domain.len());
-            if prefix_len > 0 && host.as_bytes()[prefix_len - 1] == b'.' {
-                return true;
+            && host.ends_with(domain) {
+                let prefix_len = host.len().saturating_sub(domain.len());
+                if prefix_len > 0 && host.as_bytes()[prefix_len - 1] == b'.' {
+                    return true;
+                }
             }
-        }
         // Implicit subdomain match (like browser_open does)
         if host.len() > pattern.len() {
             let offset = host.len() - pattern.len();

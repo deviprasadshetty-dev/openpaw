@@ -23,7 +23,6 @@ pub struct CompactionConfig {
     pub token_limit: u64,
     pub max_history_messages: u32,
     pub workspace_dir: Option<String>,
-    pub task_models_summarize: Option<String>,
 }
 
 impl Default for CompactionConfig {
@@ -35,7 +34,6 @@ impl Default for CompactionConfig {
             token_limit: DEFAULT_TOKEN_LIMIT,
             max_history_messages: 50,
             workspace_dir: None,
-            task_models_summarize: None,
         }
     }
 }
@@ -155,13 +153,7 @@ pub fn auto_compact_history(
 
     let mut compact_end = start + compact_count;
 
-    let summarize_model = if let Some(m) = &config.task_models_summarize {
-        m.as_str()
-    } else {
-        model_name
-    };
-
-    let summary = summarize_chunked(provider, summarize_model, history, start, compact_end, config)
+    let summary = summarize_chunked(provider, model_name, history, start, compact_end, config)
         .unwrap_or_else(|| "Context summarized due to length.".to_string());
 
     *last_compaction = now; // Update per-agent cooldown timestamp
@@ -171,11 +163,10 @@ pub fn auto_compact_history(
     let mut summary_content = format!("[Compaction summary]\n{}", summary);
     if let Some(workspace_context) =
         read_workspace_context_for_summary(config.workspace_dir.as_deref())
-        && !workspace_context.is_empty()
-    {
-        summary_content.push_str("\n\n");
-        summary_content.push_str(&workspace_context);
-    }
+        && !workspace_context.is_empty() {
+            summary_content.push_str("\n\n");
+            summary_content.push_str(&workspace_context);
+        }
 
     // Advance compact_end to the next "user" message to ensure the kept history starts with a user prompt.
     // Strict APIs like Gemini and Anthropic will reject histories that start with "assistant" or don't alternate.
@@ -204,7 +195,7 @@ pub fn auto_compact_history(
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
-            thought_signature: None,
+                    thought_signature: None,
         });
     }
 
@@ -325,10 +316,7 @@ fn summarize_chunked(
     // Merge partial summaries into one final summary
     let combined = chunk_summaries.join("\n\n---\n\n");
     let merge_system = "You are a conversation compaction engine. You have been given several partial summaries of a conversation. Merge them into a single concise summary of at most 12 bullet points. Remove duplicates, preserve key facts, decisions, and unresolved tasks.";
-    let merge_user = format!(
-        "Merge these partial conversation summaries:\n\n{}",
-        combined
-    );
+    let merge_user = format!("Merge these partial conversation summaries:\n\n{}", combined);
 
     let merge_messages = vec![
         ChatMessage {
@@ -405,7 +393,7 @@ fn summarize_slice(
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
-            thought_signature: None,
+                    thought_signature: None,
         },
         ChatMessage {
             role: "user".to_string(),
@@ -414,7 +402,7 @@ fn summarize_slice(
             tool_calls: None,
             tool_call_id: None,
             content_parts: None,
-            thought_signature: None,
+                    thought_signature: None,
         },
     ];
 

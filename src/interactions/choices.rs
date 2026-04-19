@@ -75,10 +75,9 @@ pub fn parse_assistant_choices(text: &str) -> ParsedAssistantChoices {
     };
 
     if let Some(ref c) = choices
-        && visible.trim().is_empty()
-    {
-        visible = synthesize_fallback_text(&c.options);
-    }
+        && visible.trim().is_empty() {
+            visible = synthesize_fallback_text(&c.options);
+        }
 
     ParsedAssistantChoices {
         visible_text: visible,
@@ -137,7 +136,7 @@ fn parse_choices_directive(json_payload: &str) -> Result<ChoicesDirective, ()> {
     // Validation loop
     for i in 0..directive.options.len() {
         let opt = &mut directive.options[i];
-
+        
         if !is_valid_choice_id(&opt.id) {
             return Err(());
         }
@@ -150,7 +149,7 @@ fn parse_choices_directive(json_payload: &str) -> Result<ChoicesDirective, ()> {
             Some(s) => s.clone(),
             None => opt.label.clone(),
         };
-
+        
         if resolved.is_empty() || resolved.len() > MAX_SUBMIT_TEXT_LEN {
             return Err(());
         }
@@ -190,7 +189,7 @@ mod tests {
     fn test_valid_directive() {
         let text = "You did it?\n<nc_choices>\n{\"v\":1,\"options\":[{\"id\":\"yes\",\"label\":\"Da\",\"submit_text\":\"Da, sdelal\"},{\"id\":\"no\",\"label\":\"Net\"}]}\n</nc_choices>";
         let parsed = parse_assistant_choices(text);
-
+        
         assert!(parsed.choices.is_some());
         assert_eq!(parsed.visible_text, "You did it?\n");
         let choices = parsed.choices.unwrap();

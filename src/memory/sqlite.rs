@@ -209,10 +209,9 @@ impl MemoryStore for SqliteMemory {
         // Auto-embed if provider is present and not an ephemeral autosave
         if let Some(ref embedder) = self.embedder
             && !key.starts_with("autosave_")
-            && let Ok(emb) = embedder.embed(content)
-        {
-            let _ = self.store_embedding_internal(&id, &emb);
-        }
+                && let Ok(emb) = embedder.embed(content) {
+                    let _ = self.store_embedding_internal(&id, &emb);
+                }
 
         Ok(())
     }
@@ -264,10 +263,9 @@ impl MemoryStore for SqliteMemory {
         for e in entries {
             let entry = e?;
             if let Some(sid) = session_id
-                && entry.session_id.as_deref() != Some(sid)
-            {
-                continue;
-            }
+                && entry.session_id.as_deref() != Some(sid) {
+                    continue;
+                }
             results.push(entry);
         }
 
@@ -385,10 +383,9 @@ impl MemoryStore for SqliteMemory {
             for e in mapped {
                 let entry = e?;
                 if let Some(sid) = session_id
-                    && entry.session_id.as_deref() != Some(sid)
-                {
-                    continue;
-                }
+                    && entry.session_id.as_deref() != Some(sid) {
+                        continue;
+                    }
                 results.push(entry);
             }
         } else {
@@ -410,10 +407,9 @@ impl MemoryStore for SqliteMemory {
             for e in mapped {
                 let entry = e?;
                 if let Some(sid) = session_id
-                    && entry.session_id.as_deref() != Some(sid)
-                {
-                    continue;
-                }
+                    && entry.session_id.as_deref() != Some(sid) {
+                        continue;
+                    }
                 results.push(entry);
             }
         }

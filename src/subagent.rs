@@ -1,10 +1,10 @@
-use crate::agent::Agent;
 use crate::agent_mailbox::AgentMailbox;
 use crate::approval::ApprovalManager;
 use crate::bus::Bus;
 use crate::config::Config;
-use crate::daemon::{build_tools, create_provider};
 use crate::session::SessionManager;
+use crate::agent::Agent;
+use crate::daemon::{create_provider, build_tools};
 use anyhow::{Result, anyhow};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -236,8 +236,6 @@ impl SubagentManager {
                 tasks.remove(&task_id);
                 return Err(anyhow!("Unknown agent profile: {}", name));
             }
-        } else if let Some(sm) = &sub_config.task_models.subagent {
-            sub_config.default_model = Some(sm.clone());
         }
 
         let join_handle = tokio::spawn(async move {
@@ -270,21 +268,14 @@ impl SubagentManager {
             let mut agent = Agent::new(
                 provider,
                 subagent_tools,
-                sub_config
-                    .default_model
-                    .clone()
-                    .unwrap_or("gpt-4o".to_string()),
+                sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
                 sub_config.workspace_dir.clone(),
-                Some(&sub_config),
             );
             agent.max_tool_iterations = max_iterations;
 
             if let Some(prompt) = custom_system_prompt {
                 agent.has_system_prompt = true;
-                let mut content = format!(
-                    "{}\n\nYou are running as a background subagent.\n\n",
-                    prompt
-                );
+                let mut content = format!("{}\n\nYou are running as a background subagent.\n\n", prompt);
                 crate::agent::prompt::append_date_time_section(&mut content);
                 agent.history.push(crate::providers::ChatMessage {
                     role: "system".to_string(),
@@ -369,16 +360,7 @@ impl SubagentManager {
             drop(tasks);
 
             // Drain the pending queue now that a slot has opened
-            drain_pending(
-                tasks_clone,
-                pending_clone,
-                bus_clone,
-                daemon_config_clone,
-                max_iterations,
-                max_concurrent,
-                mailbox_clone,
-                approval_clone,
-            );
+            drain_pending(tasks_clone, pending_clone, bus_clone, daemon_config_clone, max_iterations, max_concurrent, mailbox_clone, approval_clone);
         });
 
         // Store the abort handle so we can cancel the task later
@@ -484,16 +466,7 @@ impl SubagentManager {
         let max_concurrent = self.config.max_concurrent;
         let mailbox_clone = self.mailbox.clone();
         let approval_clone = self.approval_manager.clone();
-        drain_pending(
-            tasks_clone,
-            pending_clone,
-            bus_clone,
-            daemon_config_clone,
-            max_iterations,
-            max_concurrent,
-            mailbox_clone,
-            approval_clone,
-        );
+        drain_pending(tasks_clone, pending_clone, bus_clone, daemon_config_clone, max_iterations, max_concurrent, mailbox_clone, approval_clone);
     }
 }
 
@@ -535,8 +508,7 @@ fn drain_pending(
                 // Find the Queued task_id for this pending entry (match by label + channel)
                 let task_id = {
                     let tasks_guard = tasks.lock().unwrap_or_else(|e| e.into_inner());
-                    tasks_guard
-                        .iter()
+                    tasks_guard.iter()
                         .find(|(_, s)| {
                             s.status == TaskStatus::Queued
                                 && s.label == pt.label
@@ -567,8 +539,6 @@ fn drain_pending(
                         }
                         custom_system_prompt = agent_cfg.system_prompt.clone();
                     }
-                } else if let Some(sm) = &sub_config.task_models.subagent {
-                    sub_config.default_model = Some(sm.clone());
                 }
 
                 let subagent_session_key = format!("subagent:{}", task_id);
@@ -617,21 +587,14 @@ fn drain_pending(
                     let mut agent = Agent::new(
                         provider,
                         subagent_tools,
-                        sub_config
-                            .default_model
-                            .clone()
-                            .unwrap_or("gpt-4o".to_string()),
+                        sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
                         sub_config.workspace_dir.clone(),
-                        Some(&sub_config),
                     );
                     agent.max_tool_iterations = max_iterations;
 
                     if let Some(prompt) = custom_system_prompt {
                         agent.has_system_prompt = true;
-                        let mut content = format!(
-                            "{}\n\nYou are running as a background subagent.\n\n",
-                            prompt
-                        );
+                        let mut content = format!("{}\n\nYou are running as a background subagent.\n\n", prompt);
                         crate::agent::prompt::append_date_time_section(&mut content);
                         agent.history.push(crate::providers::ChatMessage {
                             role: "system".to_string(),
@@ -708,16 +671,7 @@ fn drain_pending(
                         }
                     }
                     drop(tasks);
-                    drain_pending(
-                        tasks_clone2,
-                        pending_clone2,
-                        bus_clone2,
-                        daemon_config_clone2,
-                        max_iterations,
-                        max_concurrent,
-                        mailbox_clone2,
-                        approval_clone2,
-                    );
+                    drain_pending(tasks_clone2, pending_clone2, bus_clone2, daemon_config_clone2, max_iterations, max_concurrent, mailbox_clone2, approval_clone2);
                 });
 
                 let abort_handle = join_handle.abort_handle();

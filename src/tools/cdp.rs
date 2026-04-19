@@ -1,9 +1,9 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::sync::Arc;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
@@ -75,23 +75,19 @@ impl CdpClient {
             .await
             .context("Failed to reach Chrome DevTools HTTP endpoint — make sure Chrome is running with --remote-debugging-port enabled")?;
 
-        let body = resp
-            .text()
-            .await
-            .context("Failed to read CDP response body")?;
+        let body = resp.text().await.context("Failed to read CDP response body")?;
 
         let targets: Vec<CdpListTarget> = serde_json::from_str(&body).with_context(|| {
             // Show the first 200 chars so the user can see if it returned HTML instead of JSON
-            let preview = if body.len() > 200 {
-                &body[..200]
-            } else {
-                &body
-            };
+            let preview = if body.len() > 200 { &body[..200] } else { &body };
             format!(
                 "Failed to parse Chrome DevTools target list. \
                  Make sure the browser is running with --remote-debugging-port={}. \
                  Response preview: {}",
-                self.endpoint.split(':').last().unwrap_or("9222"),
+                self.endpoint
+                    .split(':')
+                    .last()
+                    .unwrap_or("9222"),
                 preview
             )
         })?;
@@ -174,11 +170,20 @@ impl CdpClient {
                                     .get("message")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("Unknown CDP error");
-                                let err_code =
-                                    error.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
-                                return Err(anyhow!("CDP error {}: {}", err_code, err_msg));
+                                let err_code = error
+                                    .get("code")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(-1);
+                                return Err(anyhow!(
+                                    "CDP error {}: {}",
+                                    err_code,
+                                    err_msg
+                                ));
                             }
-                            return Ok(parsed.get("result").cloned().unwrap_or(json!({})));
+                            return Ok(parsed
+                                .get("result")
+                                .cloned()
+                                .unwrap_or(json!({})));
                         }
                     }
                 }
@@ -224,10 +229,7 @@ impl CdpClient {
 
     pub async fn get_current_url(&self) -> Result<String> {
         let result = self
-            .send_command(
-                "Runtime.evaluate",
-                json!({ "expression": "window.location.href" }),
-            )
+            .send_command("Runtime.evaluate", json!({ "expression": "window.location.href" }))
             .await?;
         result
             .get("result")
@@ -239,10 +241,7 @@ impl CdpClient {
 
     pub async fn get_title(&self) -> Result<String> {
         let result = self
-            .send_command(
-                "Runtime.evaluate",
-                json!({ "expression": "document.title" }),
-            )
+            .send_command("Runtime.evaluate", json!({ "expression": "document.title" }))
             .await?;
         result
             .get("result")
@@ -268,11 +267,8 @@ impl CdpClient {
             serde_json::to_string(selector)?,
             serde_json::to_string(selector)?
         );
-        self.send_command(
-            "Runtime.evaluate",
-            json!({ "expression": expr, "awaitPromise": true }),
-        )
-        .await
+        self.send_command("Runtime.evaluate", json!({ "expression": expr, "awaitPromise": true }))
+            .await
     }
 
     pub async fn dblclick(&self, selector: &str) -> Result<Value> {
@@ -290,11 +286,8 @@ impl CdpClient {
             serde_json::to_string(selector)?,
             serde_json::to_string(selector)?
         );
-        self.send_command(
-            "Runtime.evaluate",
-            json!({ "expression": expr, "awaitPromise": true }),
-        )
-        .await
+        self.send_command("Runtime.evaluate", json!({ "expression": expr, "awaitPromise": true }))
+            .await
     }
 
     pub async fn fill(&self, selector: &str, value: &str) -> Result<Value> {
@@ -375,13 +368,7 @@ impl CdpClient {
         .await
     }
 
-    pub async fn mouse_click(
-        &self,
-        x: f64,
-        y: f64,
-        button: &str,
-        click_count: i32,
-    ) -> Result<Value> {
+    pub async fn mouse_click(&self, x: f64, y: f64, button: &str, click_count: i32) -> Result<Value> {
         self.send_command(
             "Input.dispatchMouseEvent",
             json!({
@@ -481,7 +468,11 @@ impl CdpClient {
         self.send_command("Page.captureScreenshot", params).await
     }
 
-    pub async fn screenshot_element(&self, selector: &str, format: &str) -> Result<Value> {
+    pub async fn screenshot_element(
+        &self,
+        selector: &str,
+        format: &str,
+    ) -> Result<Value> {
         let clip_expr = format!(
             r#"
             (function() {{
@@ -493,7 +484,9 @@ impl CdpClient {
             "#,
             serde_json::to_string(selector)?
         );
-        let clip = self.evaluate(&clip_expr, false).await?;
+        let clip = self
+            .evaluate(&clip_expr, false)
+            .await?;
         let clip_val = clip
             .get("result")
             .and_then(|r| r.get("value"))
@@ -531,13 +524,7 @@ impl CdpClient {
         self.send_command("Network.getCookies", json!({})).await
     }
 
-    pub async fn set_cookie(
-        &self,
-        name: &str,
-        value: &str,
-        domain: Option<&str>,
-        path: Option<&str>,
-    ) -> Result<Value> {
+    pub async fn set_cookie(&self, name: &str, value: &str, domain: Option<&str>, path: Option<&str>) -> Result<Value> {
         let mut params = json!({
             "name": name,
             "value": value,
@@ -601,7 +588,10 @@ impl CdpClient {
 
     pub async fn create_target(&self, url: &str) -> Result<String> {
         let result = self
-            .send_command("Target.createTarget", json!({ "url": url }))
+            .send_command(
+                "Target.createTarget",
+                json!({ "url": url }),
+            )
             .await?;
         result
             .get("targetId")
@@ -622,12 +612,7 @@ impl CdpClient {
 
     // ── Viewport ───────────────────────────────────────────────
 
-    pub async fn set_viewport(
-        &self,
-        width: i64,
-        height: i64,
-        device_scale_factor: Option<f64>,
-    ) -> Result<Value> {
+    pub async fn set_viewport(&self, width: i64, height: i64, device_scale_factor: Option<f64>) -> Result<Value> {
         let mut params = json!({
             "width": width,
             "height": height,
@@ -675,14 +660,14 @@ impl CdpClient {
             "light" => json!({ "prefersColorScheme": "light" }),
             _ => json!({}),
         };
-        self.send_command("Emulation.setEmulatedMedia", prefers)
-            .await
+        self.send_command("Emulation.setEmulatedMedia", prefers).await
     }
 
     // ── PDF ─────────────────────────────────────────────────────
 
     pub async fn print_pdf(&self) -> Result<Value> {
-        self.send_command("Page.printToPDF", json!({})).await
+        self.send_command("Page.printToPDF", json!({}))
+            .await
     }
 
     // ── Select option ──────────────────────────────────────────
@@ -895,13 +880,19 @@ impl CdpClient {
 
     pub async fn hover(&self, selector: &str) -> Result<Value> {
         let box_result = self.get_bounding_box(selector).await?;
-        let x = box_result.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0)
+        let x = box_result
+            .get("x")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
             + box_result
                 .get("width")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0)
                 / 2.0;
-        let y = box_result.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0)
+        let y = box_result
+            .get("y")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
             + box_result
                 .get("height")
                 .and_then(|v| v.as_f64())
@@ -971,9 +962,17 @@ impl CdpClient {
                 .unwrap_or(0.0)
                 / 2.0;
         let to_x = to_box.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0)
-            + to_box.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) / 2.0;
+            + to_box
+                .get("width")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                / 2.0;
         let to_y = to_box.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0)
-            + to_box.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) / 2.0;
+            + to_box
+                .get("height")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                / 2.0;
 
         self.mouse_move(from_x, from_y).await?;
         self.mouse_click(from_x, from_y, "left", 1).await?;
@@ -1076,9 +1075,7 @@ impl CdpClient {
     // ── Snapshot (compact text-based DOM representation) ────────
 
     pub async fn snapshot_text(&self, compact: bool, max_depth: Option<i32>) -> Result<String> {
-        let depth_expr = max_depth
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| "Infinity".to_string());
+        let depth_expr = max_depth.map(|d| d.to_string()).unwrap_or_else(|| "Infinity".to_string());
         let compact_flag = if compact { "true" } else { "false" };
 
         let expr = format!(
@@ -1113,13 +1110,15 @@ impl CdpClient {
             compact = compact_flag,
             depth = depth_expr,
         );
-        self.evaluate(&expr, false).await.map(|v| {
-            v.get("result")
-                .and_then(|r| r.get("value"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        })
+        self.evaluate(&expr, false)
+            .await
+            .map(|v| {
+                v.get("result")
+                    .and_then(|r| r.get("value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            })
     }
 
     // ── Emulation ──────────────────────────────────────────────
@@ -1139,15 +1138,7 @@ impl CdpClient {
             .find(|(n, _, _, _)| n.to_lowercase() == name.to_lowercase());
         match device {
             Some((_, w, h, dsf)) => self.set_viewport(*w, *h, Some(*dsf)).await,
-            None => Err(anyhow!(
-                "Unknown device: {}. Available: {}",
-                name,
-                devices
-                    .iter()
-                    .map(|(n, _, _, _)| *n)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
+            None => Err(anyhow!("Unknown device: {}. Available: {}", name, devices.iter().map(|(n, _, _, _)| *n).collect::<Vec<_>>().join(", "))),
         }
     }
 
@@ -1157,11 +1148,7 @@ impl CdpClient {
         self.send_command("Network.enable", json!({})).await
     }
 
-    pub async fn intercept_request(
-        &self,
-        pattern: &str,
-        _response: Option<Value>,
-    ) -> Result<Value> {
+    pub async fn intercept_request(&self, pattern: &str, _response: Option<Value>) -> Result<Value> {
         self.send_command(
             "Fetch.enable",
             json!({
@@ -1224,29 +1211,10 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             r"C:\Program Files\Chromium\Application\chrome.exe",
         ];
         let home_candidates: Vec<std::path::PathBuf> = vec![
-            home.join("AppData")
-                .join("Local")
-                .join("Google")
-                .join("Chrome")
-                .join("Application")
-                .join("chrome.exe"),
-            home.join("AppData")
-                .join("Local")
-                .join("Microsoft")
-                .join("Edge")
-                .join("Application")
-                .join("msedge.exe"),
-            home.join("AppData")
-                .join("Local")
-                .join("BraveSoftware")
-                .join("Brave-Browser")
-                .join("Application")
-                .join("brave.exe"),
-            home.join("AppData")
-                .join("Local")
-                .join("Vivaldi")
-                .join("Application")
-                .join("vivaldi.exe"),
+            home.join("AppData").join("Local").join("Google").join("Chrome").join("Application").join("chrome.exe"),
+            home.join("AppData").join("Local").join("Microsoft").join("Edge").join("Application").join("msedge.exe"),
+            home.join("AppData").join("Local").join("BraveSoftware").join("Brave-Browser").join("Application").join("brave.exe"),
+            home.join("AppData").join("Local").join("Vivaldi").join("Application").join("vivaldi.exe"),
         ];
 
         for c in &candidates {
@@ -1260,9 +1228,7 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             }
         }
 
-        Err(anyhow!(
-            "No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."
-        ))
+        Err(anyhow!("No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."))
     }
 
     #[cfg(target_os = "macos")]
@@ -1292,9 +1258,7 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             }
         }
 
-        Err(anyhow!(
-            "No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."
-        ))
+        Err(anyhow!("No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."))
     }
 
     #[cfg(target_os = "linux")]
@@ -1338,16 +1302,12 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             }
         }
 
-        Err(anyhow!(
-            "No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."
-        ))
+        Err(anyhow!("No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        Err(anyhow!(
-            "Auto-launch not supported on this platform. Set browser.native_chrome_path."
-        ))
+        Err(anyhow!("Auto-launch not supported on this platform. Set browser.native_chrome_path."))
     }
 }
 
@@ -1371,16 +1331,14 @@ pub async fn launch_browser(
         .map(|s| s.to_string())
         .unwrap_or_else(|| default_profile_dir(workspace_dir));
 
-    std::fs::create_dir_all(&profile_dir).context("Failed to create browser profile directory")?;
+    std::fs::create_dir_all(&profile_dir)
+        .context("Failed to create browser profile directory")?;
 
     // Remove Chrome's SingletonLock so a leftover crashed/killed instance doesn't
     // prevent a fresh launch (Chrome refuses to start a second profile instance).
     let singleton_lock = std::path::Path::new(&profile_dir).join("SingletonLock");
     if singleton_lock.exists() {
-        tracing::warn!(
-            "Removing stale SingletonLock from browser profile: {}",
-            singleton_lock.display()
-        );
+        tracing::warn!("Removing stale SingletonLock from browser profile: {}", singleton_lock.display());
         let _ = std::fs::remove_file(&singleton_lock);
     }
     // Also remove the SingletonCookie / SingletonSocket on Linux/macOS
@@ -1413,19 +1371,15 @@ pub async fn launch_browser(
 
     if headless {
         cmd.arg("--headless=new")
-            // Required for reliable headless operation on Windows
-            .arg("--disable-gpu")
-            .arg("--disable-software-rasterizer")
-            .arg("--disable-dev-shm-usage");
+           // Required for reliable headless operation on Windows
+           .arg("--disable-gpu")
+           .arg("--disable-software-rasterizer")
+           .arg("--disable-dev-shm-usage");
     }
 
     cmd.arg("about:blank");
 
-    tracing::info!(
-        "Launching browser: {} with profile at {}",
-        browser_bin,
-        profile_dir
-    );
+    tracing::info!("Launching browser: {} with profile at {}", browser_bin, profile_dir);
 
     let child = cmd
         .stdout(std::process::Stdio::null())

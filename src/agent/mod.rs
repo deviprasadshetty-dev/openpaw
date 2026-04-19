@@ -52,10 +52,6 @@ pub struct Agent {
     pub tool_cache: crate::tools::cache::ToolCache,
     pub command_registry: commands::CommandRegistry,
     pub model_routing_config: ModelRoutingConfig,
-    pub task_models_summarize: Option<String>,
-    pub task_models_cron: Option<String>,
-    pub task_models_event: Option<String>,
-    pub task_models_heartbeat: Option<String>,
     pub cached_system_prompt: OnceLock<String>,
     pub last_tool_hash: u64,
     pub cost_tracker: Option<crate::cost::CostTracker>,
@@ -307,7 +303,6 @@ impl Agent {
         tools: Vec<Arc<dyn Tool>>,
         model_name: String,
         workspace_dir: String,
-        config: Option<&crate::config::Config>,
     ) -> Self {
         // Resolve token limits using new modules
         let token_limit = context_tokens_resolver::resolve_context_tokens(None, &model_name);
@@ -334,13 +329,9 @@ impl Agent {
             tool_cache: crate::tools::cache::ToolCache::new(300), // Default 5 min TTL
             command_registry: commands::CommandRegistry::new(),
             model_routing_config: ModelRoutingConfig {
-                cheap_model: config.and_then(|c| c.task_models.greeting.clone()).unwrap_or(model_name.clone()), // Default to same, will be tuned by config
+                cheap_model: model_name.clone(), // Default to same, will be tuned by config
                 default_model: model_name,
             },
-            task_models_summarize: config.and_then(|c| c.task_models.summarize.clone()),
-            task_models_cron: config.and_then(|c| c.task_models.cron.clone()),
-            task_models_event: config.and_then(|c| c.task_models.event.clone()),
-            task_models_heartbeat: config.and_then(|c| c.task_models.heartbeat.clone()),
             cached_system_prompt: OnceLock::new(),
             last_tool_hash: 0,
             cost_tracker: Some(crate::cost::CostTracker::init(
@@ -483,18 +474,10 @@ impl Agent {
             return Ok(slash_response);
         }
 
-        // Task-specific model override for background jobs
-        let model_to_use = if context.sender_id == "cron" && self.task_models_cron.is_some() {
-            self.task_models_cron.clone().unwrap()
-        } else if context.sender_id == "event_system" && self.task_models_event.is_some() {
-            self.task_models_event.clone().unwrap()
-        } else if context.sender_id == "heartbeat" && self.task_models_heartbeat.is_some() {
-            self.task_models_heartbeat.clone().unwrap()
-        } else {
-            // QW-7: Cheap model routing for greetings/simple tasks
+        // QW-7: Cheap model routing for greetings/simple tasks
+        let model_to_use =
             model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
-                .to_string()
-        };
+                .to_string();
 
         // R-1 & QW-2: Memory optimizations
         if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
@@ -614,7 +597,6 @@ impl Agent {
                 token_limit: self.token_limit,
                 max_history_messages: self.max_history_messages as u32,
                 workspace_dir: Some(self.workspace_dir.clone()),
-                task_models_summarize: self.task_models_summarize.clone(),
             };
 
             let _ = auto_compact_history(
@@ -663,9 +645,8 @@ impl Agent {
                 // BUG-4 FIX: Clone the live history so the summary uses all current context.
                 // We clone to satisfy Rust's borrow rules (&mut self + &self.history conflict).
                 let history_for_summary = self.history.clone();
-                let exhaust_model = self.task_models_summarize.clone().unwrap_or(model_to_use.clone());
                 let summary = self
-                    .iterations_exhausted_summary(&history_for_summary, &exhaust_model)
+                    .iterations_exhausted_summary(&history_for_summary, &model_to_use)
                     .await?;
                 if !accumulated_text.is_empty() {
                     return Ok(format!("{}\n\n{}", accumulated_text.trim(), summary));
@@ -910,11 +891,7 @@ impl Agent {
             }
 
             if !blocked_tools.is_empty() {
-                let blocked_names: Vec<String> = blocked_tools
-                    .into_iter()
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
+                let blocked_names: Vec<String> = blocked_tools.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
                 warn!(
                     "Circuit breaker: tools {:?} called {} times with same args, stopping retry loop",
                     blocked_names, MAX_SAME_TOOL_RETRIES
@@ -1288,7 +1265,6 @@ impl Agent {
                 token_limit: self.token_limit,
                 max_history_messages: self.max_history_messages as u32,
                 workspace_dir: Some(self.workspace_dir.clone()),
-                task_models_summarize: self.task_models_summarize.clone(),
             };
             let _ = auto_compact_history(
                 &mut self.history,
@@ -1332,9 +1308,8 @@ impl Agent {
                 // BUG-4 FIX: Clone live history to satisfy borrow checker
                 // (&mut self cannot coexist with &self.history in a method call).
                 let history_for_summary = self.history.clone();
-                let exhaust_model = self.task_models_summarize.clone().unwrap_or(model_to_use.clone());
                 return self
-                    .iterations_exhausted_summary(&history_for_summary, &exhaust_model)
+                    .iterations_exhausted_summary(&history_for_summary, &model_to_use)
                     .await;
             }
 
@@ -1561,11 +1536,7 @@ impl Agent {
             }
 
             if !blocked_tools_s.is_empty() {
-                let blocked_names_s: Vec<String> = blocked_tools_s
-                    .into_iter()
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
+                let blocked_names_s: Vec<String> = blocked_tools_s.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
                 warn!(
                     "Circuit breaker: tools {:?} called {} times with same args, stopping retry loop",
                     blocked_names_s, MAX_SAME_TOOL_RETRIES

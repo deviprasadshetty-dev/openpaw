@@ -41,10 +41,10 @@ impl ToolCache {
 
     fn tool_specific_ttl(&self, tool_name: &str) -> u64 {
         match tool_name {
-            "memory_recall" => 600,      // 10 min
-            "web_search" => 1800,        // 30 min
-            "file_read" => 60,           // 1 min
-            "shell" => 30,               // 30 sec (commands may have side effects)
+            "memory_recall" => 600, // 10 min
+            "web_search" => 1800,   // 30 min
+            "file_read" => 60,      // 1 min
+            "shell" => 30,          // 30 sec (commands may have side effects)
             _ => self.ttl_secs.max(300), // Default 5 min
         }
     }

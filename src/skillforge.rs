@@ -217,9 +217,7 @@ impl SkillForge {
             .await?;
 
         if response.status() == reqwest::StatusCode::FORBIDDEN {
-            return Err(anyhow::anyhow!(
-                "GitHub API rate limit exceeded. Please try again later."
-            ));
+            return Err(anyhow::anyhow!("GitHub API rate limit exceeded. Please try again later."));
         }
 
         if !response.status().is_success() {

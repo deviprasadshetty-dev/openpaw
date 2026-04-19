@@ -72,14 +72,13 @@ impl Tool for HttpRequestTool {
         };
 
         if let Some(h_val) = headers_json
-            && let Some(h_map) = h_val.as_object()
-        {
-            for (k, v) in h_map {
-                if let Some(v_str) = v.as_str() {
-                    req = req.header(k, v_str);
+            && let Some(h_map) = h_val.as_object() {
+                for (k, v) in h_map {
+                    if let Some(v_str) = v.as_str() {
+                        req = req.header(k, v_str);
+                    }
                 }
             }
-        }
 
         if let Some(b) = body_str {
             req = req.body(b.to_string());

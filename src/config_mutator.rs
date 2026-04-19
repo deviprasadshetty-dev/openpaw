@@ -19,11 +19,7 @@ pub struct MutationResult {
     pub backup_path: Option<String>,
 }
 
-pub fn mutate_config(
-    _action: MutationAction,
-    path: &str,
-    _value: Option<&str>,
-) -> Result<MutationResult> {
+pub fn mutate_config(_action: MutationAction, path: &str, _value: Option<&str>) -> Result<MutationResult> {
     // Stub implementation
     Ok(MutationResult {
         path: path.to_string(),

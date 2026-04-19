@@ -65,10 +65,12 @@ impl Tool for TaskProgressTool {
 
         let full_msg = format!("⏳ Progress{}: {}", step_info, message);
 
-        let outbound =
-            crate::bus::make_outbound_chunk(&context.channel, &context.chat_id, &full_msg);
+        let outbound = crate::bus::make_outbound_chunk(&context.channel, &context.chat_id, &full_msg);
         let _ = self.bus.publish_outbound(outbound);
 
-        Ok(ToolResult::ok(format!("Progress update sent: {}", message)))
+        Ok(ToolResult::ok(format!(
+            "Progress update sent: {}",
+            message
+        )))
     }
 }

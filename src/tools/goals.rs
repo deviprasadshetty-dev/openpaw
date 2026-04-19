@@ -1,5 +1,5 @@
-use crate::goals::{GoalManager, GoalStatus};
 use crate::tools::{Tool, ToolContext, ToolResult};
+use crate::goals::{GoalManager, GoalStatus};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -34,8 +34,7 @@ impl Tool for GoalAddTool {
                 }
             },
             "required": ["description"]
-        }"#
-        .to_string()
+        }"#.to_string()
     }
 
     async fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
@@ -45,10 +44,7 @@ impl Tool for GoalAddTool {
         let priority = arguments["priority"].as_u64().unwrap_or(3) as u8;
 
         let id = self.manager.add_goal(description, priority);
-        Ok(ToolResult::ok(format!(
-            "Goal added successfully with ID: {}",
-            id
-        )))
+        Ok(ToolResult::ok(format!("Goal added successfully with ID: {}", id)))
     }
 }
 
@@ -70,8 +66,7 @@ impl Tool for GoalListTool {
         r#"{
             "type": "object",
             "properties": {}
-        }"#
-        .to_string()
+        }"#.to_string()
     }
 
     async fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
@@ -84,11 +79,7 @@ impl Tool for GoalListTool {
         for goal in goals {
             output.push_str(&format!(
                 "- [{}] (ID: {}) {} (Status: {:?}, Priority: {})\n",
-                if matches!(goal.status, GoalStatus::Completed) {
-                    "x"
-                } else {
-                    " "
-                },
+                if matches!(goal.status, GoalStatus::Completed) { "x" } else { " " },
                 goal.id,
                 goal.description,
                 goal.status,
@@ -135,15 +126,14 @@ impl Tool for GoalUpdateTool {
                 }
             },
             "required": ["id"]
-        }"#
-        .to_string()
+        }"#.to_string()
     }
 
     async fn execute(&self, arguments: Value, _context: &ToolContext) -> Result<ToolResult> {
         let id = arguments["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing ID"))?;
-
+        
         let status = arguments["status"].as_str().and_then(|s| match s {
             "Todo" => Some(GoalStatus::Todo),
             "InProgress" => Some(GoalStatus::InProgress),

@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use reqwest::header;
 use serde::Deserialize;
 use std::env;
@@ -105,8 +105,7 @@ impl Update {
             Ok(InstallMethod::Nix)
         } else if path_str.contains("/homebrew/") || path_str.contains("/Cellar/") {
             Ok(InstallMethod::Homebrew)
-        } else if path_str == "/openpaw" {
-            // Assuming Docker path
+        } else if path_str == "/openpaw" { // Assuming Docker path
             Ok(InstallMethod::Docker)
         } else if path_str.contains("target/release") || path_str.contains("target/debug") {
             Ok(InstallMethod::Dev)
@@ -138,10 +137,7 @@ impl Update {
             .send()?;
 
         if !response.status().is_success() {
-            return Err(anyhow!(
-                "Failed to fetch release info: {}",
-                response.status()
-            ));
+            return Err(anyhow!("Failed to fetch release info: {}", response.status()));
         }
 
         let info: ReleaseInfo = response.json()?;

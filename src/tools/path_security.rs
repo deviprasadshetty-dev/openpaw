@@ -2,31 +2,14 @@ use std::path::{Component, Path};
 
 #[cfg(unix)]
 const SYSTEM_BLOCKED_PREFIXES: &[&str] = &[
-    "/System",
-    "/Library",
-    "/bin",
-    "/sbin",
-    "/usr/bin",
-    "/usr/sbin",
-    "/usr/lib",
-    "/usr/libexec",
-    "/etc",
-    "/private/etc",
-    "/private/var",
-    "/dev",
-    "/boot",
-    "/proc",
-    "/sys",
+    "/System", "/Library", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/libexec",
+    "/etc", "/private/etc", "/private/var", "/dev", "/boot", "/proc", "/sys",
 ];
 
 #[cfg(windows)]
 const SYSTEM_BLOCKED_PREFIXES: &[&str] = &[
-    "C:\\Windows",
-    "C:\\Program Files",
-    "C:\\Program Files (x86)",
-    "C:\\ProgramData",
-    "C:\\System32",
-    "C:\\Recovery",
+    "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\ProgramData",
+    "C:\\System32", "C:\\Recovery",
 ];
 
 pub fn is_path_safe(path: &str) -> bool {
@@ -34,17 +17,17 @@ pub fn is_path_safe(path: &str) -> bool {
         return false;
     }
     let p = Path::new(path);
-
+    
     // Check for absolute paths if the tool expects relative workspace paths
     // But sometimes absolute paths are okay if they are within allowed directories
     // Here we just check for basic syntax safety
-
+    
     for component in p.components() {
         if component == Component::ParentDir {
             return false; // ".." is strictly forbidden in input
         }
     }
-
+    
     true
 }
 
@@ -100,10 +83,9 @@ pub fn is_resolved_path_allowed(
     // 4. Check Allowed External Paths
     for allowed in additional_allowed_paths {
         if let Ok(allowed_canon) = std::fs::canonicalize(allowed)
-            && canonical_target.starts_with(&allowed_canon)
-        {
-            return true;
-        }
+            && canonical_target.starts_with(&allowed_canon) {
+                return true;
+            }
     }
 
     false

@@ -129,10 +129,7 @@ impl Observer for LogObserver {
             }
             ObserverEvent::TurnComplete => info!("turn.complete"),
             ObserverEvent::ChannelMessage { channel, direction } => {
-                info!(
-                    "channel.message channel={} direction={}",
-                    channel, direction
-                )
+                info!("channel.message channel={} direction={}", channel, direction)
             }
             ObserverEvent::HeartbeatTick => info!("heartbeat.tick"),
             ObserverEvent::Error { component, message } => {

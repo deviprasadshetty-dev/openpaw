@@ -31,9 +31,10 @@ impl CliChannel {
                     Ok(0) => break, // EOF
                     Ok(_) => {
                         let trimmed = buffer.trim().to_string();
-                        if !trimmed.is_empty() && tx.send(trimmed).is_err() {
-                            break; // Channel closed
-                        }
+                        if !trimmed.is_empty()
+                            && tx.send(trimmed).is_err() {
+                                break; // Channel closed
+                            }
                     }
                     Err(e) => {
                         error!("Error reading stdin: {}", e);

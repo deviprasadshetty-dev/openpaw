@@ -34,7 +34,10 @@ pub struct ChannelManager {
 }
 
 impl ChannelManager {
-    pub fn new(config: Arc<Config>, registry: Arc<ChannelRegistry>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        registry: Arc<ChannelRegistry>,
+    ) -> Self {
         Self {
             config,
             registry,
@@ -54,7 +57,7 @@ impl ChannelManager {
 
     // fn polling_last_activity(state: &PollingState) -> i64 { ... }
     // fn request_polling_stop(state: &PollingState) { ... }
-
+    
     // fn spawn_polling_thread(&mut self, entry_idx: usize) -> Result<()> {
     //     // ...
     //     Ok(())
@@ -63,6 +66,8 @@ impl ChannelManager {
     // fn stop_polling_thread(&mut self, entry_idx: usize) {
     //     // ...
     // }
+
+
 
     // fn listener_type_for_field(field_name: &str) -> ListenerType {
     //     let meta = channel_catalog::find_by_key(field_name).expect("missing channel metadata");

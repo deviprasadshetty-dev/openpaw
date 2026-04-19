@@ -61,12 +61,9 @@ async fn search_via_gemini_cli(query: &str, count: u64) -> Result<ToolResult> {
 
     let args = vec![
         "gemini",
-        "--approval-mode",
-        "yolo",
-        "--output-format",
-        "text",
-        "-p",
-        &prompt,
+        "--approval-mode", "yolo",
+        "--output-format", "text",
+        "-p", &prompt,
     ];
     let opts = process_util::RunOptions {
         timeout_ms: 60_000,
@@ -194,10 +191,12 @@ impl Tool for WebSearchTool {
                 "duckduckgo" | "ddg" => self.search_duckduckgo(query, count).await,
                 "brave" => self.search_brave(query, count).await,
                 "searxng" => self.search_searxng(query).await,
-                _ => Ok(ToolResult::fail(format!(
-                    "Provider '{}' not implemented. Available: gemini_cli, duckduckgo(ddg), brave, searxng",
-                    prov
-                ))),
+                _ => {
+                    Ok(ToolResult::fail(format!(
+                        "Provider '{}' not implemented. Available: gemini_cli, duckduckgo(ddg), brave, searxng",
+                        prov
+                    )))
+                }
             };
 
             match result {

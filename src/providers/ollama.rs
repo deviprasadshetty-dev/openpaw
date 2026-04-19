@@ -1,8 +1,8 @@
 use crate::providers::{
     ChatRequest, ChatResponse, FunctionCall, Provider, StreamCallback, TokenUsage, ToolCall,
 };
-use anyhow::Result;
 use base64::Engine;
+use anyhow::Result;
 use reqwest::blocking::Client;
 use serde_json::json;
 use std::time::Duration;
@@ -30,17 +30,10 @@ impl OllamaProvider {
     pub fn is_available(&self) -> bool {
         // Try to hit the tags endpoint or just the base
         let tags_url = self.base_url.replace("/v1", "/api/tags");
-        self.client
-            .get(&tags_url)
-            .timeout(Duration::from_secs(2))
-            .send()
-            .is_ok()
+        self.client.get(&tags_url).timeout(Duration::from_secs(2)).send().is_ok()
     }
 
-    fn prepare_messages(
-        &self,
-        messages: &[crate::providers::ChatMessage],
-    ) -> Vec<serde_json::Value> {
+    fn prepare_messages(&self, messages: &[crate::providers::ChatMessage]) -> Vec<serde_json::Value> {
         let mut out = Vec::new();
         for msg in messages {
             let mut msg_json = json!({
@@ -51,9 +44,7 @@ impl OllamaProvider {
                 let parts_json: Vec<serde_json::Value> = parts
                     .iter()
                     .map(|p| match p {
-                        crate::providers::ContentPart::Text(t) => {
-                            json!({"type": "text", "text": t})
-                        }
+                        crate::providers::ContentPart::Text(t) => json!({"type": "text", "text": t}),
                         crate::providers::ContentPart::ImageBase64 { data, media_type } => json!({
                             "type": "image_url",
                             "image_url": { "url": format!("data:{};base64,{}", media_type, data) }
@@ -97,23 +88,22 @@ impl Provider for OllamaProvider {
             }
 
             if let Some(tools) = request.tools
-                && !tools.is_empty()
-            {
-                let tool_defs: Vec<_> = tools
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": t.name,
-                                "description": t.description,
-                                "parameters": t.parameters
-                            }
+                && !tools.is_empty() {
+                    let tool_defs: Vec<_> = tools
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "type": "function",
+                                "function": {
+                                    "name": t.name,
+                                    "description": t.description,
+                                    "parameters": t.parameters
+                                }
+                            })
                         })
-                    })
-                    .collect();
-                obj.insert("tools".to_string(), json!(tool_defs));
-            }
+                        .collect();
+                    obj.insert("tools".to_string(), json!(tool_defs));
+                }
         }
 
         let res = self
@@ -149,11 +139,7 @@ impl Provider for OllamaProvider {
                 tool_calls.push(ToolCall {
                     id,
                     kind,
-                    function: FunctionCall {
-                        name,
-                        arguments,
-                        thought_signature: None,
-                    },
+                    function: FunctionCall { name, arguments, thought_signature: None },
                 });
             }
         }
@@ -202,10 +188,9 @@ impl Provider for OllamaProvider {
         });
 
         if let Some(obj) = body.as_object_mut()
-            && let Some(mt) = request.max_tokens
-        {
-            obj.insert("max_tokens".to_string(), json!(mt));
-        }
+            && let Some(mt) = request.max_tokens {
+                obj.insert("max_tokens".to_string(), json!(mt));
+            }
 
         let res = self
             .client
@@ -232,53 +217,52 @@ impl Provider for OllamaProvider {
             }
 
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data)
-                && let Some(delta) = parsed["choices"][0]["delta"].as_object()
-            {
-                if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
-                    full_content.push_str(text);
-                    callback(StreamChunk::Delta(text.to_string()));
-                }
+                && let Some(delta) = parsed["choices"][0]["delta"].as_object() {
+                    if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
+                        full_content.push_str(text);
+                        callback(StreamChunk::Delta(text.to_string()));
+                    }
 
-                if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
-                    for tc_delta in tcs {
-                        let idx = tc_delta["index"].as_u64().unwrap_or(0) as usize;
-                        let id = tc_delta["id"].as_str().map(|s| s.to_string());
-                        let name = tc_delta["function"]["name"].as_str().map(|s| s.to_string());
-                        let args_delta = tc_delta["function"]["arguments"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
+                    if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                        for tc_delta in tcs {
+                            let idx = tc_delta["index"].as_u64().unwrap_or(0) as usize;
+                            let id = tc_delta["id"].as_str().map(|s| s.to_string());
+                            let name = tc_delta["function"]["name"].as_str().map(|s| s.to_string());
+                            let args_delta = tc_delta["function"]["arguments"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string();
 
-                        while tool_calls.len() <= idx {
-                            tool_calls.push(ToolCall {
-                                id: String::new(),
-                                kind: "function".to_string(),
-                                function: FunctionCall {
-                                    name: String::new(),
-                                    arguments: String::new(),
-                                    thought_signature: None,
-                                },
+                            while tool_calls.len() <= idx {
+                                tool_calls.push(ToolCall {
+                                    id: String::new(),
+                                    kind: "function".to_string(),
+                                    function: FunctionCall {
+                                        name: String::new(),
+                                        arguments: String::new(),
+                                        thought_signature: None,
+                                    },
+                                });
+                                tc_arg_bufs.push(String::new());
+                            }
+
+                            if let Some(ref id_val) = id {
+                                tool_calls[idx].id = id_val.clone();
+                            }
+                            if let Some(ref name_val) = name {
+                                tool_calls[idx].function.name = name_val.clone();
+                            }
+                            tc_arg_bufs[idx].push_str(&args_delta);
+
+                            callback(StreamChunk::ToolCallDelta {
+                                index: idx,
+                                id,
+                                name,
+                                arguments_delta: args_delta,
                             });
-                            tc_arg_bufs.push(String::new());
                         }
-
-                        if let Some(ref id_val) = id {
-                            tool_calls[idx].id = id_val.clone();
-                        }
-                        if let Some(ref name_val) = name {
-                            tool_calls[idx].function.name = name_val.clone();
-                        }
-                        tc_arg_bufs[idx].push_str(&args_delta);
-
-                        callback(StreamChunk::ToolCallDelta {
-                            index: idx,
-                            id,
-                            name,
-                            arguments_delta: args_delta,
-                        });
                     }
                 }
-            }
         }
 
         for (i, buf) in tc_arg_bufs.into_iter().enumerate() {
@@ -287,11 +271,7 @@ impl Provider for OllamaProvider {
             }
         }
 
-        let prompt_tokens: u32 = request
-            .messages
-            .iter()
-            .map(|m| m.content.len() as u32 / 4)
-            .sum();
+        let prompt_tokens: u32 = request.messages.iter().map(|m| m.content.len() as u32 / 4).sum();
         let completion_tokens = (full_content.len() as u32).div_ceil(4);
         let usage = TokenUsage {
             prompt_tokens,
@@ -302,11 +282,7 @@ impl Provider for OllamaProvider {
         callback(StreamChunk::Done(usage.clone()));
 
         Ok(ChatResponse {
-            content: if full_content.is_empty() {
-                None
-            } else {
-                Some(full_content)
-            },
+            content: if full_content.is_empty() { None } else { Some(full_content) },
             tool_calls,
             usage,
             model: request.model.to_string(),

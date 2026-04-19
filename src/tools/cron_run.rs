@@ -29,10 +29,7 @@ impl Tool for CronRunTool {
         };
 
         if let Err(e) = self.cron.run_job(id).await {
-            Ok(ToolResult::fail(format!(
-                "Failed to trigger cron job {}: {}",
-                id, e
-            )))
+            Ok(ToolResult::fail(format!("Failed to trigger cron job {}: {}", id, e)))
         } else {
             Ok(ToolResult::ok(format!("Triggered cron job {}", id)))
         }

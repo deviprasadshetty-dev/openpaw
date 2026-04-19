@@ -75,10 +75,9 @@ impl MemoryStore for LruMemory {
         } else {
             // Evict if at capacity
             if g.map.len() >= self.capacity
-                && let Some(old) = g.order.pop_back()
-            {
-                g.map.remove(&old);
-            }
+                && let Some(old) = g.order.pop_back() {
+                    g.map.remove(&old);
+                }
             g.map.insert(
                 key.to_string(),
                 Entry {
@@ -107,7 +106,8 @@ impl MemoryStore for LruMemory {
             .map
             .values()
             .filter(|e| {
-                let session_ok = session_id.is_none_or(|sid| e.session_id.as_deref() == Some(sid));
+                let session_ok =
+                    session_id.is_none_or(|sid| e.session_id.as_deref() == Some(sid));
                 session_ok && e.content.to_lowercase().contains(&q)
             })
             .map(to_entry)

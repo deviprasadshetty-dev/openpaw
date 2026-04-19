@@ -82,18 +82,13 @@ impl PlanManager {
         }
 
         // Kahn's algorithm
-        let mut in_degree: HashMap<&str, usize> =
-            tasks.iter().map(|t| (t.id.as_str(), 0)).collect();
-        let mut dependents: HashMap<&str, Vec<&str>> =
-            tasks.iter().map(|t| (t.id.as_str(), vec![])).collect();
+        let mut in_degree: HashMap<&str, usize> = tasks.iter().map(|t| (t.id.as_str(), 0)).collect();
+        let mut dependents: HashMap<&str, Vec<&str>> = tasks.iter().map(|t| (t.id.as_str(), vec![])).collect();
 
         for task in tasks {
             for dep in &task.depends_on {
                 *in_degree.get_mut(task.id.as_str()).unwrap() += 1;
-                dependents
-                    .get_mut(dep.as_str())
-                    .unwrap()
-                    .push(task.id.as_str());
+                dependents.get_mut(dep.as_str()).unwrap().push(task.id.as_str());
             }
         }
 
@@ -147,8 +142,10 @@ impl PlanManager {
         *id_guard += 1;
         drop(id_guard);
 
-        let task_lookup: HashMap<String, PlanTask> =
-            tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
+        let task_lookup: HashMap<String, PlanTask> = tasks
+            .into_iter()
+            .map(|t| (t.id.clone(), t))
+            .collect();
 
         let exec = PlanExecution {
             plan_id,
@@ -180,18 +177,12 @@ impl PlanManager {
                 "📋 Plan {} started: \"{}\"\n{} tasks in {} batch(es)",
                 plan_id, goal_str, total_tasks, total_batches
             );
-            let _ =
-                bus.publish_outbound(make_outbound(&origin_channel, &origin_chat_id, &start_msg));
+            let _ = bus.publish_outbound(make_outbound(&origin_channel, &origin_chat_id, &start_msg));
 
             let mut any_failed = false;
 
             'outer: for (batch_idx, batch) in batches.iter().enumerate() {
-                info!(
-                    "Plan {}: executing batch {}/{}",
-                    plan_id,
-                    batch_idx + 1,
-                    total_batches
-                );
+                info!("Plan {}: executing batch {}/{}", plan_id, batch_idx + 1, total_batches);
 
                 let batch_msg = format!(
                     "📋 Plan {} — batch {}/{}: starting {}",
@@ -200,11 +191,7 @@ impl PlanManager {
                     total_batches,
                     batch.join(", ")
                 );
-                let _ = bus.publish_outbound(make_outbound(
-                    &origin_channel,
-                    &origin_chat_id,
-                    &batch_msg,
-                ));
+                let _ = bus.publish_outbound(make_outbound(&origin_channel, &origin_chat_id, &batch_msg));
 
                 // Spawn all tasks in this batch
                 let mut batch_spawn: Vec<(String, u64)> = Vec::new();
@@ -235,10 +222,7 @@ impl PlanManager {
                             batch_spawn.push((task_id.clone(), sub_id));
                         }
                         Err(e) => {
-                            warn!(
-                                "Plan {}: failed to spawn task '{}': {}",
-                                plan_id, task_id, e
-                            );
+                            warn!("Plan {}: failed to spawn task '{}': {}", plan_id, task_id, e);
                             any_failed = true;
                         }
                     }
@@ -252,7 +236,9 @@ impl PlanManager {
                         matches!(
                             sm.get_task_status(*sub_id),
                             Some(
-                                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                                TaskStatus::Completed
+                                    | TaskStatus::Failed
+                                    | TaskStatus::Cancelled
                             )
                         )
                     });
@@ -260,7 +246,9 @@ impl PlanManager {
                     if all_done {
                         // Record outcomes
                         for (task_id, sub_id) in &batch_spawn {
-                            let outcome = sm.get_task_status(*sub_id).unwrap_or(TaskStatus::Failed);
+                            let outcome = sm
+                                .get_task_status(*sub_id)
+                                .unwrap_or(TaskStatus::Failed);
                             if outcome == TaskStatus::Failed || outcome == TaskStatus::Cancelled {
                                 any_failed = true;
                             }
@@ -301,8 +289,7 @@ impl PlanManager {
                     plan_id, goal_str
                 )
             };
-            let _ =
-                bus.publish_outbound(make_outbound(&origin_channel, &origin_chat_id, &final_msg));
+            let _ = bus.publish_outbound(make_outbound(&origin_channel, &origin_chat_id, &final_msg));
 
             if let Ok(mut guard) = plans_clone.lock() {
                 if let Some(plan) = guard.get_mut(&plan_id) {

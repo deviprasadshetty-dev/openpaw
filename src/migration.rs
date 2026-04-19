@@ -1,5 +1,5 @@
 use crate::config::Config;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -51,7 +51,7 @@ impl Migration {
         _policy: MergePolicy,
     ) -> Result<MigrationStats> {
         let source = Self::resolve_openclaw_workspace(source_path)?;
-
+        
         // Verify source exists
         if !source.exists() || !source.is_dir() {
             return Err(anyhow!("Source not found or not a directory: {:?}", source));
@@ -77,8 +77,8 @@ impl Migration {
         }
 
         // if !entries.is_empty() {
-        // Create backup
-        // Import entries
+            // Create backup
+            // Import entries
         // }
 
         // stats.config_migrated = Self::migrate_openclaw_config(&source, &config.config_path, false)?;
@@ -90,20 +90,17 @@ impl Migration {
         if let Some(path) = source_path {
             return Ok(Path::new(path).canonicalize()?);
         }
-
+        
         // Default locations check (e.g. ~/.openclaw)
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .or_else(|_| std::env::var("USERPROFILE").map(PathBuf::from))
-            .map_err(|_| anyhow!("No home directory"))?;
+        let home = std::env::var("HOME").map(PathBuf::from).or_else(|_| 
+            std::env::var("USERPROFILE").map(PathBuf::from)
+        ).map_err(|_| anyhow!("No home directory"))?;
 
         let default_path = home.join(".openclaw");
         if default_path.exists() {
             Ok(default_path)
         } else {
-            Err(anyhow!(
-                "No source path provided and default ~/.openclaw not found"
-            ))
+            Err(anyhow!("No source path provided and default ~/.openclaw not found"))
         }
     }
 }

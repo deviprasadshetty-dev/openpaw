@@ -28,27 +28,9 @@ pub struct ChannelMeta {
 }
 
 pub const KNOWN_CHANNELS: &[ChannelMeta] = &[
-    ChannelMeta {
-        id: ChannelId::Cli,
-        key: "cli",
-        label: "CLI",
-        configured_message: "CLI enabled",
-        listener_mode: ListenerMode::None,
-    },
-    ChannelMeta {
-        id: ChannelId::Telegram,
-        key: "telegram",
-        label: "Telegram",
-        configured_message: "Telegram configured",
-        listener_mode: ListenerMode::Polling,
-    },
-    ChannelMeta {
-        id: ChannelId::Webhook,
-        key: "webhook",
-        label: "Webhook",
-        configured_message: "Webhook configured",
-        listener_mode: ListenerMode::None,
-    },
+    ChannelMeta { id: ChannelId::Cli, key: "cli", label: "CLI", configured_message: "CLI enabled", listener_mode: ListenerMode::None },
+    ChannelMeta { id: ChannelId::Telegram, key: "telegram", label: "Telegram", configured_message: "Telegram configured", listener_mode: ListenerMode::Polling },
+    ChannelMeta { id: ChannelId::Webhook, key: "webhook", label: "Webhook", configured_message: "Webhook configured", listener_mode: ListenerMode::None },
 ];
 
 // Placeholder for build options
@@ -103,3 +85,4 @@ pub fn requires_runtime(channel_id: ChannelId) -> bool {
         false
     }
 }
+

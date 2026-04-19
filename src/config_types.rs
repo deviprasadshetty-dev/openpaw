@@ -459,24 +459,6 @@ fn default_memory_backend() -> String {
     "markdown".to_string()
 }
 
-// ── Task Models config ──────────────────────────────────────────
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct TaskModelsConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cron: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub greeting: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub heartbeat: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subagent: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summarize: Option<String>,
-}
-
 // ── Channels configs ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

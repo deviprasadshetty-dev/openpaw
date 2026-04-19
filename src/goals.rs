@@ -91,20 +91,11 @@ impl GoalManager {
     pub fn list_goals(&self) -> Vec<Goal> {
         let guard = self.goals.lock().unwrap();
         let mut list: Vec<Goal> = guard.values().cloned().collect();
-        list.sort_by(|a, b| {
-            a.priority
-                .cmp(&b.priority)
-                .then(b.created_at.cmp(&a.created_at))
-        });
+        list.sort_by(|a, b| a.priority.cmp(&b.priority).then(b.created_at.cmp(&a.created_at)));
         list
     }
 
-    pub fn update_goal(
-        &self,
-        id: &str,
-        status: Option<GoalStatus>,
-        progress: Option<String>,
-    ) -> Result<()> {
+    pub fn update_goal(&self, id: &str, status: Option<GoalStatus>, progress: Option<String>) -> Result<()> {
         let mut guard = self.goals.lock().unwrap();
         if let Some(goal) = guard.get_mut(id) {
             if let Some(s) = status {

@@ -6,177 +6,51 @@ struct MaxTokensEntry {
 }
 
 const MODEL_MAX_TOKENS: &[MaxTokensEntry] = &[
-    MaxTokensEntry {
-        key: "claude-opus-4-6",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "claude-opus-4.6",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "claude-sonnet-4-6",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "claude-sonnet-4.6",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "claude-haiku-4-5",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-5.2",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-5.2-codex",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-4.5-preview",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-4.1",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-4.1-mini",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-4o",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gpt-4o-mini",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "o3-mini",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gemini-2.5-pro",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gemini-2.5-flash",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gemini-2.0-flash",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "deepseek-v3.2",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "deepseek-chat",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "deepseek-reasoner",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "llama-4-70b-instruct",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "k2p5",
-        tokens: 32_768,
-    },
+    MaxTokensEntry { key: "claude-opus-4-6", tokens: 8192 },
+    MaxTokensEntry { key: "claude-opus-4.6", tokens: 8192 },
+    MaxTokensEntry { key: "claude-sonnet-4-6", tokens: 8192 },
+    MaxTokensEntry { key: "claude-sonnet-4.6", tokens: 8192 },
+    MaxTokensEntry { key: "claude-haiku-4-5", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-5.2", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-5.2-codex", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-4.5-preview", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-4.1", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-4.1-mini", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-4o", tokens: 8192 },
+    MaxTokensEntry { key: "gpt-4o-mini", tokens: 8192 },
+    MaxTokensEntry { key: "o3-mini", tokens: 8192 },
+    MaxTokensEntry { key: "gemini-2.5-pro", tokens: 8192 },
+    MaxTokensEntry { key: "gemini-2.5-flash", tokens: 8192 },
+    MaxTokensEntry { key: "gemini-2.0-flash", tokens: 8192 },
+    MaxTokensEntry { key: "deepseek-v3.2", tokens: 8192 },
+    MaxTokensEntry { key: "deepseek-chat", tokens: 8192 },
+    MaxTokensEntry { key: "deepseek-reasoner", tokens: 8192 },
+    MaxTokensEntry { key: "llama-4-70b-instruct", tokens: 8192 },
+    MaxTokensEntry { key: "k2p5", tokens: 32_768 },
 ];
 
 const PROVIDER_MAX_TOKENS: &[MaxTokensEntry] = &[
-    MaxTokensEntry {
-        key: "anthropic",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "openai",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "google",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "gemini",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "openrouter",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "minimax",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "xiaomi",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "moonshot",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "kimi",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "kimi-coding",
-        tokens: 32_768,
-    },
-    MaxTokensEntry {
-        key: "qwen",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "qwen-portal",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "ollama",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "lmstudio",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "vllm",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "github-copilot",
-        tokens: 8192,
-    },
-    MaxTokensEntry {
-        key: "qianfan",
-        tokens: 32_768,
-    },
-    MaxTokensEntry {
-        key: "nvidia",
-        tokens: 4096,
-    },
-    MaxTokensEntry {
-        key: "byteplus",
-        tokens: 4096,
-    },
-    MaxTokensEntry {
-        key: "doubao",
-        tokens: 4096,
-    },
-    MaxTokensEntry {
-        key: "cloudflare-ai-gateway",
-        tokens: 64_000,
-    },
+    MaxTokensEntry { key: "anthropic", tokens: 8192 },
+    MaxTokensEntry { key: "openai", tokens: 8192 },
+    MaxTokensEntry { key: "google", tokens: 8192 },
+    MaxTokensEntry { key: "gemini", tokens: 8192 },
+    MaxTokensEntry { key: "openrouter", tokens: 8192 },
+    MaxTokensEntry { key: "minimax", tokens: 8192 },
+    MaxTokensEntry { key: "xiaomi", tokens: 8192 },
+    MaxTokensEntry { key: "moonshot", tokens: 8192 },
+    MaxTokensEntry { key: "kimi", tokens: 8192 },
+    MaxTokensEntry { key: "kimi-coding", tokens: 32_768 },
+    MaxTokensEntry { key: "qwen", tokens: 8192 },
+    MaxTokensEntry { key: "qwen-portal", tokens: 8192 },
+    MaxTokensEntry { key: "ollama", tokens: 8192 },
+    MaxTokensEntry { key: "lmstudio", tokens: 8192 },
+    MaxTokensEntry { key: "vllm", tokens: 8192 },
+    MaxTokensEntry { key: "github-copilot", tokens: 8192 },
+    MaxTokensEntry { key: "qianfan", tokens: 32_768 },
+    MaxTokensEntry { key: "nvidia", tokens: 4096 },
+    MaxTokensEntry { key: "byteplus", tokens: 4096 },
+    MaxTokensEntry { key: "doubao", tokens: 4096 },
+    MaxTokensEntry { key: "cloudflare-ai-gateway", tokens: 64_000 },
 ];
 
 fn starts_with_ignore_case(haystack: &str, prefix: &str) -> bool {
@@ -246,9 +120,7 @@ fn infer_from_model_pattern(model_id: &str) -> Option<u32> {
     if model_id.contains("k2p5") {
         return Some(32_768);
     }
-    if starts_with_ignore_case(model_id, "kimi-coding")
-        || starts_with_ignore_case(model_id, "kimi-k2")
-    {
+    if starts_with_ignore_case(model_id, "kimi-coding") || starts_with_ignore_case(model_id, "kimi-k2") {
         return Some(32_768);
     }
     if starts_with_ignore_case(model_id, "nvidia/") {
@@ -274,15 +146,13 @@ fn lookup_model_candidates(model_id_raw: &str) -> Option<u32> {
         return Some(n);
     }
     if no_latest != model_id_raw
-        && let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_latest)
-    {
-        return Some(n);
-    }
+        && let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_latest) {
+            return Some(n);
+        }
     if no_date != no_latest
-        && let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_date)
-    {
-        return Some(n);
-    }
+        && let Some(n) = lookup_table(MODEL_MAX_TOKENS, no_date) {
+            return Some(n);
+        }
 
     infer_from_model_pattern(no_date)
         .or_else(|| infer_from_model_pattern(no_latest))
@@ -324,10 +194,9 @@ pub fn lookup_model_max_tokens(model_ref_raw: &str) -> Option<u32> {
     }
 
     if let Some(provider) = split.provider
-        && let Some(n) = lookup_table(PROVIDER_MAX_TOKENS, provider)
-    {
-        return Some(n);
-    }
+        && let Some(n) = lookup_table(PROVIDER_MAX_TOKENS, provider) {
+            return Some(n);
+        }
 
     None
 }
