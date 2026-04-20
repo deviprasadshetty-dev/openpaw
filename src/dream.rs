@@ -42,7 +42,7 @@ pub fn dream_thread(
             
             if let Some(mem) = &memory {
                 let model = config.default_model.clone().unwrap_or_else(|| "default".to_string());
-                match dream_sequence(provider.clone(), mem.clone(), &model) {
+                match dream_sequence(provider.clone(), mem.clone(), &model, &config.workspace_dir) {
                     Ok(_) => {
                         info!("Dream Sequence completed successfully.");
                         let mut guard = state.lock().unwrap();
@@ -66,6 +66,7 @@ fn dream_sequence(
     provider: Arc<dyn Provider>,
     memory: Arc<dyn crate::agent::memory_loader::Memory>,
     model_name: &str,
+    workspace_dir: &str,
 ) -> anyhow::Result<()> {
     // 1. Fetch recent memories that aren't learnings
     let recent_memories = memory.get_recent(MEMORY_CHUNK_SIZE)?;
@@ -82,17 +83,20 @@ fn dream_sequence(
     let joined_memories = memory_texts.join("\n---\n");
 
     // 2. LLM Prompt
-    let system_prompt = "You are the Dream Subconscious of OpenPaw.
+    let system_prompt = r#"You are the Dream Subconscious of OpenPaw.
 Your task is to review recent memories, find patterns, condense redundant information, prune useless details, and extract core 'Learnings' (e.g. user preferences, workflow tips, tool usage nuances).
 
 Output format MUST be strict JSON:
 {
-  \"delete_ids\": [\"id1\", \"id2\"],
-  \"new_learnings\": [
-    \"User prefers concise answers\",
-    \"Tool xyz requires the --force flag for this specific error\"
+  "delete_ids": ["id1", "id2"],
+  "new_learnings": [
+    "User prefers concise answers",
+    "Tool xyz requires the --force flag for this specific error"
+  ],
+  "new_skills": [
+    { "name": "skill-name", "description": "when/why to use", "instructions": "the markdown instructions" }
   ]
-}";
+}"#;
     
     let user_prompt = format!("Review the following memories and provide JSON:\n\n{}", joined_memories);
 
@@ -137,19 +141,36 @@ Output format MUST be strict JSON:
     let content = content_str.trim();
     
     // Strip markdown JSON blocks if present
-    let content = if content.starts_with("```json") {
-        content.trim_start_matches("```json").trim_end_matches("```").trim()
+    let content = if content.starts_with("`json") {
+        content.trim_start_matches("`json").trim_end_matches("`").trim()
     } else {
         content
     };
     
-    #[derive(serde::Deserialize)]
-    struct DreamResult {
-        delete_ids: Vec<String>,
-        new_learnings: Vec<String>,
+    #[derive(serde::Deserialize, Default)]
+    struct DreamSkill {
+        name: String,
+        description: String,
+        instructions: String,
     }
 
-    let result: DreamResult = serde_json::from_str(content)?;
+    #[derive(serde::Deserialize)]
+    struct DreamResult {
+        #[serde(default)]
+        delete_ids: Vec<String>,
+        #[serde(default)]
+        new_learnings: Vec<String>,
+        #[serde(default)]
+        new_skills: Vec<DreamSkill>,
+    }
+
+    let result: DreamResult = match serde_json::from_str(content) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to parse dream JSON: {}", e);
+            return Ok(());
+        }
+    };
 
     // 3. Memory Updates
     for id in result.delete_ids {
@@ -165,6 +186,22 @@ Output format MUST be strict JSON:
             None,
             Some(0.8) // High importance
         );
+    }
+
+    // 4. Auto-Mint Skills
+    let skills_dir = std::path::Path::new(workspace_dir).join("skills");
+    for skill in result.new_skills {
+        let target_dir = skills_dir.join(&skill.name);
+        if !target_dir.exists() {
+            if let Ok(_) = std::fs::create_dir_all(&target_dir) {
+                let md_content = format!(
+                    "---\nname: {}\ndescription: {}\n---\n{}",
+                    skill.name, skill.description, skill.instructions
+                );
+                let _ = std::fs::write(target_dir.join("SKILL.md"), md_content);
+                info!("Dream phase auto-minted new skill: {}", skill.name);
+            }
+        }
     }
 
     Ok(())

@@ -686,3 +686,4 @@ fn append_channel_attachments_section(out: &mut String) {
 }
 
 
+

@@ -1210,3 +1210,4 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     info!("Daemon stopped");
     Ok(())
 }
+

@@ -48,6 +48,7 @@ pub mod shell;
 pub mod skill_install;
 pub mod skill_list;
 pub mod skill_search;
+pub mod skill_mint;
 pub mod skill_tool;
 pub mod skill_uninstall;
 pub mod spawn;
@@ -62,3 +63,4 @@ pub mod web_search;
 pub use root::Tool;
 pub use root::ToolContext;
 pub use root::ToolResult;
+
