@@ -319,7 +319,7 @@ impl Agent {
             temperature: 0.7,
             max_tokens,
             token_limit,
-            max_tool_iterations: 25,
+            max_tool_iterations: 40,
             max_history_messages: 50,
             workspace_dir: workspace_dir.clone(),
             config_path: None, // Will be set by set_config_path if available
@@ -357,7 +357,7 @@ impl Agent {
         };
 
         if context_tokens_resolver::is_small_model_context(token_limit) {
-            agent.max_tool_iterations = 100; // Increased for local models
+            agent.max_tool_iterations = 150; // Increased for local models
         }
 
         agent
@@ -1824,3 +1824,4 @@ mod tests {
         assert!(!is_low_value_response("The sum of 2 and 2 is 4."));
     }
 }
+
