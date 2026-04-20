@@ -30,6 +30,33 @@ pub trait Memory: Send + Sync {
     ) -> Result<Vec<MemoryEntry>> {
         Ok(vec![])
     }
+
+    fn list_with_category(
+        &self,
+        _category: Option<crate::memory::MemoryCategory>,
+        _session_id: Option<&str>,
+    ) -> Result<Vec<crate::memory::MemoryEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn store_with_category(
+        &self,
+        _key: &str,
+        _content: &str,
+        _category: crate::memory::MemoryCategory,
+        _session_id: Option<&str>,
+        _importance: Option<f64>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_recent(&self, _limit: usize) -> Result<Vec<crate::memory::MemoryEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn forget_by_id(&self, _id: &str) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 pub struct NoopMemory;
@@ -129,7 +156,7 @@ impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAda
         &self,
         query: &str,
         limit: usize,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
         let entries = self.inner.semantic_recall_by_text(query, limit)?;
         Ok(entries
@@ -141,6 +168,34 @@ impl<S: crate::memory::MemoryStore + Send + Sync + 'static> Memory for MemoryAda
                 timestamp: e.timestamp,
             })
             .collect())
+    }
+
+    fn list_with_category(
+        &self,
+        category: Option<crate::memory::MemoryCategory>,
+        session_id: Option<&str>,
+    ) -> Result<Vec<crate::memory::MemoryEntry>> {
+        self.inner.list(category, session_id)
+    }
+
+    fn store_with_category(
+        &self,
+        key: &str,
+        content: &str,
+        category: crate::memory::MemoryCategory,
+        session_id: Option<&str>,
+        importance: Option<f64>,
+    ) -> Result<()> {
+        self.inner
+            .store(key, content, category, session_id, importance)
+    }
+
+    fn get_recent(&self, limit: usize) -> Result<Vec<crate::memory::MemoryEntry>> {
+        self.inner.get_recent(limit)
+    }
+
+    fn forget_by_id(&self, id: &str) -> Result<bool> {
+        self.inner.forget_by_id(id)
     }
 }
 
@@ -169,11 +224,12 @@ pub fn enrich_message(
 
     for entry in &entries {
         let age = format_age(&entry.timestamp);
-        let action_flag = if is_action_key(&entry.key) && !age.contains("just now") && !age.contains("min ago") {
-            " [PAST ACTION — already handled, do not repeat]"
-        } else {
-            ""
-        };
+        let action_flag =
+            if is_action_key(&entry.key) && !age.contains("just now") && !age.contains("min ago") {
+                " [PAST ACTION — already handled, do not repeat]"
+            } else {
+                ""
+            };
         block.push_str(&format!(
             "• {} [{}]{}: {}\n",
             entry.key, age, action_flag, entry.content
@@ -205,12 +261,12 @@ fn format_age(timestamp: &str) -> String {
     let secs = (chrono::Utc::now() - stored).num_seconds().max(0);
 
     match secs {
-        0..=119       => "just now".to_string(),
-        120..=3599    => format!("{} min ago", secs / 60),
-        3600..=86399  => format!("{} h ago", secs / 3600),
-        86400..=604799  => format!("{} days ago", secs / 86400),
+        0..=119 => "just now".to_string(),
+        120..=3599 => format!("{} min ago", secs / 60),
+        3600..=86399 => format!("{} h ago", secs / 3600),
+        86400..=604799 => format!("{} days ago", secs / 86400),
         604800..=2591999 => format!("{} weeks ago", secs / 604800),
-        _             => format!("{} months ago", secs / 2592000),
+        _ => format!("{} months ago", secs / 2592000),
     }
 }
 
@@ -218,11 +274,33 @@ fn format_age(timestamp: &str) -> String {
 /// rather than a fact/preference. These entries get an extra "do not repeat" label.
 fn is_action_key(key: &str) -> bool {
     const ACTION_PREFIXES: &[&str] = &[
-        "task", "todo", "action", "deploy", "fix", "build", "install",
-        "run", "execute", "create", "implement", "write", "setup",
-        "configure", "migrate", "update", "delete", "remove", "send",
-        "schedule", "remind", "check",
+        "task",
+        "todo",
+        "action",
+        "deploy",
+        "fix",
+        "build",
+        "install",
+        "run",
+        "execute",
+        "create",
+        "implement",
+        "write",
+        "setup",
+        "configure",
+        "migrate",
+        "update",
+        "delete",
+        "remove",
+        "send",
+        "schedule",
+        "remind",
+        "check",
     ];
     let lower = key.to_lowercase();
-    ACTION_PREFIXES.iter().any(|p| lower.starts_with(p) || lower.contains(&format!("_{}", p)) || lower.contains(&format!("-{}", p)))
+    ACTION_PREFIXES.iter().any(|p| {
+        lower.starts_with(p)
+            || lower.contains(&format!("_{}", p))
+            || lower.contains(&format!("-{}", p))
+    })
 }

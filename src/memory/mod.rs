@@ -13,6 +13,7 @@ pub enum MemoryCategory {
     Working,
     Archival,
     Tool,
+    Learning,
 }
 
 impl fmt::Display for MemoryCategory {
@@ -22,6 +23,7 @@ impl fmt::Display for MemoryCategory {
             MemoryCategory::Working => write!(f, "working"),
             MemoryCategory::Archival => write!(f, "archival"),
             MemoryCategory::Tool => write!(f, "tool"),
+            MemoryCategory::Learning => write!(f, "learning"),
         }
     }
 }
@@ -35,6 +37,7 @@ impl FromStr for MemoryCategory {
             "working" => Ok(MemoryCategory::Working),
             "archival" => Ok(MemoryCategory::Archival),
             "tool" => Ok(MemoryCategory::Tool),
+            "learning" => Ok(MemoryCategory::Learning),
             _ => Ok(MemoryCategory::Core), // Default fallback
         }
     }
@@ -85,6 +88,14 @@ pub trait MemoryStore: Send + Sync {
     fn forget(&self, key: &str) -> Result<bool>;
     fn count(&self) -> Result<usize>;
     fn health_check(&self) -> bool;
+
+    fn get_recent(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        Ok(Vec::new())
+    }
+    
+    fn forget_by_id(&self, _id: &str) -> Result<bool> {
+        Ok(false)
+    }
 
     // Optional methods for advanced memory functionality
     fn semantic_recall(&self, _embedding: &[f32], _limit: usize) -> Result<Vec<MemoryEntry>> {

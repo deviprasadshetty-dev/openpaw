@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod dispatch;
+pub mod email;
 pub mod root;
 pub mod telegram;
 pub mod whatsapp;

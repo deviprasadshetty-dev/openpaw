@@ -188,30 +188,34 @@ impl MemoryStore for SqliteMemory {
         session_id: Option<&str>,
         importance: Option<f64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Self::now_str();
         let id = Self::nano_id();
-        let cat_str = category.to_string();
-        let imp = importance.unwrap_or(0.5);
+        {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Self::now_str();
+            let cat_str = category.to_string();
+            let imp = importance.unwrap_or(0.5);
 
-        conn.execute(
-            "INSERT INTO memories (id, key, content, category, session_id, created_at, updated_at, importance)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(key) DO UPDATE SET
-             content = excluded.content,
-             category = excluded.category,
-             session_id = excluded.session_id,
-             updated_at = excluded.updated_at,
-             importance = excluded.importance",
-            params![id.clone(), key, content, cat_str, session_id, now, now, imp],
-        )?;
+            conn.execute(
+                "INSERT INTO memories (id, key, content, category, session_id, created_at, updated_at, importance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(key) DO UPDATE SET
+                 content = excluded.content,
+                 category = excluded.category,
+                 session_id = excluded.session_id,
+                 updated_at = excluded.updated_at,
+                 importance = excluded.importance",
+                params![id.clone(), key, content, cat_str, session_id, now, now, imp],
+            )?;
+        }
 
         // Auto-embed if provider is present and not an ephemeral autosave
-        if let Some(ref embedder) = self.embedder
-            && !key.starts_with("autosave_")
-                && let Ok(emb) = embedder.embed(content) {
+        if let Some(ref embedder) = self.embedder {
+            if !key.starts_with("autosave_") {
+                if let Ok(emb) = embedder.embed(content) {
                     let _ = self.store_embedding_internal(&id, &emb);
                 }
+            }
+        }
 
         Ok(())
     }
@@ -433,6 +437,43 @@ impl MemoryStore for SqliteMemory {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row("SELECT 1", [], |r| r.get::<_, i32>(0))
             .is_ok()
+    }
+
+    fn get_recent(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // Fetch memories that are NOT learnings, so we can condense them
+        let mut stmt = conn.prepare(
+            "SELECT id, key, content, category, created_at, session_id FROM memories 
+             WHERE category != 'learning' 
+             ORDER BY updated_at DESC LIMIT ?1"
+        )?;
+        
+        let mapped = stmt.query_map(params![limit as i64], |row| {
+            let cat_s: String = row.get(3)?;
+            Ok(MemoryEntry {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                content: row.get(2)?,
+                category: MemoryCategory::from_str(&cat_s),
+                timestamp: row.get(4)?,
+                session_id: row.get(5)?,
+                score: None,
+                importance: 0.5,
+                embedding: None,
+            })
+        })?;
+        
+        let mut results = Vec::new();
+        for e in mapped {
+            results.push(e?);
+        }
+        Ok(results)
+    }
+
+    fn forget_by_id(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let deleted = conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+        Ok(deleted > 0)
     }
 
     fn semantic_recall_by_text(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>> {

@@ -15,7 +15,10 @@ use crate::providers::kilocode::{
 };
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::reliable::ReliableProvider;
-use crate::providers::{Provider, gemini::GeminiProvider, openai::OpenAiCompatibleProvider};
+use crate::providers::{
+    Provider, gemini::GeminiProvider, gemini_cli::GeminiCliProvider,
+    openai::OpenAiCompatibleProvider,
+};
 
 /// Config snippet used by the factory. Matches the `providers` map in config.json.
 #[derive(Debug, Clone, Default)]
@@ -45,6 +48,10 @@ pub fn create(name: &str, cfg: Option<&ProviderConfig>) -> Arc<dyn Provider> {
         "gemini" => {
             let key = cfg.map(|c| c.api_key.clone());
             Arc::new(GeminiProvider::new(key.as_deref()))
+        }
+        "gemini-cli" => {
+            let model = cfg.and_then(|c| c.model.clone());
+            Arc::new(GeminiCliProvider::new(model.as_deref()))
         }
 
         "kilocode" => {

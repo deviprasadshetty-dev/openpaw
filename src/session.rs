@@ -87,13 +87,25 @@ impl SessionManager {
                 .unwrap_or_else(|| "gpt-4o".to_string())
         });
 
+        let cheap_provider_name = agent_cfg.and_then(|a| a.cheap_provider.clone());
+        let cheap_provider = if let Some(cp_name) = cheap_provider_name {
+            Some(crate::providers::factory::create_with_fallbacks(&cp_name, &self.config))
+        } else {
+            None
+        };
+        let cheap_model_name = agent_cfg.and_then(|a| a.cheap_model.clone());
+
         // Create new agent with the shared provider, tools, memory, etc.
         let mut agent = Agent::new(
             provider,
+            cheap_provider,
             self.tools.clone(),
             model,
             self.config.workspace_dir.clone(),
         );
+        if let Some(cm) = cheap_model_name {
+            agent.model_routing_config.cheap_model = cm;
+        }
         agent.config_path = if self.config.config_path.is_empty() {
             None
         } else {

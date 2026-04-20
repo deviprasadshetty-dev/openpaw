@@ -21,6 +21,10 @@ pub struct NamedAgentConfig {
     pub provider: String,
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cheap_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cheap_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -443,6 +447,8 @@ pub struct MemoryConfig {
     #[serde(default = "default_memory_backend")]
     pub backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
 }
 
@@ -450,6 +456,7 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             backend: default_memory_backend(),
+            embedding_provider: None,
             embedding_model: None,
         }
     }
@@ -499,6 +506,18 @@ pub struct WhatsAppNativeConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WebhookConfig {}
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EmailConfig {
+    #[serde(default = "default_account_id")]
+    pub account_id: String,
+    pub smtp_user: String,
+    pub smtp_pass: String,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub imap_host: String,
+    pub imap_port: u16,
+}
+
 fn default_account_id() -> String {
     "default".to_string()
 }
@@ -513,6 +532,8 @@ pub struct ChannelsConfig {
     pub cli: bool,
     #[serde(default)]
     pub telegram: Vec<TelegramConfig>,
+    #[serde(default)]
+    pub email: Vec<EmailConfig>,
     #[serde(default)]
     pub whatsapp_native: Vec<WhatsAppNativeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]

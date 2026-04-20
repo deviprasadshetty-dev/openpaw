@@ -40,6 +40,8 @@ pub struct DaemonState {
     pub gateway_host: String,
     pub gateway_port: u16,
     pub components: Vec<ComponentStatus>,
+    pub last_activity_at: i64,
+    pub last_dream_at: i64,
 }
 
 impl Default for DaemonState {
@@ -49,6 +51,11 @@ impl Default for DaemonState {
             gateway_host: "127.0.0.1".to_string(),
             gateway_port: 3000,
             components: Vec::new(),
+            last_activity_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            last_dream_at: 0,
         }
     }
 }
@@ -300,6 +307,14 @@ pub fn inbound_dispatcher_thread(
         }
 
         if let Some(msg) = bus.consume_inbound_timeout(Duration::from_millis(100)) {
+            {
+                let mut guard = state.lock().unwrap();
+                guard.last_activity_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+            }
+
             // Integrate Routing
             let mut input = crate::config_types::RouteInput {
                 channel: msg.channel.clone(),
@@ -425,9 +440,12 @@ pub fn init_bus() -> Arc<Bus> {
     Arc::new(Bus::new())
 }
 
+use crate::channels::email::EmailChannel;
+use crate::channels::root::Channel;
+
 pub fn init_channels(
     config: &Config,
-    _bus: Arc<Bus>,
+    bus: Arc<Bus>,
 ) -> (ChannelRegistry, Vec<(PollingState, thread::JoinHandle<()>)>) {
     let mut registry = ChannelRegistry::new();
     let mut polling_threads = Vec::new();
@@ -483,6 +501,61 @@ pub fn init_channels(
                 }
             }
         }
+    }
+
+    // Initialize Email channels
+    for email_config in &config.channels.email {
+        info!(
+            "Initializing Email channel for account: {}",
+            email_config.account_id
+        );
+
+        let channel = Arc::new(EmailChannel::new(
+            email_config.smtp_user.clone(),
+            email_config.smtp_pass.clone(),
+            email_config.smtp_host.clone(),
+            email_config.smtp_port,
+            email_config.imap_host.clone(),
+            email_config.imap_port,
+        ));
+        
+        registry.register_with_account(channel.clone(), &email_config.account_id);
+
+        let channel_clone = channel.clone();
+        let account_id = email_config.account_id.clone();
+        let bus_clone = bus.clone();
+
+        let thread_handle = thread::spawn(move || {
+            info!("Started Email polling thread for {}", account_id);
+            loop {
+                // Poll updates
+                match channel_clone.poll_updates() {
+                    Ok(messages) => {
+                        for msg in messages {
+                            let inbound = crate::bus::InboundMessage {
+                                channel: "email".to_string(),
+                                chat_id: msg.chat_id,
+                                sender_id: msg.sender_id,
+                                session_key: msg.session_key,
+                                content: msg.content,
+                                media: vec![],
+                                metadata_json: None,
+                            };
+                            if let Err(e) = bus_clone.publish_inbound(inbound) {
+                                warn!("Failed to publish inbound email message: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Email polling failed for account {}: {}", account_id, e);
+                    }
+                }
+                thread::sleep(Duration::from_secs(60));
+            }
+        });
+
+        // We aren't implementing PollingState gracefully here for simplicity
+        // So we just add a dummy or handle it separately
     }
 
     // Initialize WhatsApp Native channels
@@ -894,7 +967,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                         info!("Memory backend: sqlite ({})", db_path);
 
                         // Attach embedder if API key is available
-                        let provider_name = &config.default_provider;
+                        let provider_name = config.memory.embedding_provider.as_ref().unwrap_or(&config.default_provider);
                         if let Some(models) = &config.models {
                             if let Some(p_cfg) = models.providers.get(provider_name) {
                                 let provider_key = p_cfg.api_key.trim();
@@ -1004,7 +1077,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     )
     .await;
 
-    let session_manager = Arc::new(SessionManager::new(config.clone(), provider, tools, memory));
+    let session_manager = Arc::new(SessionManager::new(config.clone(), provider.clone(), tools, memory.clone()));
 
     // Start Inbound Dispatcher
     let bus_clone = bus.clone();
@@ -1062,6 +1135,15 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     // Start Outbound Dispatcher
     let ds_clone = daemon_state.clone();
     let dispatcher_handle = start_outbound_dispatcher(bus.clone(), registry.clone(), ds_clone);
+
+    // Start Dream Thread
+    let state_handle = daemon_state.clone();
+    let config_handle = config.clone();
+    let provider_handle = provider.clone();
+    let memory_handle = memory.clone();
+    thread::spawn(move || {
+        crate::dream::dream_thread(state_handle, config_handle, provider_handle, memory_handle);
+    });
 
     // Start Heartbeat
     let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, bus.clone());

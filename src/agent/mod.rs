@@ -33,6 +33,7 @@ const MAX_SAME_TOOL_RETRIES: u32 = 3;
 
 pub struct Agent {
     pub provider: Arc<dyn Provider>,
+    pub cheap_provider: Option<Arc<dyn Provider>>,
     pub tools: Vec<Arc<dyn Tool>>,
     pub memory: Arc<dyn Memory>,
     pub model_name: String,
@@ -300,6 +301,7 @@ pub fn is_low_value_response(text: &str) -> bool {
 impl Agent {
     pub fn new(
         provider: Arc<dyn Provider>,
+        cheap_provider: Option<Arc<dyn Provider>>,
         tools: Vec<Arc<dyn Tool>>,
         model_name: String,
         workspace_dir: String,
@@ -310,6 +312,7 @@ impl Agent {
 
         let mut agent = Self {
             provider,
+            cheap_provider,
             tools,
             memory: Arc::new(NoopMemory), // Default to no-op
             model_name: model_name.clone(),
@@ -450,7 +453,14 @@ impl Agent {
 
     pub fn build_system_prompt(&mut self) -> Result<String> {
         let caps = None; // Capabilities not yet implemented
-        let conversation_context = None; // Not yet integrated
+        let conversation_context = self.conversation_context.as_ref(); 
+
+        let learnings = self.memory
+            .list_with_category(Some(crate::memory::MemoryCategory::Learning), self.memory_session_id.as_deref())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.content)
+            .collect::<Vec<_>>();
 
         let ctx = prompt::PromptContext {
             workspace_dir: &self.workspace_dir,
@@ -460,6 +470,7 @@ impl Agent {
             conversation_context,
             use_native_tools: self.provider.supports_native_tools(),
             token_limit: self.token_limit,
+            learnings,
         };
 
         Ok(prompt::build_system_prompt(ctx))
@@ -599,10 +610,11 @@ impl Agent {
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
 
+            let compaction_provider = self.cheap_provider.as_ref().unwrap_or(&self.provider);
             let _ = auto_compact_history(
                 &mut self.history,
-                &self.provider,
-                &self.model_name,
+                compaction_provider,
+                &self.model_routing_config.cheap_model,
                 &compaction_config,
                 &mut self.last_compaction,
             );
@@ -1266,10 +1278,11 @@ impl Agent {
                 max_history_messages: self.max_history_messages as u32,
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
+            let compaction_provider = self.cheap_provider.as_ref().unwrap_or(&self.provider);
             let _ = auto_compact_history(
                 &mut self.history,
-                &self.provider,
-                &self.model_name,
+                compaction_provider,
+                &self.model_routing_config.cheap_model,
                 &compaction_config,
                 &mut self.last_compaction,
             );

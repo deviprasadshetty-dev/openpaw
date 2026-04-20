@@ -7,19 +7,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Send a desktop notification (cross-platform: Windows/macOS/Linux)
-fn send_desktop_notification(title: &str, body: &str) {
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = notify_rust::Notification::new()
-            .summary(title)
-            .body(body)
-            .icon("dialog-information")
-            .show();
-    }
-    // On Android (if ever supported), we would use a different mechanism
-}
-
 /// Cross-platform path to the OpenPaw data directory (~/.openpaw).
 /// Uses HOME on Linux/macOS, USERPROFILE on Windows, falls back to "."
 fn openpaw_data_dir() -> std::path::PathBuf {
@@ -436,23 +423,24 @@ impl CronScheduler {
         let _ = Self::deliver_result(&self.bus, &job.delivery, &output, success).await;
 
         // Send desktop notification for reminders/agent jobs
-        if job.job_type == JobType::Agent || !job.command.is_empty() {
-            let title = if success {
-                "✅ Reminder Completed"
-            } else {
-                "⚠️ Reminder Failed"
-            };
-            let body = if job.name.is_some() {
-                format!(
-                    "{}: {}",
-                    job.name.as_ref().unwrap(),
-                    output.chars().take(100).collect::<String>()
-                )
-            } else {
-                output.chars().take(100).collect::<String>()
-            };
-            send_desktop_notification(title, &body);
-        }
+        // Disabled - Windows notifications not needed
+        // if job.job_type == JobType::Agent || !job.command.is_empty() {
+        //     let title = if success {
+        //         "✅ Reminder Completed"
+        //     } else {
+        //         "⚠️ Reminder Failed"
+        //     };
+        //     let body = if job.name.is_some() {
+        //         format!(
+        //             "{}: {}",
+        //             job.name.as_ref().unwrap(),
+        //             output.chars().take(100).collect::<String>()
+        //         )
+        //     } else {
+        //         output.chars().take(100).collect::<String>()
+        //     };
+        //     send_desktop_notification(title, &body);
+        // }
 
         // Deregister from running set.
         self.running_jobs.lock().unwrap().remove(&id_str);

@@ -267,6 +267,7 @@ impl SubagentManager {
 
             let mut agent = Agent::new(
                 provider,
+                None,
                 subagent_tools,
                 sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
                 sub_config.workspace_dir.clone(),
@@ -586,6 +587,7 @@ fn drain_pending(
 
                     let mut agent = Agent::new(
                         provider,
+                        None,
                         subagent_tools,
                         sub_config.default_model.clone().unwrap_or("gpt-4o".to_string()),
                         sub_config.workspace_dir.clone(),

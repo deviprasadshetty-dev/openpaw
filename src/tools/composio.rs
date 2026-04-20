@@ -38,7 +38,7 @@ impl Tool for ComposioTool {
     }
 
     fn parameters_json(&self) -> String {
-        r#"{"type":"object","properties":{"action":{"type":"string","enum":["query","execute","connect","list","tool_router"],"description":"Operation to perform. 'query' (RECOMMENDED) handles discovery and execution via natural language; 'connect' handles app authorization; 'execute' runs a specific tool; 'list' discovers tools manually."},"text":{"type":"string","description":"The natural language request (e.g. 'check my emails', 'create a github issue'). Required for 'query' and recommended for 'execute'."},"app":{"type":"string","description":"App name (e.g. 'gmail', 'github') for 'connect' or 'list'."},"tool_slug":{"type":"string","description":"Exact tool ID for manual 'execute'."},"params":{"type":"object","description":"Structured arguments for manual 'execute'."},"entity_id":{"type":"string","description":"Optional user override."},"connected_account_id":{"type":"string","description":"Optional connected account ID."},"callback_url":{"type":"string","description":"Optional OAuth callback URL."}},"required":["action"]}"#.to_string()
+        r#"{"type":"object","properties":{"action":{"type":"string","enum":["query","execute","connect","list","tool_router"],"description":"Operation to perform. 'query' (RECOMMENDED) handles discovery and execution via natural language; 'connect' handles app authorization; 'execute' runs a specific tool; 'list' discovers tools manually; 'tool_router' creates an isolated execution session."},"text":{"type":"string","description":"The natural language request."},"app":{"type":"string","description":"App name for 'connect' or 'list'."},"tool_slug":{"type":"string","description":"Exact tool ID for manual 'execute'."},"params":{"type":"object","description":"Structured arguments for manual 'execute'."},"entity_id":{"type":"string","description":"Optional user override."},"connected_account_id":{"type":"string","description":"Optional connected account ID."},"callback_url":{"type":"string","description":"Optional OAuth callback URL."},"session_id":{"type":"string","description":"Session ID for isolated tool router execution."},"toolkits":{"type":"array","items":{"type":"string"},"description":"List of toolkit slugs for tool_router."},"tools":{"type":"array","items":{"type":"string"},"description":"List of specific tool slugs for tool_router."},"tags":{"type":"array","items":{"type":"string"},"description":"List of tags for tool_router."}},"required":["action"]}"#.to_string()
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
@@ -181,14 +181,17 @@ impl ComposioTool {
             .and_then(|v| v.as_str())
             .unwrap_or(&self.entity_id);
 
-        let mut payload = json!({
-            "user_id": user_id
-        });
+        let mut payload = json!({});
 
-        if let Some(connected_account_id) =
-            args.get("connected_account_id").and_then(|v| v.as_str())
-        {
-            payload["connected_account_id"] = json!(connected_account_id);
+        if let Some(session_id) = args.get("session_id").and_then(|v| v.as_str()) {
+            payload["session_id"] = json!(session_id);
+        } else {
+            payload["user_id"] = json!(user_id);
+            if let Some(connected_account_id) =
+                args.get("connected_account_id").and_then(|v| v.as_str())
+            {
+                payload["connected_account_id"] = json!(connected_account_id);
+            }
         }
 
         let params = args.get("params");
@@ -274,13 +277,44 @@ impl ComposioTool {
             .or(best_tool.get("tool_slug"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+            
+        let toolkit_slug = best_tool
+            .get("toolkit_slug")
+            .and_then(Value::as_str)
+            .or_else(|| best_tool.get("toolkit").and_then(Value::as_str))
+            .or_else(|| {
+                best_tool.get("toolkit")
+                    .and_then(|v| v.get("slug"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("unknown_toolkit");
 
         let mut exec_args = args.clone();
         exec_args["tool_slug"] = json!(tool_slug);
         exec_args["action"] = json!("execute");
         exec_args["text"] = json!(text);
 
-        self.execute_action(&exec_args).await
+        let result = self.execute_action(&exec_args).await?;
+        
+        if !result.is_error {
+            Ok(ToolResult::ok(format!(
+                "Successfully executed natural language query via tool '{}' (toolkit: {}):\n\n{}", 
+                tool_slug, toolkit_slug, result.content
+            )))
+        } else {
+            let out = &result.content;
+            if out.to_lowercase().contains("auth") || out.contains("HTTP 401") || out.contains("HTTP 422") {
+                Ok(ToolResult::fail(format!(
+                    "Failed to execute query using tool '{}' (toolkit: {}). This is likely an authentication issue.\n\nPlease use action='connect' with app='{}' to authenticate, then try your query again.\n\nDetails:\n{}", 
+                    tool_slug, toolkit_slug, toolkit_slug, out
+                )))
+            } else {
+                Ok(ToolResult::fail(format!(
+                    "Failed to execute query using tool '{}' (toolkit: {}):\n\n{}", 
+                    tool_slug, toolkit_slug, out
+                )))
+            }
+        }
     }
 
     async fn connect_account(&self, args: &Value) -> Result<ToolResult> {
@@ -514,12 +548,32 @@ impl ComposioTool {
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
         });
+        
+        let tools = args.get("tools").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
+
+        let tags = args.get("tags").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
 
         let mut session_payload = json!({
             "user_id": user_id,
         });
         if let Some(tk) = toolkits {
             session_payload["toolkits"] = json!(tk);
+        }
+        if let Some(t) = tools {
+            session_payload["tools"] = json!(t);
+        }
+        if let Some(tag) = tags {
+            session_payload["tags"] = json!(tag);
         }
 
         let session_resp = self
@@ -558,9 +612,29 @@ impl ComposioTool {
             .await?;
 
         let mut output = format!("Created Composio Tool Router Session: {}\n", session_id);
+        
+        // Handle auth requirements if returned
+        if let Some(json_body) = &session_resp.body_json {
+            if let Some(auth_reqs) = json_body.get("auth_requirements").and_then(Value::as_array) {
+                if !auth_reqs.is_empty() {
+                    output.push_str("\n⚠️ Authentication Required for this session:\n");
+                    for req in auth_reqs {
+                        if let Some(url) = extract_auth_url(req) {
+                            let toolkit = req.get("toolkit").and_then(Value::as_str).unwrap_or("toolkit");
+                            output.push_str(&format!("- Please connect {}: {}\n", toolkit, url));
+                        }
+                    }
+                    output.push('\n');
+                }
+            } else if let Some(url) = extract_auth_url(json_body) {
+                output.push_str(&format!("\n⚠️ Authentication Required: Please visit {}\n\n", url));
+            }
+        }
+
         if let Some(body) = tools_resp.body_json {
             output.push_str("\nAvailable tools in this session:\n");
             output.push_str(&render_list_output(&body, None));
+            output.push_str(&format!("\nTo execute inside this session, use action='execute' with session_id='{}' and tool_slug.\n", session_id));
         } else {
             output.push_str(&tools_resp.body_text);
         }

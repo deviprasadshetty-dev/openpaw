@@ -86,6 +86,7 @@ struct PartialConfig {
     timezone: Option<String>,
     telegram: Option<Option<(String, String)>>,
     whatsapp_native: Option<Option<(String, String)>>,
+    email: Option<Option<(String, String, String, u16, String, u16)>>,
     memory_backend: Option<String>,
     groq_key: Option<String>,
     embed_provider: Option<Option<String>>,
@@ -100,6 +101,9 @@ struct PartialConfig {
     pushover: Option<Option<(String, String)>>,
     custom_base_url: Option<Option<String>>,
     custom_model: Option<Option<String>>,
+    cheap_provider: Option<Option<String>>,
+    cheap_model: Option<Option<String>>,
+    cheap_api_key: Option<Option<String>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +118,7 @@ fn theme() -> ColorfulTheme {
 // Main onboarding flow
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOTAL_STEPS: u8 = 8;
+const TOTAL_STEPS: u8 = 9;
 
 const COMMON_TIMEZONES: &[(&str, &str)] = &[
     ("UTC", "UTC / GMT+0"),
@@ -200,13 +204,14 @@ fn print_fresh_setup(partial: &mut PartialConfig) -> Result<()> {
     println!("  {}  Press Ctrl+C at any time to cancel.\n", dim("·"));
 
     partial.step_provider(1)?;
-    partial.step_timezone(2)?;
-    partial.step_memory(3)?;
-    partial.step_voice(4)?;
-    partial.step_channels(5)?;
-    partial.step_composio(6)?;
-    partial.step_brave(7)?;
-    partial.step_pushover(8)?;
+    partial.step_cheap_model(2)?;
+    partial.step_timezone(3)?;
+    partial.step_memory(4)?;
+    partial.step_voice(5)?;
+    partial.step_channels(6)?;
+    partial.step_composio(7)?;
+    partial.step_brave(8)?;
+    partial.step_pushover(9)?;
     Ok(())
 }
 
@@ -215,6 +220,7 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
         println!();
         let items = &[
             "AI Provider & Model  — Change provider, model, or API key",
+            "Background Tasks     — Cheap/free models for background planning",
             "Timezone             — Your local timezone",
             "Memory & Embeddings  — Switch memory backend or embeddings",
             "Voice                — Groq Whisper transcription",
@@ -230,20 +236,21 @@ fn print_edit_mode(partial: &mut PartialConfig) -> Result<()> {
         let choice = Select::with_theme(&theme())
             .with_prompt("Which section would you like to edit?")
             .items(items)
-            .default(9)
+            .default(10)
             .interact()?;
 
         match choice {
             0 => partial.step_provider(1)?,
-            1 => partial.step_timezone(2)?,
-            2 => partial.step_memory(3)?,
-            3 => partial.step_voice(4)?,
-            4 => partial.step_channels(5)?,
-            5 => partial.step_composio(6)?,
-            6 => partial.step_brave(7)?,
-            7 => partial.step_pushover(8)?,
-            8 => {} // separator — do nothing
-            9 => break,
+            1 => partial.step_cheap_model(2)?,
+            2 => partial.step_timezone(3)?,
+            3 => partial.step_memory(4)?,
+            4 => partial.step_voice(5)?,
+            5 => partial.step_channels(6)?,
+            6 => partial.step_composio(7)?,
+            7 => partial.step_brave(8)?,
+            8 => partial.step_pushover(9)?,
+            9 => {} // separator — do nothing
+            10 => break,
             _ => return Ok(()),
         }
     }
@@ -279,6 +286,21 @@ impl PartialConfig {
                         .map(|s| s.to_string())
                         .collect(),
                 );
+            }
+        }
+        if let Some(agents_arr) = json["agents"].as_array() {
+            if let Some(first_agent) = agents_arr.first() {
+                if let Some(cp) = first_agent["cheap_provider"].as_str() {
+                    self.cheap_provider = Some(Some(cp.to_string()));
+                    self.cheap_api_key = Some(
+                        json["models"]["providers"][cp]["api_key"]
+                            .as_str()
+                            .map(|s| s.to_string()),
+                    );
+                }
+                if let Some(cm) = first_agent["cheap_model"].as_str() {
+                    self.cheap_model = Some(Some(cm.to_string()));
+                }
             }
         }
         if let Some(tz) = json["timezone"].as_str() {
@@ -728,6 +750,158 @@ impl PartialConfig {
         Ok(())
     }
 
+    fn step_cheap_model(&mut self, step: u8) -> Result<()> {
+        step_header(
+            step,
+            TOTAL_STEPS,
+            "Background Tasks",
+            "Configure a free/cheap provider for background tasks (saves money)",
+        );
+
+        let items = &[
+            "OpenRouter (Free) — Dynamic selection of free models",
+            "OpenCode (Free)   — Dynamic selection of free models",
+            "Kilocode (Free)   — Dynamic selection of free models",
+            "None              — Use primary model for everything",
+        ];
+
+        let choice = Select::with_theme(&theme())
+            .with_prompt("Select provider for background tasks & fallbacks")
+            .items(items)
+            .default(0)
+            .interact()?;
+
+        match choice {
+            0 => {
+                let key: String = Password::with_theme(&theme())
+                    .with_prompt("OpenRouter API key  (openrouter.ai/keys)")
+                    .allow_empty_password(true)
+                    .interact()?;
+                self.cheap_provider = Some(Some("openrouter".to_string()));
+                self.cheap_api_key = Some(Some(key.clone()));
+
+                println!("  {} Fetching free models…", dim("⟳"));
+                let default_model = match fetch_openrouter_free_models(&key) {
+                    Ok(free_models) if !free_models.is_empty() => {
+                        println!(
+                            "  {} {} free models available\n",
+                            bold_green("✓"),
+                            free_models.len()
+                        );
+                        let d = preferred_openrouter_model_index(&free_models);
+                        let display: Vec<String> = free_models
+                            .iter()
+                            .map(|m| format_openrouter_model(m))
+                            .collect();
+                        let mc = Select::with_theme(&theme())
+                            .with_prompt("Select model for background tasks")
+                            .items(&display)
+                            .default(d)
+                            .interact()?;
+                        free_models[mc].id.clone()
+                    }
+                    Ok(_) | Err(_) => {
+                        eprintln!("  {} Could not fetch models, using defaults.", dim("·"));
+                        "deepseek/deepseek-chat-v3-0324:free".to_string()
+                    }
+                };
+                self.cheap_model = Some(Some(default_model));
+            }
+            1 => {
+                let key: String = Password::with_theme(&theme())
+                    .with_prompt("OpenCode API key  (opencode.ai)")
+                    .allow_empty_password(true)
+                    .interact()?;
+                self.cheap_provider = Some(Some("opencode".to_string()));
+                self.cheap_api_key = Some(Some(key.clone()));
+
+                println!("  {} Fetching available models…", dim("⟳"));
+                let default_model =
+                    match fetch_openai_compat_models("https://opencode.ai/zen/v1", &key) {
+                        Ok(models) if !models.is_empty() => {
+                            let free_models: Vec<String> = models
+                                .clone()
+                                .into_iter()
+                                .filter(|m| m.contains("free"))
+                                .collect();
+                            let display_models = if !free_models.is_empty() {
+                                free_models
+                            } else {
+                                models
+                            };
+
+                            println!(
+                                "  {} {} free models available\n",
+                                bold_green("✓"),
+                                display_models.len()
+                            );
+                            let d = display_models
+                                .iter()
+                                .position(|m| m.contains("m2.5"))
+                                .unwrap_or(0);
+                            let mc = Select::with_theme(&theme())
+                                .with_prompt("Select model for background tasks")
+                                .items(&display_models)
+                                .default(d)
+                                .interact()?;
+                            display_models[mc].clone()
+                        }
+                        Ok(_) | Err(_) => {
+                            eprintln!("  {} Could not fetch models, using static list.", dim("·"));
+                            let static_models = &["minimax-m2.5-free", "qwen-coder-plus-latest"];
+                            let mc = Select::with_theme(&theme())
+                                .with_prompt("Select model for background tasks")
+                                .items(static_models)
+                                .default(0)
+                                .interact()?;
+                            static_models[mc].to_string()
+                        }
+                    };
+                self.cheap_model = Some(Some(default_model));
+            }
+            2 => {
+                let key: String = Password::with_theme(&theme())
+                    .with_prompt("Kilocode API key  (app.kilo.ai)")
+                    .allow_empty_password(true)
+                    .interact()?;
+                self.cheap_provider = Some(Some("kilocode".to_string()));
+                self.cheap_api_key = Some(Some(key.clone()));
+
+                println!("  {} Fetching free models…", dim("⟳"));
+                let default_model = match fetch_kilocode_free_models(&key) {
+                    Ok(free_models) if !free_models.is_empty() => {
+                        println!(
+                            "  {} {} free models available\n",
+                            bold_green("✓"),
+                            free_models.len()
+                        );
+                        let d = preferred_kilocode_model_index(&free_models);
+                        let mc = Select::with_theme(&theme())
+                            .with_prompt("Select model for background tasks")
+                            .items(&free_models)
+                            .default(d)
+                            .interact()?;
+                        free_models[mc].clone()
+                    }
+                    Ok(_) | Err(_) => {
+                        eprintln!("  {} Could not fetch models, using defaults.", dim("·"));
+                        "minimax/minimax-m2.1:free".to_string()
+                    }
+                };
+                self.cheap_model = Some(Some(default_model));
+            }
+            _ => {
+                self.cheap_provider = Some(None);
+                self.cheap_model = Some(None);
+                self.cheap_api_key = Some(None);
+                step_skip("Background Tasks");
+                return Ok(());
+            }
+        }
+        step_done("Background Tasks configured");
+        Ok(())
+    }
+
     fn step_memory(&mut self, step: u8) -> Result<()> {
         step_header(
             step,
@@ -766,9 +940,16 @@ impl PartialConfig {
                 .default(false)
                 .interact()?;
             if embed {
+                println!();
+                println!("  {} HuggingFace API key is needed for embedding. (https://huggingface.co/settings/tokens)", dim("i"));
+                let key: String = Password::with_theme(&theme())
+                    .with_prompt("HuggingFace API key")
+                    .allow_empty_password(true)
+                    .interact()?;
+
                 self.embed_provider = Some(Some("huggingface".to_string()));
                 self.embed_model = Some(Some("Qwen/Qwen3-Embedding-0.6B".to_string()));
-                self.embed_key = Some(Some(String::new()));
+                self.embed_key = Some(Some(key));
                 step_done("SQLite · embeddings enabled");
             } else {
                 step_done("SQLite · keyword search");
@@ -871,13 +1052,14 @@ impl PartialConfig {
                 "None      — CLI only, no messaging integration",
                 "Telegram  — Talk to the agent via a Telegram bot",
                 "WhatsApp  — Talk to the agent via WhatsApp (local bridge)",
+                "Email     — Talk to the agent via Email",
                 "Both      — Telegram + WhatsApp",
             ])
             .default(default_idx)
             .interact()?;
 
-        // ── Telegram ──────────────────────────────────────────────────
-        if choice == 1 || choice == 3 {
+        // ── Telegram ─────────────────────────────────────────────────────────────
+        if choice == 1 || choice == 4 {
             println!();
             println!(
                 "  {}  Create your bot at {}",
@@ -899,7 +1081,7 @@ impl PartialConfig {
         }
 
         // ── WhatsApp ──────────────────────────────────────────────────
-        if choice == 2 || choice == 3 {
+        if choice == 2 || choice == 4 {
             println!();
             let phone: String = Input::with_theme(&theme())
                 .with_prompt("Your WhatsApp phone number (e.g. +1234567890)")
@@ -910,9 +1092,42 @@ impl PartialConfig {
             self.whatsapp_native = Some(None);
         }
 
+        if choice == 3 {
+            println!();
+            let email: String = Input::with_theme(&theme())
+                .with_prompt("Your Email Address (e.g. you@gmail.com)")
+                .interact_text()?;
+            let pass: String = Password::with_theme(&theme())
+                .with_prompt("Your App Password")
+                .allow_empty_password(false)
+                .interact()?;
+            let smtp_host: String = Input::with_theme(&theme())
+                .with_prompt("SMTP Host")
+                .default("smtp.gmail.com".to_string())
+                .interact_text()?;
+            let smtp_port: u16 = Input::with_theme(&theme())
+                .with_prompt("SMTP Port")
+                .default(587)
+                .interact_text()?;
+            let imap_host: String = Input::with_theme(&theme())
+                .with_prompt("IMAP Host")
+                .default("imap.gmail.com".to_string())
+                .interact_text()?;
+            let imap_port: u16 = Input::with_theme(&theme())
+                .with_prompt("IMAP Port")
+                .default(993)
+                .interact_text()?;
+
+            self.email = Some(Some((
+                email, pass, smtp_host, smtp_port, imap_host, imap_port,
+            )));
+        } else {
+            self.email = Some(None);
+        }
+
         let summary = match choice {
             1 => format!(
-                "Telegram · {}",
+                "Telegram A {}",
                 self.telegram
                     .as_ref()
                     .and_then(|t| t.as_ref())
@@ -920,14 +1135,22 @@ impl PartialConfig {
                     .unwrap_or("")
             ),
             2 => format!(
-                "WhatsApp · {}",
+                "WhatsApp A {}",
                 self.whatsapp_native
                     .as_ref()
                     .and_then(|w| w.as_ref())
                     .map(|(_, p)| p.as_str())
                     .unwrap_or("")
             ),
-            3 => "Telegram + WhatsApp".to_string(),
+            3 => format!(
+                "Email A {}",
+                self.email
+                    .as_ref()
+                    .and_then(|e| e.as_ref())
+                    .map(|(e, _, _, _, _, _)| e.as_str())
+                    .unwrap_or("")
+            ),
+            4 => "Telegram + WhatsApp".to_string(),
             _ => "CLI only".to_string(),
         };
         step_done(&summary);
@@ -1115,6 +1338,19 @@ impl PartialConfig {
                 });
             }
         }
+        if let Some(Some(cp)) = &self.cheap_provider {
+            if cp != &p_name
+                && self
+                    .cheap_api_key
+                    .as_ref()
+                    .map(|k| k.is_some())
+                    .unwrap_or(false)
+            {
+                providers[cp] = json!({
+                    "api_key": self.cheap_api_key.as_ref().unwrap().as_ref().unwrap().clone()
+                });
+            }
+        }
 
         let telegram_vec = match &self.telegram {
             Some(Some((token, user))) => json!([{
@@ -1131,13 +1367,36 @@ impl PartialConfig {
             _ => json!([]),
         };
 
+        let email_vec = match &self.email {
+            Some(Some((email, pass, smtp_host, smtp_port, imap_host, imap_port))) => json!([{
+                "account_id": "main",
+                "smtp_user": email,
+                "smtp_pass": pass,
+                "smtp_host": smtp_host,
+                "smtp_port": smtp_port,
+                "imap_host": imap_host,
+                "imap_port": imap_port
+            }]),
+            _ => json!([]),
+        };
+
         let mut config = json!({
             "default_provider": p_name,
             "default_model": self.selected_default_model.as_ref().cloned().unwrap_or_else(|| "gemini-2.0-flash".to_string()),
             "timezone": self.timezone.as_ref().cloned().unwrap_or_else(|| "UTC".to_string()),
             "models": { "providers": providers },
-            "channels": { "telegram": telegram_vec, "whatsapp_native": whatsapp_vec },
-            "memory": { "backend": self.memory_backend.as_ref().cloned().unwrap_or_else(|| "sqlite".to_string()) },
+            "agents": [{
+                "name": "default",
+                "provider": p_name,
+                "model": self.selected_default_model.as_ref().cloned().unwrap_or_else(|| "gemini-2.0-flash".to_string()),
+                "cheap_provider": self.cheap_provider.as_ref().and_then(|p| p.as_ref()).cloned(),
+                "cheap_model": self.cheap_model.as_ref().and_then(|m| m.as_ref()).cloned()
+            }],
+            "channels": { "telegram": telegram_vec, "whatsapp_native": whatsapp_vec, "email": email_vec },
+            "memory": {
+                "backend": self.memory_backend.as_ref().cloned().unwrap_or_else(|| "sqlite".to_string()),
+                "embedding_provider": self.embed_provider.as_ref().and_then(|ep| ep.as_ref()).cloned()
+            },
             "composio": {
                 "enabled": self.composio_enabled.unwrap_or(false),
                 "api_key": self.composio_api_key.as_ref().and_then(|k| k.as_ref()).cloned(),

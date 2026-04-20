@@ -10,7 +10,6 @@ axum = "0.8.8"
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.5.60", features = ["derive"] }
-notify-rust = "4.11"
 dirs = "6.0"
 dotenvy = "0.15.7"
 libc = "0.2.182"
@@ -41,6 +40,9 @@ dialoguer = "0.11"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 url = "2"
+imap = "2.4.1"
+lettre = "0.11.21"
+native-tls = "0.2.18"
 
 [dev-dependencies]
 tempfile = "3.27.0"

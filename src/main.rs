@@ -20,6 +20,7 @@ pub mod cost;
 pub mod cron;
 pub mod daemon;
 pub mod doctor;
+pub mod dream;
 pub mod gateway;
 pub mod goals;
 pub mod hardware;
@@ -293,7 +294,7 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     .await;
 
     // Create agent with tools
-    let mut agent = Agent::new(provider, tools, model_name, config.workspace_dir);
+    let mut agent = Agent::new(provider, None, tools, model_name, config.workspace_dir);
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {

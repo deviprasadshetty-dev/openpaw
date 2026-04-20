@@ -4,6 +4,7 @@ pub mod error_classify;
 pub mod factory;
 pub mod fallback;
 pub mod gemini;
+pub mod gemini_cli;
 pub mod kilocode;
 pub mod ollama;
 pub mod openai;
