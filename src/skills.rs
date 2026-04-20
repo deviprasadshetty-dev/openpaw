@@ -208,3 +208,4 @@ pub fn list_skills_merged(builtin_dir: &Path, workspace_dir: &Path) -> Result<Ve
     builtins.append(&mut workspace);
     Ok(builtins)
 }
+
