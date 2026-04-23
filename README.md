@@ -19,6 +19,8 @@ Whether it's prowling through your file system, or sniffing out data in technica
 *   **Claws-Out Automation:** Native support for I2C, SPI, and Serial communication to interact with the physical world.
 *   **OpenClaw Heritage:** Fully compatible with the "Skills" philosophy, offering a familiar but "sharper" experience for OpenClaw enthusiasts.
 *   **Hardware-Aware Senses:** A specialized RAG system that understands the "anatomy" of hardware (datasheets, pin-aliases, and board types).
+*   **Cost Optimized:** Prompt caching (75% reduction), response caching, tool result caching, and cheap model routing for greetings — built for sustained use.
+*   **Self-Improving:** Dream Sequence autonomous learning, skill nudges, and dialectic user modeling make OpenPaw smarter over time.
 
 ## ✨ The Agent's Instincts (Features)
 
@@ -63,24 +65,37 @@ OpenPaw's onboarding wizard now treats your model choice as first-class configur
 ---
 
 ### 🧠 Sophisticated Orchestration & Intelligence
-*   **Contextual Intelligence (New) 🧠**: OpenPaw is now aware of "now" with native UTC date and time injection, and features intelligent skill discovery for lazy-loading capabilities.
+*   **Contextual Intelligence 🧠**: OpenPaw is aware of "now" with native UTC date and time injection, and features intelligent skill discovery for lazy-loading capabilities.
 *   **Social & Channel Awareness**: Specialized logic for Telegram group chats (using `[NO_REPLY]` markers) and strict guidance for scheduled tasks to minimize execution errors.
 *   **7-Tier Territory Routing:** Advanced logic that routes messages based on Peer, Guild, Team, Account, or Channel constraints. Your agent always knows its place.
 *   **The Whisker-Thin Bus:** A high-throughput internal message bus (via `crossbeam-channel`) that orchestrates silent, deadly-efficient communication between modules.
-*   **Persistent Memory:** SQLite-backed long-term memory with Full-Text Search (FTS5). OpenPaw remembers your preferences like a cat remembers its favorite sunny spot.
+*   **Persistent Memory:** Multi-backend memory system (SQLite with FTS5, Markdown, PostgreSQL, LRU). OpenPaw remembers your preferences like a cat remembers its favorite sunny spot.
+*   **Dream Sequence 🌙:** Autonomous learning during idle time (15+ min). Reviews memories, extracts core learnings, deletes obsolete data, and suggests NEW skills — all via LLM-based consolidation.
+*   **Prompt Caching (75% Cost Reduction):** Anthropic Cache Control implementation with smart invalidation. Frozen snapshots preserve prefix cache for massive cost savings.
+*   **Context Compression:** Pre-flight token counting, dynamic max tokens adjustment, and trivial follow-up detection ("yes"/"no"/"ok") for efficient context usage.
+*   **Follow-Through Guardrail:** Detects when the LLM promises action but doesn't call tools — injects nudges to execute promised actions and prevents infinite loops.
+*   **Response & Tool Caching:** LLM response caching (1-hour TTL) and tool result caching (5-minute TTL) with circuit breaker (stops retrying tools failing 3+ times).
+*   **Self-Learning Agent:** Skill nudges for repeated workflows, memory nudges for important info, and `DIALECTIC.md` user modeling that captures your preferences and style.
 
 ### 🛠️ Sharpening the Claws (The Toolbelt)
-*   **MCP Host Implementation**: OpenPaw hosts and orchestrates Model Context Protocol (MCP) servers natively, expanding its "territory" to thousands of standardized tools.
-*   **Hardware-Aware RAG**: A specialized sensory system for technical documentation. It parses markdown pin-aliases and provides the exact board-specific context needed for hardware hacks.
-*   **Brave Search Integration**: High-quality web results via Brave's Search API. Returns rich, agent-friendly snippets for superior information gathering.
-*   **Background Sub-agents**: OpenPaw can spawn and manage background workers for long-running tasks, allowing it to multi-task without blocking your main conversation.
-*   **SkillForge Ecosystem**: Automatically scout and integrate community "Skills" from GitHub. Compatible with the NullClaw and OpenClaw ecosystems.
+*   **40+ Built-in Tools:** Comprehensive toolset including file operations, shell commands, web search/fetch, memory management, skill operations, cron scheduling, messaging, browser automation, vision, and more.
+*   **MCP Host Implementation**: OpenPaw hosts and orchestrates Model Context Protocol (MCP) servers natively, expanding its "territory" to thousands of standardized tools with JSON-RPC 2.0 support.
+*   **Hardware-Aware RAG**: A specialized sensory system for technical documentation. It parses markdown pin-aliases, detects boards (Arduino, STM32, ESP32 via USB VID/PID), and provides exact board-specific context.
+*   **Brave Search Integration**: High-quality web results via Brave's Search API. Returns rich, agent-friendly snippets for superior information gathering. Supports DuckDuckGo and Gemini search as fallbacks.
+*   **Background Sub-agents**: OpenPaw can spawn and manage background workers (default concurrency: 4) for long-running tasks, allowing it to multi-task without blocking your main conversation.
+*   **SkillForge Ecosystem**: Automatically scout and integrate community "Skills" from GitHub, ClawHub, and skills.sh. Compatible with NullClaw and OpenClaw ecosystems. Includes built-in `skill-creator` for building new skills.
+*   **Composio Integration 🔗**: Connect 100+ external apps (Gmail, GitHub, Slack, Jira, and more) via Composio for enterprise-grade workflow automation.
 *   **OpenCode CLI Bridge**: Optional `opencode_cli` tool lets OpenPaw invoke `opencode run` (including `--attach`) for a second coding agent pipeline when you need deeper code reasoning or different tool ecosystems.
+*   **Cost Tracking 💰**: Real-time token usage and cost estimation across all providers. Tracks spend per session and over time.
+*   **Approval Workflows:** Human-in-the-loop with `request_approval`/`approval_respond` tools. Configurable via `AgentMailbox` for inter-agent messaging.
+*   **Workspace Templates:** Auto-creates `SOUL.md` (personality), `USER.md` (preferences), `MEMORY.md` (knowledge), `AGENTS.md` (instructions), `HEARTBEAT.md` (proactive tasks), and `BOOTSTRAP.md` (init).
 
 ### 🔌 Multimodal Senses
-*   **Hardware Gateway**: Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer.
+*   **Hardware Gateway**: Native drivers for Serial (ACM/USB), I2C, and SPI. Control real-world hardware as easily as playing with a laser pointer. Board auto-detection via USB VID/PID.
 *   **Multimodal Ears (Groq/Whisper)**: Bi-directional voice support. OpenPaw can "hear" Telegram voice notes and transcribe them instantly using ultra-low latency STT.
-*   **Multi-Channel Prowling**: Robust adapters for **Telegram** and **CLI**.
+*   **Multimodal Vision**: Process images (PNG, JPEG, GIF, BMP, WebP) and video (MP4, MPEG, MOV, WebM) with `[image:path]` and `[video:path]` marker syntax.
+*   **Multi-Channel Prowling**: Robust adapters for **Telegram**, **CLI**, **WhatsApp Native**, and **Email** (IMAP/SMTP). 7-tier routing with per-peer/per-channel session management.
+*   **Browser Automation**: Multiple backends — CDP (Chrome DevTools Protocol), Native WebDriver, and Computer Use (Anthropic-style). Auto-launch Chrome/Chromium with headless support.
 
 ---
 
@@ -142,7 +157,7 @@ curl -sSf https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/in
 ## 🏃 Deployment Territories
 
 ### 📡 The Resident Daemon
-Run OpenPaw as a persistent background service to handle incoming calls from Telegram or webhooks:
+Run OpenPaw as a persistent background service to handle incoming calls from Telegram, WhatsApp, Email, or webhooks:
 ```bash
 openpaw agent
 ```
@@ -151,6 +166,19 @@ openpaw agent
 Execute complex tasks directly from your terminal:
 ```bash
 openpaw agent --message "Sniff out the CPU temperature and let me know if it's getting too hot."
+```
+
+### 📅 Cron & Scheduling
+Built-in cron system with support for:
+- **Cron expressions:** `0 9 * * *` (daily at 9am)
+- **At timestamps:** One-time future execution
+- **Every intervals:** Repeated execution (millisecond precision)
+- **Job types:** Shell commands or isolated agent turns
+- **Delivery modes:** None, Always, OnError, OnSuccess
+- **Run history:** Tracks execution history with 1-second polling
+
+```bash
+openpaw cron add "0 9 * * *" --message "Good morning! Any tasks for today?"
 ```
 
 ### 🧩 OpenCode CLI Bridge (Optional)
@@ -176,10 +204,19 @@ Suggested uses:
 - Planning (milestones, alternatives, decision matrices)
 - Writing transformations (rewrite, tone shift, structured drafts)
 
+### 🌐 Gateway Server
+Expose OpenPaw via HTTP gateway with WebSocket support for real-time communication and tunneling capabilities.
+
 ---
 
 ## 🛡️ Security & Territory Isolation
-OpenPaw is fiercely protective of its territory. File system access is strictly sandboxed. Web browsing occurs in ephemeral, isolated Chromium containers. All hardware interactions are subject to strict path-based permission checks.
+OpenPaw is fiercely protective of its territory:
+- **Secret Encryption:** ChaCha20Poly1305 encryption for API keys and sensitive config
+- **File System Sandboxing:** Strict path-based permission checks for file operations
+- **Channel Allowlists:** Control which channels can interact with your agent
+- **Network Security:** CORS protection and allowed domain restrictions
+- **Web Isolation:** Browsing occurs in ephemeral, isolated Chromium containers
+- **Hardware Permissions:** All hardware interactions subject to strict path-based checks
 
 ---
 

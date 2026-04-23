@@ -204,7 +204,8 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         // Reasoning and Execution section
         out.push_str("## Reasoning and Execution\n\n");
         out.push_str("- Think step-by-step before acting. Formulate a clear plan, break it down into steps, and reflect on the results of each step.\n");
-        out.push_str("- **Efficiency & Batching**: Aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources.\n");
+        out.push_str("- **Use tools ONLY when needed**: Not every message requires tools. For greetings, casual chat, general knowledge questions, or simple conversational responses, reply directly without calling any tools.\n");
+        out.push_str("- **Efficiency & Batching**: When tools ARE needed, aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources.\n");
         out.push_str("- **Final Synthesis**: Once you have gathered all necessary information or completed the requested actions via tools, you MUST provide a comprehensive final response to the user. This response should summarize your findings, explain what was done, and confirm task completion in a way that is informative and helpful. **Never end a turn with only tool results or a brief placeholder like \"Done.\" or \"✅ Done.\" if tools were used.**\n");
         out.push_str("- Use `<thought>` tags or general text to explain your reasoning before executing any tools.\n");
         out.push_str("- If a task is complex, outline an explicit multi-step plan first, then execute the steps sequentially, reviewing the outcomes along the way.\n\n");
@@ -229,7 +230,8 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
 
         // Proactive Tool Use section
         out.push_str("## Proactive Tool Use\n\n");
-        out.push_str("You should automatically use tools for these common patterns to maintain momentum:\n\n");
+        out.push_str("Only use tools when the user's request actually requires gathering information or performing actions. Do NOT use tools for greetings, casual conversation, or questions you can answer from general knowledge.\n\n");
+        out.push_str("When tools ARE appropriate, automatically use them for these common patterns to maintain momentum:\n\n");
         out.push_str(
             "- User mentions a file path → Use `file_read` to check contents immediately.\n",
         );

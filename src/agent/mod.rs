@@ -1639,6 +1639,7 @@ impl Agent {
 
         // Tool loop with streaming
         let mut iterations = 0u32;
+        let mut accumulated_text = String::new();
         // BUG-2 FIX: Independent counters per nudge type to prevent infinite loops.
         let mut follow_through_nudge_count = 0u32;
         let mut empty_response_nudge_count = 0u32;
@@ -1652,9 +1653,13 @@ impl Agent {
                 // BUG-4 FIX: Clone live history to satisfy borrow checker
                 // (&mut self cannot coexist with &self.history in a method call).
                 let history_for_summary = self.history.clone();
-                return self
+                let summary = self
                     .iterations_exhausted_summary(&history_for_summary, &model_to_use)
-                    .await;
+                    .await?;
+                if !accumulated_text.is_empty() {
+                    return Ok(format!("{}\n\n{}", accumulated_text.trim(), summary));
+                }
+                return Ok(summary);
             }
 
             // BUG-1 FIX: Rebuild fresh every iteration so the model always
@@ -1749,6 +1754,9 @@ impl Agent {
                         cb(StreamChunk::Delta(err_msg.clone()));
                         cb(StreamChunk::Done(crate::providers::TokenUsage::default()));
                     }
+                    if !accumulated_text.is_empty() {
+                        return Ok(format!("{}\n\n{}", accumulated_text.trim(), err_msg));
+                    }
                     return Ok(err_msg);
                 }
             };
@@ -1764,6 +1772,19 @@ impl Agent {
                     self.response_cache
                         .insert(&self.history, &model_to_use, content.clone());
                 }
+            }
+
+            // Extract any text present in this iteration (outside tool calls)
+            let current_text = if has_xml_tool_calls_s {
+                strip_tool_call_markup(&response_content_str_s)
+            } else {
+                response_content_str_s.trim().to_string()
+            };
+            if !is_low_value_response(&current_text) {
+                if !accumulated_text.is_empty() {
+                    accumulated_text.push_str("\n\n");
+                }
+                accumulated_text.push_str(&current_text);
             }
 
             // B-6: Record cost usage with real model-specific prices
@@ -1838,36 +1859,40 @@ impl Agent {
                         }
                     }
 
-                    let final_text = strip_tool_call_markup(&display_text);
-                    if is_low_value_response(&final_text) {
-                        let has_tool_results = self.history.iter().any(|m| m.role == "tool");
-                        if empty_response_nudge_count < 1 {
-                            let nudge_content = if has_tool_results {
-                                "SYSTEM: You have finished calling tools. Now, provide a concise final response to the user summarizing the results or answering their question based on the tool outputs above. Do NOT use placeholder text like \"Done.\"." .to_string()
+                    if accumulated_text.is_empty() {
+                        let final_text = strip_tool_call_markup(&display_text);
+                        if is_low_value_response(&final_text) {
+                            let has_tool_results = self.history.iter().any(|m| m.role == "tool");
+                            if empty_response_nudge_count < 1 {
+                                let nudge_content = if has_tool_results {
+                                    "SYSTEM: You have finished calling tools. Now, provide a concise final response to the user summarizing the results or answering their question based on the tool outputs above. Do NOT use placeholder text like \"Done.\"." .to_string()
+                                } else {
+                                    "SYSTEM: Your response was empty or too brief. Please provide a clear and concise answer or explanation to the user.".to_string()
+                                };
+                                self.history.push(ChatMessage {
+                                    role: "user".to_string(),
+                                    content: nudge_content,
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    content_parts: None,
+                                    thought_signature: None,
+                                });
+                                empty_response_nudge_count += 1;
+                                iterations += 1;
+                                continue;
                             } else {
-                                "SYSTEM: Your response was empty or too brief. Please provide a clear and concise answer or explanation to the user.".to_string()
-                            };
-                            self.history.push(ChatMessage {
-                                role: "user".to_string(),
-                                content: nudge_content,
-                                name: None,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                content_parts: None,
-                                thought_signature: None,
-                            });
-                            empty_response_nudge_count += 1;
-                            iterations += 1;
-                            continue;
-                        } else {
-                            if has_tool_results {
-                                self.spawn_background_review_if_needed();
-                                return Ok("I have completed the requested actions. [Detailed summary unavailable]".to_string());
+                                if has_tool_results {
+                                    self.spawn_background_review_if_needed();
+                                    return Ok("I have completed the requested actions. [Detailed summary unavailable]".to_string());
+                                }
                             }
                         }
+                        self.spawn_background_review_if_needed();
+                        return Ok(final_text);
                     }
                     self.spawn_background_review_if_needed();
-                    return Ok(final_text);
+                    return Ok(accumulated_text);
                 }
                 parse_result.calls
             };
