@@ -636,3 +636,132 @@ fn default_max_tasks() -> usize {
 fn default_agent_timeout_secs() -> u64 {
     300
 }
+
+// ── Skills config ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillsConfig {
+    #[serde(default = "default_creation_nudge_interval")]
+    pub creation_nudge_interval: u32,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            creation_nudge_interval: default_creation_nudge_interval(),
+        }
+    }
+}
+
+fn default_creation_nudge_interval() -> u32 {
+    15
+}
+
+// ── Self-Learning config ────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SelfLearningConfig {
+    #[serde(default = "default_memory_nudge_interval")]
+    pub memory_nudge_interval: u32,
+    #[serde(default = "default_memory_char_limit")]
+    pub memory_char_limit: usize,
+    #[serde(default = "default_user_char_limit")]
+    pub user_char_limit: usize,
+    #[serde(default = "default_flush_min_turns")]
+    pub flush_min_turns: u32,
+    #[serde(default = "default_dialectic_enabled")]
+    pub dialectic_enabled: bool,
+}
+
+impl Default for SelfLearningConfig {
+    fn default() -> Self {
+        Self {
+            memory_nudge_interval: default_memory_nudge_interval(),
+            memory_char_limit: default_memory_char_limit(),
+            user_char_limit: default_user_char_limit(),
+            flush_min_turns: default_flush_min_turns(),
+            dialectic_enabled: default_dialectic_enabled(),
+        }
+    }
+}
+
+fn default_memory_nudge_interval() -> u32 {
+    10
+}
+
+fn default_memory_char_limit() -> usize {
+    2200
+}
+
+fn default_user_char_limit() -> usize {
+    1375
+}
+
+fn default_flush_min_turns() -> u32 {
+    6
+}
+
+fn default_dialectic_enabled() -> bool {
+    true
+}
+
+// ── Efficiency config (Hermes-style cost/token optimization) ────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EfficiencyConfig {
+    /// Enable proactive context compression before hitting token limits.
+    #[serde(default = "default_true")]
+    pub proactive_compression: bool,
+    /// Enable prompt caching to preserve prefix cache across turns.
+    #[serde(default = "default_true")]
+    pub prompt_caching: bool,
+    /// Enable enhanced token estimation for accurate budget tracking.
+    #[serde(default = "default_true")]
+    pub accurate_token_estimation: bool,
+    /// Per-turn token budget (0 = unlimited).
+    #[serde(default = "default_turn_token_budget")]
+    pub turn_token_budget: u64,
+    /// Enable skill self-improvement based on execution feedback.
+    #[serde(default = "default_true")]
+    pub skill_self_improvement: bool,
+    /// Minimum executions before a skill is considered for improvement.
+    #[serde(default = "default_skill_min_executions")]
+    pub skill_min_executions: usize,
+    /// Enable zero-context-cost subagent delegation (minimal context).
+    #[serde(default = "default_true")]
+    pub minimal_subagent_context: bool,
+    /// Enable periodic user modeling analysis (every N turns, 0 = off).
+    #[serde(default = "default_user_modeling_interval")]
+    pub user_modeling_interval: u32,
+    /// Enable cross-session episodic memory search.
+    #[serde(default = "default_true")]
+    pub episodic_memory_search: bool,
+}
+
+impl Default for EfficiencyConfig {
+    fn default() -> Self {
+        Self {
+            proactive_compression: true,
+            prompt_caching: true,
+            accurate_token_estimation: true,
+            turn_token_budget: default_turn_token_budget(),
+            skill_self_improvement: true,
+            skill_min_executions: default_skill_min_executions(),
+            minimal_subagent_context: true,
+            user_modeling_interval: default_user_modeling_interval(),
+            episodic_memory_search: true,
+        }
+    }
+}
+
+fn default_turn_token_budget() -> u64 {
+    0 // Unlimited by default
+}
+
+fn default_skill_min_executions() -> usize {
+    3
+}
+
+fn default_user_modeling_interval() -> u32 {
+    5
+}

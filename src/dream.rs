@@ -66,7 +66,7 @@ fn dream_sequence(
     provider: Arc<dyn Provider>,
     memory: Arc<dyn crate::agent::memory_loader::Memory>,
     model_name: &str,
-    workspace_dir: &str,
+    _workspace_dir: &str,
 ) -> anyhow::Result<()> {
     // 1. Fetch recent memories that aren't learnings
     let recent_memories = memory.get_recent(MEMORY_CHUNK_SIZE)?;
@@ -147,21 +147,12 @@ Output format MUST be strict JSON:
         content
     };
     
-    #[derive(serde::Deserialize, Default)]
-    struct DreamSkill {
-        name: String,
-        description: String,
-        instructions: String,
-    }
-
     #[derive(serde::Deserialize)]
     struct DreamResult {
         #[serde(default)]
         delete_ids: Vec<String>,
         #[serde(default)]
         new_learnings: Vec<String>,
-        #[serde(default)]
-        new_skills: Vec<DreamSkill>,
     }
 
     let result: DreamResult = match serde_json::from_str(content) {
@@ -188,21 +179,7 @@ Output format MUST be strict JSON:
         );
     }
 
-    // 4. Auto-Mint Skills
-    let skills_dir = std::path::Path::new(workspace_dir).join("skills");
-    for skill in result.new_skills {
-        let target_dir = skills_dir.join(&skill.name);
-        if !target_dir.exists() {
-            if let Ok(_) = std::fs::create_dir_all(&target_dir) {
-                let md_content = format!(
-                    "---\nname: {}\ndescription: {}\n---\n{}",
-                    skill.name, skill.description, skill.instructions
-                );
-                let _ = std::fs::write(target_dir.join("SKILL.md"), md_content);
-                info!("Dream phase auto-minted new skill: {}", skill.name);
-            }
-        }
-    }
+    // 4. Skill minting DISABLED — use the skill_manage tool for full tool-based skills instead.
 
     Ok(())
 }

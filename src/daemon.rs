@@ -46,16 +46,17 @@ pub struct DaemonState {
 
 impl Default for DaemonState {
     fn default() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         Self {
             started: false,
             gateway_host: "127.0.0.1".to_string(),
             gateway_port: 3000,
             components: Vec::new(),
-            last_activity_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-            last_dream_at: 0,
+            last_activity_at: now,
+            last_dream_at: now, // Initialize to now so first dream waits the full cooldown
         }
     }
 }
@@ -630,6 +631,9 @@ pub async fn build_tools(
     event_registry: Option<Arc<crate::events::EventRegistry>>,
     // Feature 2: dependency-aware task planning (main agent only)
     plan_manager: Option<Arc<crate::plan::PlanManager>>,
+    // Optional provider for tools that need LLM summarization
+    provider: Option<Arc<dyn Provider>>,
+    cheap_provider: Option<Arc<dyn Provider>>,
 ) -> Vec<Arc<dyn crate::tools::Tool>> {
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
@@ -769,6 +773,31 @@ pub async fn build_tools(
             workspace_dir: config.workspace_dir.clone(),
         },
     ));
+
+    // Self-Learning: Skill management (Hermes-style procedural learning)
+    tools.push(Arc::new(crate::tools::skill_manage::SkillManageTool {
+        workspace_dir: config.workspace_dir.clone(),
+    }));
+    tools.push(Arc::new(crate::tools::skill_view::SkillViewTool {
+        workspace_dir: config.workspace_dir.clone(),
+        builtin_dir: config.workspace_dir.clone(),
+    }));
+
+    // Self-Learning: Markdown memory (Hermes-style declarative learning)
+    tools.push(Arc::new(crate::tools::memory_md::MemoryMdTool {
+        workspace_dir: config.workspace_dir.clone(),
+        memory_char_limit: config.self_learning.memory_char_limit,
+        user_char_limit: config.self_learning.user_char_limit,
+    }));
+
+    // Self-Learning: Session search (Hermes-style episodic memory)
+    let search_model = config.default_model.clone()
+        .unwrap_or_else(|| "gemini-1.5-flash".to_string());
+    tools.push(Arc::new(crate::tools::session_search::SessionSearchTool {
+        workspace_dir: config.workspace_dir.clone(),
+        provider: cheap_provider.clone().or(provider.clone()),
+        model_name: search_model,
+    }));
 
     tools.push(Arc::new(crate::tools::browser_open::BrowserOpenTool {
         allowed_domains: config.http_request.allowed_domains.clone(),
@@ -1074,6 +1103,8 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         Some(approval_manager.clone()),
         Some(event_registry),
         Some(plan_manager),
+        Some(provider.clone()),
+        None, // cheap_provider not available in daemon startup path
     )
     .await;
 
@@ -1198,6 +1229,16 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         }
         thread::sleep(Duration::from_secs(1));
     }
+
+    // Self-Learning: Flush memories for all active sessions before exit
+    info!("Flushing memories for all active sessions...");
+    {
+        let rt = tokio::runtime::Handle::current();
+        let _ = rt.block_on(async {
+            session_manager.flush_all_sessions().await;
+        });
+    }
+    info!("Memory flush complete.");
 
     // Stop polling threads
     for (state, handle) in polling_threads {

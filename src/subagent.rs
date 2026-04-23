@@ -262,6 +262,8 @@ impl SubagentManager {
                 Some(approval_clone.clone()),
                 None, // event_registry — main agent only
                 None, // plan_manager — main agent only
+                None, // provider
+                None, // cheap_provider
             )
             .await;
 
@@ -581,6 +583,8 @@ fn drain_pending(
                         Some(mailbox_clone2.clone()),
                         Some(approval_clone2.clone()),
                         None,
+                        None,
+                        Some(provider.clone()),
                         None,
                     )
                     .await;

@@ -122,6 +122,11 @@ impl SessionManager {
         }
         agent.memory_session_id = Some(session_key.to_string());
 
+        // Self-Learning: Configure nudge intervals from config
+        agent.skill_nudge_interval = self.config.skills.creation_nudge_interval;
+        agent.memory_nudge_interval = self.config.self_learning.memory_nudge_interval;
+        agent.memory_flush_min_turns = self.config.self_learning.flush_min_turns;
+
         let new_session = Arc::new(Session::new(agent, session_key.to_string()));
         sessions.insert(session_key.to_string(), Arc::clone(&new_session));
 
@@ -156,6 +161,19 @@ impl SessionManager {
             Ordering::SeqCst,
         );
 
+        // Self-Learning: Dialectic user modeling — analyze session asynchronously
+        // Only analyze every 5 turns to avoid excessive API calls
+        let turn_count = session_arc.turn_count.load(Ordering::SeqCst);
+        if self.config.self_learning.dialectic_enabled && turn_count % 5 == 0 {
+            let provider = agent_guard.provider.clone();
+            let model_name = agent_guard.model_name.clone();
+            let history = agent_guard.history.clone();
+            let workspace_dir = agent_guard.workspace_dir.clone();
+            tokio::spawn(async move {
+                crate::dialectic::analyze_session(provider, &model_name, &history, &workspace_dir).await;
+            });
+        }
+
         Ok(response)
     }
 
@@ -187,6 +205,19 @@ impl SessionManager {
                 .as_secs(),
             Ordering::SeqCst,
         );
+
+        // Self-Learning: Dialectic user modeling — analyze session asynchronously
+        // Only analyze every 5 turns to avoid excessive API calls
+        let turn_count = session_arc.turn_count.load(Ordering::SeqCst);
+        if self.config.self_learning.dialectic_enabled && turn_count % 5 == 0 {
+            let provider = agent_guard.provider.clone();
+            let model_name = agent_guard.model_name.clone();
+            let history = agent_guard.history.clone();
+            let workspace_dir = agent_guard.workspace_dir.clone();
+            tokio::spawn(async move {
+                crate::dialectic::analyze_session(provider, &model_name, &history, &workspace_dir).await;
+            });
+        }
 
         Ok(response)
     }
@@ -225,5 +256,14 @@ impl SessionManager {
 
     pub fn get_config(&self) -> &crate::config::Config {
         &self.config
+    }
+
+    /// Flush memories for all active sessions before shutdown.
+    pub async fn flush_all_sessions(&self) {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        for (_key, session) in sessions.iter() {
+            let mut agent_guard = session.agent.lock().await;
+            agent_guard.flush_memories().await;
+        }
     }
 }

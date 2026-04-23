@@ -1,3 +1,4 @@
+pub mod background_review;
 pub mod commands;
 pub mod compaction;
 pub mod context_tokens;
@@ -5,6 +6,7 @@ pub mod dispatcher;
 pub mod max_tokens;
 pub mod memory_loader;
 pub mod prompt;
+pub mod prompt_cache;
 pub mod response_cache;
 pub mod routing;
 
@@ -23,7 +25,7 @@ use crate::model_router::ModelRoutingConfig;
 use crate::providers::{ChatMessage, ChatRequest, Provider, ToolSpec};
 use crate::tools::{Tool, ToolContext};
 
-use compaction::{CompactionConfig, auto_compact_history, trim_history};
+use compaction::{auto_compact_history_legacy, trim_history};
 use context_tokens as context_tokens_resolver;
 use dispatcher::{ParsedToolCall, ToolExecutionResult, parse_tool_calls};
 use max_tokens as max_tokens_resolver;
@@ -64,11 +66,77 @@ pub struct Agent {
     /// Channel/sender context injected per-turn so the system prompt can activate
     /// group-chat logic, channel-specific behaviour etc. (BUG-5 fix)
     pub conversation_context: Option<prompt::ConversationContext>,
+
+    // Self-Learning counters (Hermes-style)
+    pub user_turn_count: u64,
+    pub iters_since_skill: u32,
+    pub turns_since_memory: u32,
+    pub skill_nudge_interval: u32,
+    pub memory_nudge_interval: u32,
+    pub memory_flush_min_turns: u32,
+
+    // Frozen memory snapshots (Hermes-style prefix-cache preservation)
+    pub memory_snapshot: Option<String>,
+    pub user_snapshot: Option<String>,
+
+    // Efficiency features (Hermes-style cost/token optimization)
+    pub skill_journal: Option<Arc<crate::skills::self_improve::SkillJournal>>,
+    pub efficiency_config: crate::config_types::EfficiencyConfig,
+    pub current_turn_tokens: u64,
+
+    // Hermes-style ContextCompressor for advanced context compression
+    pub context_compressor: Option<crate::agent::compaction::ContextCompressor>,
 }
 
 /// QW-6: Conditional follow-through detection.
 /// Returns true if the LLM output contains phrases indicating it intends to take action,
 /// but didn't actually emit a tool call.
+/// Select a subset of history for the current turn.
+/// For trivial follow-ups, keep only recent messages to save tokens.
+/// Always preserves the system prompt at index 0.
+fn select_context_window(history: &[ChatMessage], query: &str) -> Vec<ChatMessage> {
+    if history.is_empty() {
+        return history.to_vec();
+    }
+
+    let lower = query.to_lowercase();
+    let trimmed = lower.trim();
+
+    // Trivial follow-ups need very little prior context
+    let is_trivial_followup = trimmed == "yes"
+        || trimmed == "no"
+        || trimmed == "ok"
+        || trimmed == "thanks"
+        || trimmed == "thank you"
+        || trimmed.starts_with("yes ")
+        || trimmed.starts_with("no ")
+        || trimmed.starts_with("ok ")
+        || trimmed.starts_with("thanks ")
+        || trimmed.starts_with("thank you ");
+
+    if is_trivial_followup && history.len() > 8 {
+        let mut sliced = Vec::new();
+        if history[0].role == "system" {
+            sliced.push(history[0].clone());
+        }
+        let start = history.len().saturating_sub(6);
+        sliced.extend_from_slice(&history[start..]);
+        return sliced;
+    }
+
+    // New topic markers: user explicitly wants full context
+    let is_new_topic = lower.starts_with("actually ")
+        || lower.starts_with("new topic")
+        || lower.starts_with("forget ")
+        || lower.starts_with("let's talk about ");
+
+    if is_new_topic {
+        return history.to_vec();
+    }
+
+    history.to_vec()
+}
+
 pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
     if available_tools.is_empty() {
         return false;
@@ -354,6 +422,23 @@ impl Agent {
             },
             last_compaction: 0,
             conversation_context: None,
+            user_turn_count: 0,
+            iters_since_skill: 0,
+            turns_since_memory: 0,
+            skill_nudge_interval: 15,
+            memory_nudge_interval: 10,
+            memory_flush_min_turns: 6,
+            memory_snapshot: None,
+            user_snapshot: None,
+            skill_journal: None,
+            efficiency_config: crate::config_types::EfficiencyConfig::default(),
+            current_turn_tokens: 0,
+            context_compressor: Some(crate::agent::compaction::ContextCompressor::new(
+                crate::agent::compaction::CompactionConfig {
+                    context_length: token_limit,
+                    ..Default::default()
+                },
+            )),
         };
 
         if context_tokens_resolver::is_small_model_context(token_limit) {
@@ -462,6 +547,22 @@ impl Agent {
             .map(|e| e.content)
             .collect::<Vec<_>>();
 
+        // Hermes-style frozen snapshot: capture memory files at prompt-build time.
+        // Mid-session memory tool writes update disk but do NOT mutate these snapshots
+        // until the workspace fingerprint changes (triggering a prompt rebuild),
+        // preserving the LLM's prefix cache for the system prompt.
+        let mem_path = std::path::Path::new(&self.workspace_dir).join("MEMORY.md");
+        let alt_path = std::path::Path::new(&self.workspace_dir).join("memory.md");
+        self.memory_snapshot = std::fs::read_to_string(&mem_path)
+            .ok()
+            .or_else(|| std::fs::read_to_string(&alt_path).ok())
+            .filter(|s| !s.trim().is_empty());
+
+        let user_path = std::path::Path::new(&self.workspace_dir).join("USER.md");
+        self.user_snapshot = std::fs::read_to_string(&user_path)
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
         let ctx = prompt::PromptContext {
             workspace_dir: &self.workspace_dir,
             model_name: &self.model_name,
@@ -471,6 +572,8 @@ impl Agent {
             use_native_tools: self.provider.supports_native_tools(),
             token_limit: self.token_limit,
             learnings,
+            memory_snapshot: self.memory_snapshot.clone(),
+            user_snapshot: self.user_snapshot.clone(),
         };
 
         Ok(prompt::build_system_prompt(ctx))
@@ -485,10 +588,23 @@ impl Agent {
             return Ok(slash_response);
         }
 
+        // Self-Learning: Track user turns and memory nudge
+        self.user_turn_count += 1;
+        if self.memory_nudge_interval > 0 {
+            self.turns_since_memory += 1;
+        }
+
         // QW-7: Cheap model routing for greetings/simple tasks
         let model_to_use =
             model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
                 .to_string();
+
+        // Select the appropriate provider for the routed model
+        let active_provider = if model_to_use == self.model_routing_config.cheap_model {
+            self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone())
+        } else {
+            self.provider.clone()
+        };
 
         // R-1 & QW-2: Memory optimizations
         if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
@@ -583,6 +699,15 @@ impl Agent {
             user_message.clone()
         };
 
+        // Hermes-style: inject dialectic user model into the user message (not system prompt)
+        // to preserve the LLM's prefix cache.
+        let dialectic = crate::dialectic::load_dialectic_context(&self.workspace_dir);
+        let enriched_msg = if !dialectic.is_empty() {
+            format!("<memory-context>\n{}\n</memory-context>\n\n{}", dialectic, enriched_msg)
+        } else {
+            enriched_msg
+        };
+
         let (final_content, content_parts) = self.parse_multimodal_message(&enriched_msg);
 
         // Append user message
@@ -599,27 +724,6 @@ impl Agent {
         // Enforce history limits
         trim_history(&mut self.history, self.max_history_messages as u32);
 
-        // Attempt auto-compaction if enabled and over token limit
-        if self.token_limit > 0 {
-            let compaction_config = CompactionConfig {
-                keep_recent: 10,
-                max_summary_chars: 2000,
-                max_source_chars: 12000,
-                token_limit: self.token_limit,
-                max_history_messages: self.max_history_messages as u32,
-                workspace_dir: Some(self.workspace_dir.clone()),
-            };
-
-            let compaction_provider = self.cheap_provider.as_ref().unwrap_or(&self.provider);
-            let _ = auto_compact_history(
-                &mut self.history,
-                compaction_provider,
-                &self.model_routing_config.cheap_model,
-                &compaction_config,
-                &mut self.last_compaction,
-            );
-        }
-
         // Prepare ToolSpecs once
         let tool_specs: Vec<ToolSpec> = self
             .tools
@@ -634,6 +738,54 @@ impl Agent {
                 }
             })
             .collect();
+
+        // ── HERMES: Pre-flight context compression ──────────────────
+        // Before entering the main loop, check if loaded conversation history
+        // already exceeds the model's context threshold. This handles cases
+        // where a user switches to a model with a smaller context window
+        // while having a large existing session.
+        if let Some(ref mut compressor) = self.context_compressor {
+            let min_for_compress = compressor.config.protect_first_n + 3 + 1;
+            if self.history.len() > min_for_compress {
+                let system_prompt = self.history.get(0)
+                    .filter(|m| m.role == "system")
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                let preflight_tokens = crate::token_estimator::estimate_request_tokens_rough(
+                    &self.history,
+                    &system_prompt,
+                    if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+                );
+                if compressor.should_compress(preflight_tokens) {
+                    tracing::info!(
+                        "Preflight compression: ~{} tokens >= {} threshold",
+                        preflight_tokens, compressor.threshold_tokens
+                    );
+                    let compaction_provider = self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone());
+                    for _pass in 0..3 {
+                        let orig_len = self.history.len();
+                        self.history = compressor.compress(
+                            &mut self.history,
+                            Some(preflight_tokens),
+                            None,
+                            &compaction_provider,
+                            &self.model_routing_config.cheap_model,
+                        );
+                        if self.history.len() >= orig_len {
+                            break;
+                        }
+                        let new_tokens = crate::token_estimator::estimate_request_tokens_rough(
+                            &self.history,
+                            &system_prompt,
+                            if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+                        );
+                        if new_tokens < compressor.threshold_tokens {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         // BUG-3 FIX: history_slice is built INSIDE the loop (see below).
         // The old short-message heuristic that sliced to 10 messages is removed —
@@ -668,11 +820,22 @@ impl Agent {
 
             // BUG-1 FIX: Rebuild fresh slice every iteration so the provider always
             // sees the latest tool results, assistant messages, and nudges.
-            let history_slice = self.history.clone();
+            // CONTEXT SLICING: On the first iteration, slice trivial follow-ups
+            // to save tokens; subsequent iterations need full history for tool results.
+            let history_slice = if iterations == 0 {
+                select_context_window(&self.history, &user_message)
+            } else {
+                self.history.clone()
+            };
 
             // Resolve adaptive max tokens using fresh history length
-            let current_max_tokens =
+            let mut current_max_tokens =
                 max_tokens_resolver::resolve_max_tokens(Some(history_slice.len()), &model_to_use);
+
+            // Enforce per-turn token budget from config
+            if self.efficiency_config.turn_token_budget > 0 {
+                current_max_tokens = current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
+            }
 
             // DESIGN-1 FIX: Only check the cache on the first iteration and only
             // return cached if the cached value has no tool calls embedded.
@@ -685,8 +848,16 @@ impl Agent {
                 }
             }
 
+            // ── HERMES: Apply Anthropic prompt caching ────────────────
+            // Reduces input token costs by ~75% on multi-turn conversations.
+            let api_messages = if prompt_cache::supports_prompt_caching(&model_to_use, &active_provider.get_name()) {
+                prompt_cache::apply_anthropic_cache_control(&history_slice, false)
+            } else {
+                history_slice.clone()
+            };
+
             let request = ChatRequest {
-                messages: &history_slice,
+                messages: &api_messages,
                 model: &model_to_use,
                 temperature: self.temperature,
                 max_tokens: Some(current_max_tokens),
@@ -703,7 +874,7 @@ impl Agent {
             let mut last_error = None;
             let mut response = None;
             for attempt in 1..=3 {
-                match self.provider.chat(&request) {
+                match active_provider.chat(&request) {
                     Ok(resp) => {
                         response = Some(resp);
                         break;
@@ -762,16 +933,26 @@ impl Agent {
                 accumulated_text.push_str(&current_text);
             }
 
-            // B-6: Record cost usage
+            // B-6: Record cost usage with real model-specific prices
             if let Some(tracker) = &mut self.cost_tracker {
+                let (input_price, output_price) = crate::token_estimator::get_model_prices(&model_to_use);
                 let token_usage = crate::cost::TokenUsage::new(
                     &model_to_use,
                     response.usage.prompt_tokens as u64,
                     response.usage.completion_tokens as u64,
-                    0.01, // Fallback prices if not in config
-                    0.03,
+                    input_price,
+                    output_price,
                 );
                 let _ = tracker.record_usage(token_usage);
+            }
+
+            // ── HERMES: Update compressor with real token counts ──────
+            // Only use prompt_tokens — completion/reasoning tokens don't consume
+            // context window space. Thinking models inflate completion_tokens
+            // with reasoning, causing premature compression.
+            if let Some(ref mut compressor) = self.context_compressor {
+                compressor.last_prompt_tokens = response.usage.prompt_tokens as u64;
+                compressor.last_completion_tokens = response.usage.completion_tokens as u64;
             }
 
             // Append assistant response to live history
@@ -838,7 +1019,7 @@ impl Agent {
                         }
                     }
 
-                    // No tool calls — genuine (or forced) final response
+                        // No tool calls — genuine (or forced) final response
                     if accumulated_text.is_empty() {
                         let final_text = strip_tool_call_markup(&display_text);
                         if is_low_value_response(&final_text) {
@@ -867,12 +1048,15 @@ impl Agent {
                             } else {
                                 // Nudge was already sent once; return a meaningful fallback
                                 if has_tool_results {
+                                    self.spawn_background_review_if_needed();
                                     return Ok("I have completed the requested actions. [Detailed summary unavailable]".to_string());
                                 }
                             }
                         }
+                        self.spawn_background_review_if_needed();
                         return Ok(final_text);
                     }
+                    self.spawn_background_review_if_needed();
                     return Ok(accumulated_text);
                 }
                 parse_result.calls
@@ -1000,6 +1184,40 @@ impl Agent {
                 }
             }
 
+            // Self-Learning: Increment skill iteration counter per tool-calling iteration
+            if self.skill_nudge_interval > 0 {
+                self.iters_since_skill += 1;
+            }
+
+            // Self-Learning: Reset nudge counters when relevant tools are used
+            for result in &execution_results {
+                match result.name.as_str() {
+                    "memory_md" | "memory_store" => self.turns_since_memory = 0,
+                    "skill_manage" => self.iters_since_skill = 0,
+                    _ => {}
+                }
+            }
+
+            // ── EFFICIENCY: Record skill executions for self-improvement ──
+            if self.efficiency_config.skill_self_improvement {
+                if let Some(ref journal) = self.skill_journal {
+                    for result in &execution_results {
+                        // Check if this tool belongs to a skill
+                        let skill_name = self.tools.iter()
+                            .find(|t| t.name() == result.name)
+                            .map(|t| t.skill_name())
+                            .unwrap_or(&result.name)
+                            .to_string();
+                        
+                        if result.success {
+                            journal.record_success(&skill_name, &result.name, &result.output);
+                        } else {
+                            journal.record_failure(&skill_name, &result.name, &result.output);
+                        }
+                    }
+                }
+            }
+
             // Append tool results to live history.
             // DESIGN-4 FIX: No "reflection prompt" injection — modern LLMs natively
             // understand tool result turns and will continue reasoning without it.
@@ -1008,15 +1226,15 @@ impl Agent {
             // For non-native tool providers (Gemini, etc.), format as XML to avoid
             // strict API requirements for functionResponse turn ordering.
             // See: https://ai.google.dev/api/generate-content#functionresponse
-            let use_native_tool_results = self.provider.supports_native_tools();
+            let use_native_tool_results = active_provider.supports_native_tools();
 
             if use_native_tool_results {
                 // Native tool results: separate message per tool (OpenAI/Anthropic style)
-                for result in execution_results {
+                for result in &execution_results {
                     // Use clean content (no emoji prefix) for strict-schema providers
                     // (Anthropic/Gemini reject tool messages with unexpected formatting).
                     let formatted_output = if result.success {
-                        result.output
+                        result.output.clone()
                     } else {
                         format!("Error: {}", result.output)
                     };
@@ -1024,11 +1242,11 @@ impl Agent {
                     self.history.push(ChatMessage {
                         role: "tool".to_string(),
                         content: formatted_output,
-                        name: Some(result.name),
+                        name: Some(result.name.clone()),
                         tool_calls: None,
-                        tool_call_id: result.tool_call_id,
+                        tool_call_id: result.tool_call_id.clone(),
                         content_parts: None,
-                        thought_signature: result.thought_signature,
+                        thought_signature: result.thought_signature.clone(),
                     });
                 }
             } else {
@@ -1036,7 +1254,7 @@ impl Agent {
                 // This avoids Gemini's strict requirement that functionResponse must
                 // come IMMEDIATELY after functionCall with no intervening messages.
                 let mut combined_output = String::from("[Tool results]\n");
-                for result in execution_results {
+                for result in &execution_results {
                     let status = if result.success { "ok" } else { "error" };
                     let output_text = if result.success {
                         result.output.as_str()
@@ -1066,6 +1284,31 @@ impl Agent {
                 });
             }
 
+            // ── HERMES: Post-tool-turn context compression ────────────
+            // Use real token counts from the API response to decide compression.
+            // prompt_tokens + completion_tokens is the actual context size the
+            // provider reported plus the assistant turn — a tight lower bound
+            // for the next prompt.
+            if let Some(ref mut compressor) = self.context_compressor {
+                let real_tokens = if compressor.last_prompt_tokens > 0 {
+                    compressor.last_prompt_tokens
+                } else {
+                    crate::token_estimator::estimate_history_tokens_rough(&self.history)
+                };
+                if compressor.should_compress(real_tokens) {
+                    tracing::info!("  compacting context…");
+                    let compaction_provider = self.cheap_provider.clone()
+                        .unwrap_or_else(|| self.provider.clone());
+                    self.history = compressor.compress(
+                        &mut self.history,
+                        Some(real_tokens),
+                        None,
+                        &compaction_provider,
+                        &self.model_routing_config.cheap_model,
+                    );
+                }
+            }
+
             // BUG-1 FIX: self.history is always current; next iteration clones fresh.
             iterations += 1;
         }
@@ -1078,6 +1321,12 @@ impl Agent {
         model: &str,
     ) -> Result<String> {
         warn!("Tool iterations exhausted, requesting summary");
+
+        let active_provider = if model == self.model_routing_config.cheap_model {
+            self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone())
+        } else {
+            self.provider.clone()
+        };
 
         let mut summary_history = history_slice.to_vec();
         summary_history.push(ChatMessage {
@@ -1100,7 +1349,7 @@ impl Agent {
             reasoning_effort: None,
         };
 
-        match self.provider.chat(&request) {
+        match active_provider.chat(&request) {
             Ok(resp) => {
                 let content = resp.content.unwrap_or_else(|| {
                     "I reached my tool limit but couldn't generate a summary.".to_string()
@@ -1115,6 +1364,67 @@ impl Agent {
                 e
             )),
         }
+    }
+
+    /// Self-Learning: Spawn a background review if nudge counters have fired.
+    fn spawn_background_review_if_needed(&mut self) {
+        let should_review_memory = self.memory_nudge_interval > 0
+            && self.turns_since_memory >= self.memory_nudge_interval;
+        let should_review_skills = self.skill_nudge_interval > 0
+            && self.iters_since_skill >= self.skill_nudge_interval;
+
+        if should_review_memory {
+            self.turns_since_memory = 0;
+        }
+        if should_review_skills {
+            self.iters_since_skill = 0;
+        }
+
+        if !should_review_memory && !should_review_skills {
+            return;
+        }
+
+        let provider = self.provider.clone();
+        let cheap_provider = self.cheap_provider.clone();
+        let model_name = self.model_name.clone();
+        let tools = self.tools.clone();
+        let workspace_dir = self.workspace_dir.clone();
+        let history_snapshot = self.history.clone();
+
+        background_review::spawn_background_review(
+            provider,
+            cheap_provider,
+            model_name,
+            tools,
+            workspace_dir,
+            history_snapshot,
+            should_review_memory,
+            should_review_skills,
+        );
+    }
+
+    /// Self-Learning: Flush memories before session exit or reset.
+    /// Appends a sentinel, runs a single-turn memory consolidation, then
+    /// strips the sentinel and all flush artifacts (Hermes-style).
+    pub async fn flush_memories(&mut self) {
+        if self.memory_flush_min_turns == 0 {
+            return;
+        }
+        if self.user_turn_count < self.memory_flush_min_turns as u64 {
+            return;
+        }
+
+        let provider = self.provider.clone();
+        let model_name = self.model_name.clone();
+        let tools = self.tools.clone();
+
+        background_review::flush_memories(
+            provider,
+            model_name,
+            tools,
+            &mut self.history,
+        )
+        .await;
     }
 
     /// Streaming variant of `turn()`. Emits text deltas to `callback` as tokens arrive.
@@ -1140,10 +1450,23 @@ impl Agent {
             return Ok(slash_response);
         }
 
+        // Self-Learning: Track user turns and memory nudge
+        self.user_turn_count += 1;
+        if self.memory_nudge_interval > 0 {
+            self.turns_since_memory += 1;
+        }
+
         // QW-7: Cheap model routing
         let model_to_use =
             model_router::route_to_appropriate_model(&user_message, &self.model_routing_config)
                 .to_string();
+
+        // Select the appropriate provider for the routed model
+        let active_provider = if model_to_use == self.model_routing_config.cheap_model {
+            self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone())
+        } else {
+            self.provider.clone()
+        };
 
         // R-6 & QW-2: Memory enrichment (only if substantive)
         let enriched_msg = if user_message.len() > 30
@@ -1163,6 +1486,14 @@ impl Agent {
             }
         } else {
             user_message.clone()
+        };
+
+        // Hermes-style: inject dialectic user model into the user message (not system prompt)
+        let dialectic = crate::dialectic::load_dialectic_context(&self.workspace_dir);
+        let enriched_msg = if !dialectic.is_empty() {
+            format!("<memory-context>\n{}\n</memory-context>\n\n{}", dialectic, enriched_msg)
+        } else {
+            enriched_msg
         };
 
         // R-1 & QW-2: Auto-save user message (only if substantive)
@@ -1268,9 +1599,9 @@ impl Agent {
         // Enforce history limits
         trim_history(&mut self.history, self.max_history_messages as u32);
 
-        // Auto-compaction
+        // Auto-compaction (legacy fallback)
         if self.token_limit > 0 {
-            let compaction_config = CompactionConfig {
+            let compaction_config = crate::agent::compaction::LegacyCompactionConfig {
                 keep_recent: 10,
                 max_summary_chars: 2000,
                 max_source_chars: 12000,
@@ -1279,7 +1610,7 @@ impl Agent {
                 workspace_dir: Some(self.workspace_dir.clone()),
             };
             let compaction_provider = self.cheap_provider.as_ref().unwrap_or(&self.provider);
-            let _ = auto_compact_history(
+            let _ = auto_compact_history_legacy(
                 &mut self.history,
                 compaction_provider,
                 &self.model_routing_config.cheap_model,
@@ -1328,11 +1659,22 @@ impl Agent {
 
             // BUG-1 FIX: Rebuild fresh every iteration so the model always
             // sees the latest tool results and assistant messages.
-            let history_slice = self.history.clone();
+            // CONTEXT SLICING: On the first iteration, slice trivial follow-ups
+            // to save tokens; subsequent iterations need full history for tool results.
+            let history_slice = if iterations == 0 {
+                select_context_window(&self.history, &user_message)
+            } else {
+                self.history.clone()
+            };
 
             // Resolve adaptive max tokens with fresh history length
-            let current_max_tokens =
+            let mut current_max_tokens =
                 max_tokens_resolver::resolve_max_tokens(Some(history_slice.len()), &model_to_use);
+
+            // Enforce per-turn token budget from config
+            if self.efficiency_config.turn_token_budget > 0 {
+                current_max_tokens = current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
+            }
 
             // DESIGN-1 FIX: Only check cache on first iteration, and skip if cached
             // response contains tool calls (which would be garbled if returned raw).
@@ -1378,7 +1720,7 @@ impl Agent {
                         }
                     });
 
-                match self.provider.chat_stream(&request, stream_cb) {
+                match active_provider.chat_stream(&request, stream_cb) {
                     Ok(resp) => {
                         response = Some(resp);
                         break;
@@ -1424,14 +1766,15 @@ impl Agent {
                 }
             }
 
-            // B-6: Record cost usage
+            // B-6: Record cost usage with real model-specific prices
             if let Some(tracker) = &mut self.cost_tracker {
+                let (input_price, output_price) = crate::token_estimator::get_model_prices(&model_to_use);
                 let token_usage = crate::cost::TokenUsage::new(
                     &model_to_use,
                     response.usage.prompt_tokens as u64,
                     response.usage.completion_tokens as u64,
-                    0.01,
-                    0.03,
+                    input_price,
+                    output_price,
                 );
                 let _ = tracker.record_usage(token_usage);
             }
@@ -1518,10 +1861,12 @@ impl Agent {
                             continue;
                         } else {
                             if has_tool_results {
+                                self.spawn_background_review_if_needed();
                                 return Ok("I have completed the requested actions. [Detailed summary unavailable]".to_string());
                             }
                         }
                     }
+                    self.spawn_background_review_if_needed();
                     return Ok(final_text);
                 }
                 parse_result.calls
@@ -1646,35 +1991,49 @@ impl Agent {
                 }
             }
 
+            // Self-Learning: Increment skill iteration counter per tool-calling iteration
+            if self.skill_nudge_interval > 0 {
+                self.iters_since_skill += 1;
+            }
+
+            // Self-Learning: Reset nudge counters when relevant tools are used
+            for result in &execution_results {
+                match result.name.as_str() {
+                    "memory_md" | "memory_store" => self.turns_since_memory = 0,
+                    "skill_manage" => self.iters_since_skill = 0,
+                    _ => {}
+                }
+            }
+
             // DESIGN-4 FIX: No reflection prompt; modern LLMs handle tool result turns natively.
             // BUG-1 FIX: self.history is always current; next iteration clones fresh.
 
             // For non-native tool providers (Gemini, etc.), format as XML to avoid
             // strict API requirements for functionResponse turn ordering.
-            let use_native_tool_results_stream = self.provider.supports_native_tools();
+            let use_native_tool_results_stream = active_provider.supports_native_tools();
 
             if use_native_tool_results_stream {
                 // Native tool results: separate message per tool (OpenAI/Anthropic style)
-                for result in execution_results {
+                for result in &execution_results {
                     let formatted_output = if result.success {
-                        result.output
+                        result.output.clone()
                     } else {
                         format!("Error: {}", result.output)
                     };
                     self.history.push(ChatMessage {
                         role: "tool".to_string(),
                         content: formatted_output,
-                        name: Some(result.name),
+                        name: Some(result.name.clone()),
                         tool_calls: None,
-                        tool_call_id: result.tool_call_id,
+                        tool_call_id: result.tool_call_id.clone(),
                         content_parts: None,
-                        thought_signature: result.thought_signature,
+                        thought_signature: result.thought_signature.clone(),
                     });
                 }
             } else {
                 // XML-style tool results (Gemini, Ollama, etc.) - single user message
                 let mut combined_output_s = String::from("[Tool results]\n");
-                for result in execution_results {
+                for result in &execution_results {
                     let status = if result.success { "ok" } else { "error" };
                     let output_text_s = if result.success {
                         result.output.as_str()

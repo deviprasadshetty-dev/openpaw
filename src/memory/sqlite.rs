@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct SqliteMemory {
     conn: Mutex<Connection>,
     embedder: Option<Arc<dyn super::embeddings::EmbeddingProvider>>,
+    workspace_dir: String,
 }
 
 impl SqliteMemory {
@@ -62,10 +63,37 @@ impl SqliteMemory {
               content TEXT NOT NULL,
               created_at TEXT DEFAULT (datetime('now'))
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+              content,
+              content=messages,
+              content_rowid=id
+            );
+
+            CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+              INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+              INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+              INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+              INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+
             CREATE TABLE IF NOT EXISTS sessions (
               id TEXT PRIMARY KEY,
+              source TEXT DEFAULT 'cli',
               provider TEXT,
               model TEXT,
+              title TEXT,
+              message_count INTEGER DEFAULT 0,
+              tool_call_count INTEGER DEFAULT 0,
+              input_tokens INTEGER DEFAULT 0,
+              output_tokens INTEGER DEFAULT 0,
+              started_at TEXT DEFAULT (datetime('now')),
+              ended_at TEXT,
+              end_reason TEXT,
               created_at TEXT DEFAULT (datetime('now')),
               updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -89,6 +117,17 @@ impl SqliteMemory {
             [],
         );
 
+        // Sessions table migrations (richer metadata)
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'cli';", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT;", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN message_count INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN tool_call_count INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN input_tokens INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN output_tokens INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN started_at TEXT DEFAULT (datetime('now'));", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN ended_at TEXT;", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN end_reason TEXT;", []);
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS embeddings (
               memory_id TEXT PRIMARY KEY,
@@ -97,9 +136,15 @@ impl SqliteMemory {
             );",
         )?;
 
+        let workspace_dir = std::path::Path::new(db_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+
         Ok(Self {
             conn: Mutex::new(conn),
             embedder: None,
+            workspace_dir,
         })
     }
 
@@ -547,6 +592,50 @@ impl MemoryStore for SqliteMemory {
     }
 }
 
+impl SqliteMemory {
+    /// Append a message to the JSONL session log for external audit/trail.
+    fn log_jsonl(&self, session_id: &str, role: &str, content: &str) {
+        let sessions_dir = std::path::Path::new(&self.workspace_dir).join("sessions");
+        let _ = std::fs::create_dir_all(&sessions_dir);
+        let path = sessions_dir.join(format!("{}.jsonl", session_id));
+        let entry = serde_json::json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "role": role,
+            "content": content,
+        });
+        let line = format!("{}\n", entry.to_string());
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(line.as_bytes())
+            });
+    }
+
+    /// Upsert session metadata and increment message_count.
+    pub fn track_session_message(&self, session_id: &str, _role: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO sessions (id, message_count, updated_at) VALUES (?1, 1, datetime('now'))
+             ON CONFLICT(id) DO UPDATE SET message_count = message_count + 1, updated_at = datetime('now')",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Update session end metadata.
+    pub fn end_session(&self, session_id: &str, end_reason: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE sessions SET ended_at = datetime('now'), end_reason = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![end_reason, session_id],
+        )?;
+        Ok(())
+    }
+}
+
 impl SessionStore for SqliteMemory {
     fn save_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -554,6 +643,14 @@ impl SessionStore for SqliteMemory {
             "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
             params![session_id, role, content],
         )?;
+        drop(conn);
+
+        // JSONL audit log
+        self.log_jsonl(session_id, role, content);
+
+        // Update session metadata
+        let _ = self.track_session_message(session_id, role);
+
         Ok(())
     }
 

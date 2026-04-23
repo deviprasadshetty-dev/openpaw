@@ -54,6 +54,12 @@ WARN [kilocode] Model 'minimax/minimax-m2.1:free' failed: 429. Trying fallbacks�
 WARN [kilocode] Succeeded with fallback model 'arcee-ai/trinity-large-preview:free'
 ```
 
+#### 🎯 Sticky Model Selection & Config Integrity
+OpenPaw's onboarding wizard now treats your model choice as first-class configuration:
+- **Provider-level model persistence** — the selected model is written inside `models.providers.<name>.model` in `config.json`, right alongside `api_key` and `base_url`. Every provider carries its own complete identity.
+- **Sticky defaults on re-edit** — if you re-run `openpaw onboard`, the wizard fetches the live model list and **pre-selects the exact model you already have**, instead of blindly jumping to index 0 and risking an accidental switch.
+- **First-setup smarts** — on a fresh install, OpenRouter and Kilo.ai still recommend the highest-context free model as the default; on subsequent edits, your personal choice is preserved faithfully.
+
 ---
 
 ### 🧠 Sophisticated Orchestration & Intelligence
@@ -120,7 +126,7 @@ curl -sSf https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/in
 
     | Step | What it configures |
     |---|---|
-    | **1. AI Provider** | Provider, API key, auto-fetch free models (OpenRouter/Kilo.ai) |
+    | **1. AI Provider** | Provider, API key, model selection with live free-model fetch (OpenRouter/Kilo.ai) |
     | **2. Memory** | SQLite / Markdown / None + optional vector embeddings |
     | **3. Voice** | Groq Whisper transcription (free key at console.groq.com) |
     | **4. Telegram** | Bot token for mobile chat |
@@ -128,6 +134,8 @@ curl -sSf https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/in
     | **6. Web Search** | Brave Search API key for high-quality web results |
 
     No fluff — no questions about names or timezones that don't affect your agent's behaviour.
+
+    > 💡 **Re-run anytime:** `openpaw onboard` is fully idempotent. It reads your existing `config.json`, pre-selects your current model and settings, and only asks about things you haven't configured yet.
 
 ---
 

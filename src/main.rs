@@ -19,6 +19,8 @@ pub mod config_types;
 pub mod cost;
 pub mod cron;
 pub mod daemon;
+pub mod dialectic;
+pub mod dialectic_enhanced;
 pub mod doctor;
 pub mod dream;
 pub mod gateway;
@@ -41,6 +43,7 @@ pub mod multimodal;
 pub mod net_security;
 pub mod observability;
 pub mod onboard;
+pub mod tui_onboard;
 pub mod peripherals;
 pub mod plan;
 pub mod platform;
@@ -59,6 +62,7 @@ pub mod state;
 pub mod status;
 pub mod streaming;
 pub mod subagent;
+pub mod token_estimator;
 pub mod tools;
 pub mod tunnel;
 pub mod update;
@@ -183,6 +187,9 @@ async fn main() -> Result<()> {
             scheduler: Default::default(),
             session: Default::default(),
             bindings: Vec::new(),
+            skills: Default::default(),
+            self_learning: Default::default(),
+            efficiency: crate::config_types::EfficiencyConfig::default(),
             config_path: "./config.json".to_string(),
             workspace_dir: ".".to_string(),
             default_model: None,
@@ -290,11 +297,18 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
         None, // No approval manager
         None, // No event registry
         None, // No plan manager
+        None, // No provider for session search summarization
+        None, // No cheap provider
     )
     .await;
 
     // Create agent with tools
     let mut agent = Agent::new(provider, None, tools, model_name, config.workspace_dir);
+
+    // Self-Learning: Configure nudge intervals from config
+    agent.skill_nudge_interval = config.skills.creation_nudge_interval;
+    agent.memory_nudge_interval = config.self_learning.memory_nudge_interval;
+    agent.memory_flush_min_turns = config.self_learning.flush_min_turns;
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {

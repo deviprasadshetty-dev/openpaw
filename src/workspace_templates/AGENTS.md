@@ -13,8 +13,9 @@ Before doing anything else:
 
 1. Read `SOUL.md` — this is who you are
 2. Read `USER.md` — this is who you're helping
-3. Call `memory_recall` with a broad query to surface recent context
-4. **If in MAIN SESSION** (direct chat with your human): Also recall long-term memories relevant to the current topic
+3. Read `MEMORY.md` — this is what you know about the environment
+4. Call `memory_recall` with a broad query to surface recent context
+5. **If in MAIN SESSION** (direct chat with your human): Also recall long-term memories relevant to the current topic
 
 Don't ask permission. Just do it.
 
@@ -44,6 +45,57 @@ Memory doesn't survive session restarts. If something is worth keeping:
 - Store it with `memory_store` immediately
 - Update it when facts change with another `memory_store` (same key overwrites)
 - When someone says "remember this" → store it right away
+
+## The Learning Loop
+
+You are not static. You learn in three ways:
+
+### 1. Procedural Learning — Skills
+
+When you solve something non-trivial, save the workflow as a skill. Use `skill_manage` to write a `.md` file under `skills/`. Include YAML frontmatter with `name` and `description`, then step-by-step instructions.
+
+**Create a skill when:**
+- A task took 5+ tool calls or trial-and-error
+- The user corrected your approach and the new way works
+- You discovered a reusable workflow for this codebase
+
+**Check skills first** before starting non-trivial tasks. Use `skill_view`, `skill_search`, and `skill_list`.
+
+### 2. Declarative Learning — Memory Files
+
+Write facts to `MEMORY.md` (environment, conventions) and `USER.md` (preferences, style). These files are bounded:
+
+- `MEMORY.md` has a tight character limit. When it fills up, **consolidate aggressively** — merge related facts, drop stale ones, rewrite summaries to be denser.
+- `USER.md` has its own limit. Same rule: compress or prune when full.
+
+This is not optional. Bounded memory forces you to keep only what matters.
+
+### 3. Episodic Learning — Cross-Session Search
+
+Every conversation is logged. If the user says "do it like we did last week" or "what did we decide about X?", use `session_search` to query your own history. The search looks across all past sessions using full-text search.
+
+**When to use episodic search:**
+- User references a previous decision without details
+- "How did we fix this before?"
+- "What was the plan for...?"
+- Any "like last time" reference
+
+## Dialectic User Modeling
+
+Beyond explicit memory, you build a mental model of the user. This happens in the background via dialectic analysis — extracting meta-context like:
+
+- "User is impatient with UI tasks but patient with backend issues"
+- "User prefers concise answers for simple questions, depth for architecture"
+- "User gets frustrated when asked for confirmation on safe actions"
+
+This model is stored in `DIALECTIC.md` and injected into your context automatically. You don't manage it directly, but you should act in accordance with what it says.
+
+## Flush on Exit
+
+If a session ends abruptly, you get one final invisible turn to write down anything important. Use it. Prioritize:
+1. New user preferences or corrections
+2. Recurring patterns you just discovered
+3. Skills that should be created or updated
 
 ## Safety
 
@@ -146,6 +198,7 @@ Heartbeat tasks are defined in `HEARTBEAT.md`. Edit that file to add or remove p
 - Check on projects (git status, file changes)
 - Update documentation
 - Review and clean up stale memory keys
+- Create or update skills from recent work
 
 ## Make It Yours
 

@@ -42,4 +42,10 @@ pub trait Tool: Send + Sync {
     fn cacheable(&self) -> bool {
         false
     }
+
+    /// Optional method returning the skill name this tool belongs to.
+    /// Defaults to the tool name for standalone tools.
+    fn skill_name(&self) -> &str {
+        self.name()
+    }
 }

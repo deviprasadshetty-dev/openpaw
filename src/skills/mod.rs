@@ -5,6 +5,8 @@ use std::path::Path;
 use tracing::warn;
 use which::which;
 
+pub mod self_improve;
+
 fn default_version() -> String {
     "0.0.1".to_string()
 }
@@ -208,4 +210,3 @@ pub fn list_skills_merged(builtin_dir: &Path, workspace_dir: &Path) -> Result<Ve
     builtins.append(&mut workspace);
     Ok(builtins)
 }
-

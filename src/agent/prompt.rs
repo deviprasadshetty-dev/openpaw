@@ -27,6 +27,12 @@ pub struct PromptContext<'a> {
     pub use_native_tools: bool,
     pub token_limit: u64,
     pub learnings: Vec<String>,
+    /// Frozen snapshot of MEMORY.md captured at session start. Mid-session
+    /// memory tool writes update the disk file but do NOT mutate this snapshot,
+    /// preserving the LLM prefix cache. (Hermes-style frozen snapshot.)
+    pub memory_snapshot: Option<String>,
+    /// Frozen snapshot of USER.md captured at session start.
+    pub user_snapshot: Option<String>,
 }
 
 fn path_starts_with(path: &Path, prefix: &Path) -> bool {
@@ -83,6 +89,7 @@ pub fn workspace_prompt_fingerprint(workspace_dir: &str) -> u64 {
         "BOOTSTRAP.md",
         "MEMORY.md",
         "memory.md",
+        "DIALECTIC.md",
     ];
 
     for filename in tracked_files {
@@ -119,7 +126,7 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     let has_vision = ctx.tools.iter().any(|t| t.name() == "vision");
 
     // Identity section
-    build_identity_section(&mut out, ctx.workspace_dir, is_lean);
+    build_identity_section(&mut out, ctx.workspace_dir, is_lean, ctx.user_snapshot, ctx.memory_snapshot);
 
     // Tools section
     build_tools_section(&mut out, ctx.tools, ctx.use_native_tools, is_lean);
@@ -214,7 +221,7 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
 
         // Communication rules
         out.push_str("## Communication Rules\n\n");
-        out.push_str("- Never mention or refer to internal configuration files (e.g. SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, etc.) in your replies. These are private implementation details.\n");
+        out.push_str("- Never mention or refer to internal configuration files (e.g. SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, DIALECTIC.md, etc.) in your replies. These are private implementation details.\n");
         out.push_str(
             "- Never expose memory keys (e.g. autosave_*, last_hygiene_at) in user-facing replies.\n",
         );
@@ -294,30 +301,37 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     }
 
 
-    // Skill Minting (Self-Learning Loop)
-    out.push_str("## Self-Learning & Skill Minting\n\n");
-    out.push_str("You are a self-learning agent. You must evolve by creating, using, editing, and deleting your own local skills called \"Skill Mints\".\n\n");
-    out.push_str("### 1. When to Create a Skill Mint\n");
-    out.push_str("Create a skill mint in \"workspace/skills/<name>/\" under these four conditions:\n");
+    // Self-Learning & Skill Management
+    out.push_str("## Self-Learning & Skill Management\n\n");
+    out.push_str("You are a self-learning agent. You must evolve by creating, using, editing, and deleting your own local skills.\n\n");
+    out.push_str("### 1. When to Create a Skill\n");
+    out.push_str("Create a skill using `skill_manage` under these four conditions:\n");
     out.push_str("- **After complex tasks**: Successfully completing tasks requiring 5+ tool calls.\n");
     out.push_str("- **Error recovery**: Finding a working path after hitting errors or dead ends.\n");
     out.push_str("- **User corrections**: When the user provides a corrected approach that works.\n");
     out.push_str("- **Workflow discovery**: When discovering non-trivial, reusable workflows.\n\n");
     out.push_str("### 2. How to Use Skills\n");
     out.push_str("Whenever starting a non-simple task, check skills FIRST before proceeding.\n");
-    out.push_str("First check for local \"Skill Mints\" you created, and then check public skills (via \"skill_search\").\n\n");
-    out.push_str("### 3. Maintaining Skill Mints\n");
-    out.push_str("You must actively maintain skill mints. Edit or delete them when:\n");
+    out.push_str("Use `skill_view` to recall a specific skill, `skill_search` to discover public skills, and `skill_list` to see local skills.\n\n");
+    out.push_str("### 3. Maintaining Skills\n");
+    out.push_str("You must actively maintain skills. Use `skill_manage` to edit or delete them when:\n");
     out.push_str("- Instructions become stale or wrong.\n");
     out.push_str("- OS-specific failures are discovered.\n");
     out.push_str("- Missing steps or pitfalls are found during use.\n");
     out.push_str("- You use a skill but encounter issues not covered by it.\n\n");
-    out.push_str("### 4. Skill Mint Format\n");
-    out.push_str("To create a skill mint, use your \"write\" tool to create \"workspace/skills/<name>/SKILL.md\".\n");
-    out.push_str("The SKILL.md file MUST contain YAML frontmatter with 
-ame and description at the very top, followed by the markdown instructions, like this:\n");
-    out.push_str("`markdown\n---\nname: my-skill\ndescription: What this skill does and when to trigger it.\n---\n# My Skill\n[Instructions here]\n`\n");
+    out.push_str("### 4. Skill Format\n");
+    out.push_str("When creating a skill with `skill_manage`, the `content` parameter must be a full SKILL.md with YAML frontmatter containing `name` and `description` at the top, followed by markdown instructions, like this:\n");
+    out.push_str("```markdown\n---\nname: my-skill\ndescription: What this skill does and when to trigger it.\n---\n# My Skill\n[Instructions here]\n```\n");
     out.push_str("This forms your continuous learning loop.\n\n");
+
+    out.push_str("### 5. Episodic Memory — Cross-Session Search\n");
+    out.push_str("You have a `session_search` tool that queries your full conversation history across all past sessions using full-text search. Use it when:\n");
+    out.push_str("- The user says something like \"do it like we did last week\" or \"what did we decide about X?\"\n");
+    out.push_str("- You need to recall how a similar problem was solved before\n");
+    out.push_str("- The user references a previous conversation without giving details\n\n");
+
+    out.push_str("### 6. Dialectic User Model\n");
+    out.push_str("`DIALECTIC.md` is an auto-generated profile of the user's communication style, patience levels, frustration triggers, and work habits. It is updated in the background after each session. Read it and act in accordance with what it says. If it notes the user is impatient with UI tasks, be snappy with UI. If it says they prefer depth on architecture, go deep.\n\n");
     // Skills section
     append_skills_section(&mut out, ctx.workspace_dir);
 
@@ -459,8 +473,8 @@ fn append_safety_and_group_logic(
     out: &mut String,
     conversation_context: Option<&ConversationContext>,
 ) {
-    // Safety additions
-    out.push_str("## Safety\n\n- Prefer `trash` over `rm` when deleting files.\n- When in doubt, ask before acting externally.\n\n");
+    // Safety additions (aligned with risk-tiered autonomy above)
+    out.push_str("## Safety\n\n- Prefer `trash` over `rm` when deleting files.\n- For low-risk actions (reads, searches, status checks), act autonomously.\n- For high-risk actions (deletes, system modifications, external network egress), ask first.\n\n");
 
     // Group chat behavior
     if let Some(cc) = conversation_context {
@@ -544,21 +558,28 @@ fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) 
     }
 }
 
-fn build_identity_section(out: &mut String, workspace_dir: &str, is_lean: bool) {
+fn build_identity_section(
+    out: &mut String,
+    workspace_dir: &str,
+    is_lean: bool,
+    user_snapshot: Option<String>,
+    memory_snapshot: Option<String>,
+) {
     out.push_str("## Project Context\n\n");
     out.push_str("The following workspace files define your identity, behavior, and context.\n\n");
-    out.push_str("- **AGENTS.md**: Follow its operational guidance (startup routines, red-line constraints).\n");
+    out.push_str("- **AGENTS.md**: Follow its operational guidance (startup routines, red-line constraints, learning loop).\n");
     out.push_str("- **SOUL.md**: Embody its persona and tone. Avoid stiff, generic replies.\n");
-    out.push_str("- **TOOLS.md**: User guidance for how to use external tools.\n\n");
+    out.push_str("- **TOOLS.md**: User guidance for how to use external tools.\n");
+    out.push_str("- **DIALECTIC.md**: Auto-generated user model (communication style, frustration triggers, work habits). Read it to stay in sync.\n\n");
 
     let identity_files = [
         "AGENTS.md",
         "SOUL.md",
         "TOOLS.md",
         "IDENTITY.md",
-        "USER.md",
         "HEARTBEAT.md",
         "BOOTSTRAP.md",
+        "DIALECTIC.md",
     ];
 
     for filename in identity_files {
@@ -576,17 +597,45 @@ fn build_identity_section(out: &mut String, workspace_dir: &str, is_lean: bool) 
         }
     }
 
-    // Memory file preference
-    let mem_file = if open_workspace_file_guarded(workspace_dir, "MEMORY.md").is_some() {
-        "MEMORY.md"
+    // USER.md — use frozen snapshot if available, else read from disk
+    if let Some(snapshot) = user_snapshot {
+        if !snapshot.trim().is_empty() {
+            if is_lean && snapshot.len() > 2000 {
+                out.push_str(&snapshot[..2000]);
+                out.push_str("\n...[truncated]...\n");
+            } else {
+                out.push_str(&snapshot);
+            }
+            out.push_str("\n\n");
+        }
+    } else if is_lean {
+        inject_workspace_file_limited(out, workspace_dir, "USER.md", 2000);
     } else {
-        "memory.md"
-    };
+        inject_workspace_file(out, workspace_dir, "USER.md");
+    }
 
-    if is_lean {
-        inject_workspace_file_limited(out, workspace_dir, mem_file, 4000);
+    // MEMORY.md — use frozen snapshot if available, else read from disk
+    if let Some(snapshot) = memory_snapshot {
+        if !snapshot.trim().is_empty() {
+            if is_lean && snapshot.len() > 4000 {
+                out.push_str(&snapshot[..4000]);
+                out.push_str("\n...[truncated]...\n");
+            } else {
+                out.push_str(&snapshot);
+            }
+            out.push_str("\n\n");
+        }
     } else {
-        inject_workspace_file(out, workspace_dir, mem_file);
+        let mem_file = if open_workspace_file_guarded(workspace_dir, "MEMORY.md").is_some() {
+            "MEMORY.md"
+        } else {
+            "memory.md"
+        };
+        if is_lean {
+            inject_workspace_file_limited(out, workspace_dir, mem_file, 4000);
+        } else {
+            inject_workspace_file(out, workspace_dir, mem_file);
+        }
     }
 }
 
