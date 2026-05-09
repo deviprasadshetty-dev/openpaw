@@ -180,13 +180,7 @@ pub struct HttpRequestConfig {
     #[serde(default)]
     pub allowed_domains: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub search_base_url: Option<String>,
-    #[serde(default = "default_search_provider")]
-    pub search_provider: String,
-    #[serde(default)]
-    pub search_fallback_providers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub brave_search_api_key: Option<String>,
+    pub tinfish_api_key: Option<String>,
 }
 
 impl Default for HttpRequestConfig {
@@ -196,18 +190,9 @@ impl Default for HttpRequestConfig {
             max_response_size: default_http_max_response_size(),
             timeout_secs: default_http_timeout_secs(),
             allowed_domains: Vec::new(),
-            search_base_url: None,
-            search_provider: default_search_provider(),
-            search_fallback_providers: default_search_fallback_providers(),
-            brave_search_api_key: None,
+            tinfish_api_key: None,
         }
     }
-}
-
-fn default_search_fallback_providers() -> Vec<String> {
-    // gemini_cli is the primary provider; duckduckgo is kept as a last-resort fallback
-    // only if gemini CLI is not installed. Brave requires an API key so is not a default.
-    vec!["duckduckgo".to_string()]
 }
 
 fn default_http_max_response_size() -> u32 {
@@ -216,10 +201,6 @@ fn default_http_max_response_size() -> u32 {
 
 fn default_http_timeout_secs() -> u64 {
     30
-}
-
-fn default_search_provider() -> String {
-    "gemini_cli".to_string()
 }
 
 // ── OpenCode CLI config ─────────────────────────────────────────
@@ -489,6 +470,11 @@ pub struct TelegramConfig {
     /// Optional SOCKS5/HTTP proxy URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    /// Webhook mode: public URL for Telegram to POST updates to.
+    /// When set, webhook mode is used instead of long-polling (getUpdates).
+    /// The webhook endpoint will be {webhook_url}/telegram/webhook/{bot_token}
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -654,7 +640,7 @@ impl Default for SkillsConfig {
 }
 
 fn default_creation_nudge_interval() -> u32 {
-    15
+    40
 }
 
 // ── Self-Learning config ────────────────────────────────────────

@@ -86,6 +86,9 @@ pub struct Agent {
 
     // Hermes-style ContextCompressor for advanced context compression
     pub context_compressor: Option<crate::agent::compaction::ContextCompressor>,
+
+    /// Cooldown timestamp for background reviews (unix secs) to prevent spam.
+    pub last_background_review: u64,
 }
 
 /// QW-6: Conditional follow-through detection.
@@ -121,7 +124,7 @@ fn select_context_window(history: &[ChatMessage], query: &str) -> Vec<ChatMessag
         }
         let start = history.len().saturating_sub(6);
         sliced.extend_from_slice(&history[start..]);
-        return sliced;
+        return crate::agent::compaction::sanitize_tool_pairs(&sliced);
     }
 
     // New topic markers: user explicitly wants full context
@@ -430,7 +433,9 @@ impl Agent {
             memory_flush_min_turns: 6,
             memory_snapshot: None,
             user_snapshot: None,
-            skill_journal: None,
+            skill_journal: Some(Arc::new(crate::skills::self_improve::load_journal(
+                &workspace_dir,
+            ))),
             efficiency_config: crate::config_types::EfficiencyConfig::default(),
             current_turn_tokens: 0,
             context_compressor: Some(crate::agent::compaction::ContextCompressor::new(
@@ -439,6 +444,7 @@ impl Agent {
                     ..Default::default()
                 },
             )),
+            last_background_review: 0,
         };
 
         if context_tokens_resolver::is_small_model_context(token_limit) {
@@ -538,10 +544,14 @@ impl Agent {
 
     pub fn build_system_prompt(&mut self) -> Result<String> {
         let caps = None; // Capabilities not yet implemented
-        let conversation_context = self.conversation_context.as_ref(); 
+        let conversation_context = self.conversation_context.as_ref();
 
-        let learnings = self.memory
-            .list_with_category(Some(crate::memory::MemoryCategory::Learning), self.memory_session_id.as_deref())
+        let learnings = self
+            .memory
+            .list_with_category(
+                Some(crate::memory::MemoryCategory::Learning),
+                self.memory_session_id.as_deref(),
+            )
             .unwrap_or_default()
             .into_iter()
             .map(|e| e.content)
@@ -601,7 +611,9 @@ impl Agent {
 
         // Select the appropriate provider for the routed model
         let active_provider = if model_to_use == self.model_routing_config.cheap_model {
-            self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone())
+            self.cheap_provider
+                .clone()
+                .unwrap_or_else(|| self.provider.clone())
         } else {
             self.provider.clone()
         };
@@ -703,7 +715,10 @@ impl Agent {
         // to preserve the LLM's prefix cache.
         let dialectic = crate::dialectic::load_dialectic_context(&self.workspace_dir);
         let enriched_msg = if !dialectic.is_empty() {
-            format!("<memory-context>\n{}\n</memory-context>\n\n{}", dialectic, enriched_msg)
+            format!(
+                "<memory-context>\n{}\n</memory-context>\n\n{}",
+                dialectic, enriched_msg
+            )
         } else {
             enriched_msg
         };
@@ -747,21 +762,31 @@ impl Agent {
         if let Some(ref mut compressor) = self.context_compressor {
             let min_for_compress = compressor.config.protect_first_n + 3 + 1;
             if self.history.len() > min_for_compress {
-                let system_prompt = self.history.get(0)
+                let system_prompt = self
+                    .history
+                    .get(0)
                     .filter(|m| m.role == "system")
                     .map(|m| m.content.clone())
                     .unwrap_or_default();
                 let preflight_tokens = crate::token_estimator::estimate_request_tokens_rough(
                     &self.history,
                     &system_prompt,
-                    if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+                    if tool_specs.is_empty() {
+                        None
+                    } else {
+                        Some(&tool_specs)
+                    },
                 );
                 if compressor.should_compress(preflight_tokens) {
                     tracing::info!(
                         "Preflight compression: ~{} tokens >= {} threshold",
-                        preflight_tokens, compressor.threshold_tokens
+                        preflight_tokens,
+                        compressor.threshold_tokens
                     );
-                    let compaction_provider = self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone());
+                    let compaction_provider = self
+                        .cheap_provider
+                        .clone()
+                        .unwrap_or_else(|| self.provider.clone());
                     for _pass in 0..3 {
                         let orig_len = self.history.len();
                         self.history = compressor.compress(
@@ -777,7 +802,11 @@ impl Agent {
                         let new_tokens = crate::token_estimator::estimate_request_tokens_rough(
                             &self.history,
                             &system_prompt,
-                            if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+                            if tool_specs.is_empty() {
+                                None
+                            } else {
+                                Some(&tool_specs)
+                            },
                         );
                         if new_tokens < compressor.threshold_tokens {
                             break;
@@ -834,7 +863,8 @@ impl Agent {
 
             // Enforce per-turn token budget from config
             if self.efficiency_config.turn_token_budget > 0 {
-                current_max_tokens = current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
+                current_max_tokens =
+                    current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
             }
 
             // DESIGN-1 FIX: Only check the cache on the first iteration and only
@@ -850,7 +880,10 @@ impl Agent {
 
             // ── HERMES: Apply Anthropic prompt caching ────────────────
             // Reduces input token costs by ~75% on multi-turn conversations.
-            let api_messages = if prompt_cache::supports_prompt_caching(&model_to_use, &active_provider.get_name()) {
+            let api_messages = if prompt_cache::supports_prompt_caching(
+                &model_to_use,
+                &active_provider.get_name(),
+            ) {
                 prompt_cache::apply_anthropic_cache_control(&history_slice, false)
             } else {
                 history_slice.clone()
@@ -935,7 +968,8 @@ impl Agent {
 
             // B-6: Record cost usage with real model-specific prices
             if let Some(tracker) = &mut self.cost_tracker {
-                let (input_price, output_price) = crate::token_estimator::get_model_prices(&model_to_use);
+                let (input_price, output_price) =
+                    crate::token_estimator::get_model_prices(&model_to_use);
                 let token_usage = crate::cost::TokenUsage::new(
                     &model_to_use,
                     response.usage.prompt_tokens as u64,
@@ -1019,7 +1053,7 @@ impl Agent {
                         }
                     }
 
-                        // No tool calls — genuine (or forced) final response
+                    // No tool calls — genuine (or forced) final response
                     if accumulated_text.is_empty() {
                         let final_text = strip_tool_call_markup(&display_text);
                         if is_low_value_response(&final_text) {
@@ -1087,7 +1121,11 @@ impl Agent {
             }
 
             if !blocked_tools.is_empty() {
-                let blocked_names: Vec<String> = blocked_tools.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+                let blocked_names: Vec<String> = blocked_tools
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
                 warn!(
                     "Circuit breaker: tools {:?} called {} times with same args, stopping retry loop",
                     blocked_names, MAX_SAME_TOOL_RETRIES
@@ -1184,6 +1222,30 @@ impl Agent {
                 }
             }
 
+            // BUG-8 FIX: If any tool execution task panicked, inject a stub result so
+            // the assistant's tool_calls always have matching tool results.
+            let mut seen_result_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for result in &execution_results {
+                if let Some(ref id) = result.tool_call_id {
+                    seen_result_ids.insert(id.clone());
+                }
+            }
+            for call in &deduped_calls {
+                if let Some(ref id) = call.tool_call_id {
+                    if !seen_result_ids.contains(id) {
+                        execution_results.push(ToolExecutionResult {
+                            name: call.name.clone(),
+                            output: "[Tool execution failed or timed out — no result available]"
+                                .to_string(),
+                            success: false,
+                            tool_call_id: Some(id.clone()),
+                            thought_signature: call.thought_signature.clone(),
+                        });
+                    }
+                }
+            }
+
             // Self-Learning: Increment skill iteration counter per tool-calling iteration
             if self.skill_nudge_interval > 0 {
                 self.iters_since_skill += 1;
@@ -1203,12 +1265,14 @@ impl Agent {
                 if let Some(ref journal) = self.skill_journal {
                     for result in &execution_results {
                         // Check if this tool belongs to a skill
-                        let skill_name = self.tools.iter()
+                        let skill_name = self
+                            .tools
+                            .iter()
                             .find(|t| t.name() == result.name)
                             .map(|t| t.skill_name())
                             .unwrap_or(&result.name)
                             .to_string();
-                        
+
                         if result.success {
                             journal.record_success(&skill_name, &result.name, &result.output);
                         } else {
@@ -1297,7 +1361,9 @@ impl Agent {
                 };
                 if compressor.should_compress(real_tokens) {
                     tracing::info!("  compacting context…");
-                    let compaction_provider = self.cheap_provider.clone()
+                    let compaction_provider = self
+                        .cheap_provider
+                        .clone()
                         .unwrap_or_else(|| self.provider.clone());
                     self.history = compressor.compress(
                         &mut self.history,
@@ -1323,7 +1389,9 @@ impl Agent {
         warn!("Tool iterations exhausted, requesting summary");
 
         let active_provider = if model == self.model_routing_config.cheap_model {
-            self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone())
+            self.cheap_provider
+                .clone()
+                .unwrap_or_else(|| self.provider.clone())
         } else {
             self.provider.clone()
         };
@@ -1367,11 +1435,21 @@ impl Agent {
     }
 
     /// Self-Learning: Spawn a background review if nudge counters have fired.
+    /// Enforces a 5-minute cooldown between reviews to prevent spam.
     fn spawn_background_review_if_needed(&mut self) {
-        let should_review_memory = self.memory_nudge_interval > 0
-            && self.turns_since_memory >= self.memory_nudge_interval;
-        let should_review_skills = self.skill_nudge_interval > 0
-            && self.iters_since_skill >= self.skill_nudge_interval;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        const REVIEW_COOLDOWN_SECS: u64 = 300;
+        if now.saturating_sub(self.last_background_review) < REVIEW_COOLDOWN_SECS {
+            return;
+        }
+
+        let should_review_memory =
+            self.memory_nudge_interval > 0 && self.turns_since_memory >= self.memory_nudge_interval;
+        let should_review_skills =
+            self.skill_nudge_interval > 0 && self.iters_since_skill >= self.skill_nudge_interval;
 
         if should_review_memory {
             self.turns_since_memory = 0;
@@ -1383,6 +1461,8 @@ impl Agent {
         if !should_review_memory && !should_review_skills {
             return;
         }
+
+        self.last_background_review = now;
 
         let provider = self.provider.clone();
         let cheap_provider = self.cheap_provider.clone();
@@ -1418,13 +1498,12 @@ impl Agent {
         let model_name = self.model_name.clone();
         let tools = self.tools.clone();
 
-        background_review::flush_memories(
-            provider,
-            model_name,
-            tools,
-            &mut self.history,
-        )
-        .await;
+        background_review::flush_memories(provider, model_name, tools, &mut self.history).await;
+
+        // Flush skill journal to disk
+        if let Some(ref journal) = self.skill_journal {
+            let _ = journal.flush();
+        }
     }
 
     /// Streaming variant of `turn()`. Emits text deltas to `callback` as tokens arrive.
@@ -1463,7 +1542,9 @@ impl Agent {
 
         // Select the appropriate provider for the routed model
         let active_provider = if model_to_use == self.model_routing_config.cheap_model {
-            self.cheap_provider.clone().unwrap_or_else(|| self.provider.clone())
+            self.cheap_provider
+                .clone()
+                .unwrap_or_else(|| self.provider.clone())
         } else {
             self.provider.clone()
         };
@@ -1491,7 +1572,10 @@ impl Agent {
         // Hermes-style: inject dialectic user model into the user message (not system prompt)
         let dialectic = crate::dialectic::load_dialectic_context(&self.workspace_dir);
         let enriched_msg = if !dialectic.is_empty() {
-            format!("<memory-context>\n{}\n</memory-context>\n\n{}", dialectic, enriched_msg)
+            format!(
+                "<memory-context>\n{}\n</memory-context>\n\n{}",
+                dialectic, enriched_msg
+            )
         } else {
             enriched_msg
         };
@@ -1678,7 +1762,8 @@ impl Agent {
 
             // Enforce per-turn token budget from config
             if self.efficiency_config.turn_token_budget > 0 {
-                current_max_tokens = current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
+                current_max_tokens =
+                    current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
             }
 
             // DESIGN-1 FIX: Only check cache on first iteration, and skip if cached
@@ -1789,7 +1874,8 @@ impl Agent {
 
             // B-6: Record cost usage with real model-specific prices
             if let Some(tracker) = &mut self.cost_tracker {
-                let (input_price, output_price) = crate::token_estimator::get_model_prices(&model_to_use);
+                let (input_price, output_price) =
+                    crate::token_estimator::get_model_prices(&model_to_use);
                 let token_usage = crate::cost::TokenUsage::new(
                     &model_to_use,
                     response.usage.prompt_tokens as u64,
@@ -1919,7 +2005,11 @@ impl Agent {
             }
 
             if !blocked_tools_s.is_empty() {
-                let blocked_names_s: Vec<String> = blocked_tools_s.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+                let blocked_names_s: Vec<String> = blocked_tools_s
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
                 warn!(
                     "Circuit breaker: tools {:?} called {} times with same args, stopping retry loop",
                     blocked_names_s, MAX_SAME_TOOL_RETRIES
@@ -2030,6 +2120,30 @@ impl Agent {
                 }
             }
 
+            // BUG-8 FIX: If any tool execution task panicked, inject a stub result so
+            // the assistant's tool_calls always have matching tool results.
+            let mut seen_result_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for result in &execution_results {
+                if let Some(ref id) = result.tool_call_id {
+                    seen_result_ids.insert(id.clone());
+                }
+            }
+            for call in &deduped_calls_s {
+                if let Some(ref id) = call.tool_call_id {
+                    if !seen_result_ids.contains(id) {
+                        execution_results.push(ToolExecutionResult {
+                            name: call.name.clone(),
+                            output: "[Tool execution failed or timed out — no result available]"
+                                .to_string(),
+                            success: false,
+                            tool_call_id: Some(id.clone()),
+                            thought_signature: call.thought_signature.clone(),
+                        });
+                    }
+                }
+            }
+
             // DESIGN-4 FIX: No reflection prompt; modern LLMs handle tool result turns natively.
             // BUG-1 FIX: self.history is always current; next iteration clones fresh.
 
@@ -2086,6 +2200,29 @@ impl Agent {
                     content_parts: None,
                     thought_signature: None,
                 });
+            }
+
+            // ── HERMES: Post-tool-turn context compression ────────────
+            if let Some(ref mut compressor) = self.context_compressor {
+                let real_tokens = if compressor.last_prompt_tokens > 0 {
+                    compressor.last_prompt_tokens
+                } else {
+                    crate::token_estimator::estimate_history_tokens_rough(&self.history)
+                };
+                if compressor.should_compress(real_tokens) {
+                    tracing::info!("  compacting context (streaming)…");
+                    let compaction_provider = self
+                        .cheap_provider
+                        .clone()
+                        .unwrap_or_else(|| self.provider.clone());
+                    self.history = compressor.compress(
+                        &mut self.history,
+                        Some(real_tokens),
+                        None,
+                        &compaction_provider,
+                        &self.model_routing_config.cheap_model,
+                    );
+                }
             }
 
             iterations += 1;
@@ -2208,4 +2345,3 @@ mod tests {
         assert!(!is_low_value_response("The sum of 2 and 2 is 4."));
     }
 }
-

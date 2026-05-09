@@ -1,7 +1,7 @@
 use crate::channels::root::{Channel, ParsedMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use imap::types::Fetch;
-use lettre::{transport::smtp::authentication::Credentials, Message, SmtpTransport, Transport};
+use lettre::{Message, SmtpTransport, Transport, transport::smtp::authentication::Credentials};
 use native_tls::TlsConnector;
 use std::any::Any;
 

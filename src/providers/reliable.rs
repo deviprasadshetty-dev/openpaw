@@ -129,9 +129,10 @@ fn extract_status_from_message(msg: &str) -> u16 {
     // Patterns like "API error 429:" or "status: 429"
     for part in msg.split_whitespace() {
         if let Ok(n) = part.trim_end_matches(':').parse::<u16>()
-            && (100..=599).contains(&n) {
-                return n;
-            }
+            && (100..=599).contains(&n)
+        {
+            return n;
+        }
     }
     0
 }

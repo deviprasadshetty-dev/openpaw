@@ -328,6 +328,7 @@ pub fn inbound_dispatcher_thread(
             };
 
             // Parse metadata if available
+            let mut reply_to_message_id: Option<i64> = None;
             if let Some(meta_json) = &msg.metadata_json {
                 if let Ok(meta) =
                     serde_json::from_str::<crate::channel_adapters::InboundMetadata>(meta_json)
@@ -338,6 +339,7 @@ pub fn inbound_dispatcher_thread(
                     if let (Some(kind), Some(id)) = (meta.peer_kind, meta.peer_id) {
                         input.peer = Some(crate::config_types::PeerRef { kind, id });
                     }
+                    reply_to_message_id = meta.message_id.and_then(|id| id.parse::<i64>().ok());
                 }
             }
 
@@ -412,7 +414,12 @@ pub fn inbound_dispatcher_thread(
                     .await
                 {
                     Ok(response_text) => {
-                        let outbound = bus::make_outbound(&channel, &chat_id, &response_text);
+                        let outbound = bus::make_outbound_with_reply(
+                            &channel,
+                            &chat_id,
+                            &response_text,
+                            reply_to_message_id,
+                        );
                         if let Err(e) = bus_clone.publish_outbound(outbound) {
                             error!("Failed to publish outbound message: {}", e);
                         }
@@ -427,7 +434,12 @@ pub fn inbound_dispatcher_thread(
                             "⚠️ I encountered an error while processing your request: {}",
                             e
                         );
-                        let outbound = bus::make_outbound(&channel, &chat_id, &error_msg);
+                        let outbound = bus::make_outbound_with_reply(
+                            &channel,
+                            &chat_id,
+                            &error_msg,
+                            reply_to_message_id,
+                        );
                         let _ = bus_clone.publish_outbound(outbound);
                     }
                 }
@@ -478,6 +490,16 @@ pub fn init_channels(
         let channel = Arc::new(TelegramChannel::new(tg_config.clone()));
         registry.register(channel.clone());
 
+        // Init webhook if configured; skip polling for webhook-mode channels
+        channel.init_webhook();
+        if channel.is_webhook_mode() {
+            info!(
+                "Telegram channel {} using webhook mode (no polling)",
+                tg_config.account_id
+            );
+            continue;
+        }
+
         if let Some(descriptor) = find_polling_descriptor("telegram") {
             info!(
                 "Starting Telegram polling for account: {}",
@@ -519,7 +541,7 @@ pub fn init_channels(
             email_config.imap_host.clone(),
             email_config.imap_port,
         ));
-        
+
         registry.register_with_account(channel.clone(), &email_config.account_id);
 
         let channel_clone = channel.clone();
@@ -636,6 +658,9 @@ pub async fn build_tools(
     cheap_provider: Option<Arc<dyn Provider>>,
 ) -> Vec<Arc<dyn crate::tools::Tool>> {
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+    let tg_inbound = crate::channels::telegram::tg_inbound_dir()
+        .to_string_lossy()
+        .to_string();
 
     if let Some(gm) = goal_manager {
         tools.push(Arc::new(crate::tools::goals::GoalAddTool {
@@ -683,27 +708,27 @@ pub async fn build_tools(
 
     tools.push(Arc::new(crate::tools::file_read::FileReadTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
         max_file_size: 10 * 1024 * 1024,
     }));
     tools.push(Arc::new(crate::tools::file_write::FileWriteTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
     }));
     tools.push(Arc::new(crate::tools::file_edit::FileEditTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
         max_file_size: 10 * 1024 * 1024,
     }));
     tools.push(Arc::new(crate::tools::file_append::FileAppendTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
         max_file_size: 10 * 1024 * 1024,
     }));
 
     tools.push(Arc::new(crate::tools::shell::ShellTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
         // BUG-8 FIX: 30s was too short for compilations, npm installs, git operations.
         // Increased to 120s. Users can override via config if needed.
         timeout_ns: 120_000_000_000, // 120 seconds
@@ -713,7 +738,7 @@ pub async fn build_tools(
     if config.opencode_cli.enabled {
         tools.push(Arc::new(crate::tools::opencode_cli::OpencodeCliTool {
             workspace_dir: config.workspace_dir.clone(),
-            allowed_paths: vec![config.workspace_dir.clone()],
+            allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
             binary: config.opencode_cli.binary.clone(),
             default_attach_url: config.opencode_cli.attach_url.clone(),
             timeout_secs: config.opencode_cli.timeout_secs,
@@ -723,7 +748,7 @@ pub async fn build_tools(
 
     tools.push(Arc::new(crate::tools::git::GitTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
     }));
 
     tools.push(Arc::new(crate::tools::http_request::HttpRequestTool {
@@ -747,11 +772,7 @@ pub async fn build_tools(
     )));
 
     let mut search_tool = crate::tools::web_search::WebSearchTool::default();
-    let req_config = &config.http_request;
-    search_tool.provider = req_config.search_provider.clone();
-    search_tool.api_key = req_config.brave_search_api_key.clone();
-    search_tool.fallback_providers = req_config.search_fallback_providers.clone();
-    search_tool.searxng_base_url = req_config.search_base_url.clone();
+    search_tool.api_key = config.http_request.tinfish_api_key.clone();
     tools.push(Arc::new(search_tool));
 
     tools.push(Arc::new(crate::tools::web_fetch::WebFetchTool {
@@ -791,7 +812,9 @@ pub async fn build_tools(
     }));
 
     // Self-Learning: Session search (Hermes-style episodic memory)
-    let search_model = config.default_model.clone()
+    let search_model = config
+        .default_model
+        .clone()
         .unwrap_or_else(|| "gemini-1.5-flash".to_string());
     tools.push(Arc::new(crate::tools::session_search::SessionSearchTool {
         workspace_dir: config.workspace_dir.clone(),
@@ -832,14 +855,16 @@ pub async fn build_tools(
     tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
     tools.push(Arc::new(crate::tools::vision::VisionTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
     }));
     tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
-    tools.push(Arc::new(crate::tools::workspace_search::WorkspaceSearchTool {
-        workspace_dir: config.workspace_dir.clone(),
-    }));
+    tools.push(Arc::new(
+        crate::tools::workspace_search::WorkspaceSearchTool {
+            workspace_dir: config.workspace_dir.clone(),
+        },
+    ));
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
@@ -913,13 +938,17 @@ pub async fn build_tools(
             .as_ref()
             .cloned()
             .unwrap_or_else(|| Arc::new(Bus::new()));
-        tools.push(Arc::new(crate::tools::request_approval::RequestApprovalTool {
-            approval_manager: am.clone(),
-            bus: approval_bus,
-        }));
-        tools.push(Arc::new(crate::tools::approval_respond::ApprovalRespondTool {
-            approval_manager: am,
-        }));
+        tools.push(Arc::new(
+            crate::tools::request_approval::RequestApprovalTool {
+                approval_manager: am.clone(),
+                bus: approval_bus,
+            },
+        ));
+        tools.push(Arc::new(
+            crate::tools::approval_respond::ApprovalRespondTool {
+                approval_manager: am,
+            },
+        ));
     }
 
     // Feature 1: Reactive event triggers (main agent only)
@@ -996,7 +1025,11 @@ pub async fn run_daemon(config: Config) -> Result<()> {
                         info!("Memory backend: sqlite ({})", db_path);
 
                         // Attach embedder if API key is available
-                        let provider_name = config.memory.embedding_provider.as_ref().unwrap_or(&config.default_provider);
+                        let provider_name = config
+                            .memory
+                            .embedding_provider
+                            .as_ref()
+                            .unwrap_or(&config.default_provider);
                         if let Some(models) = &config.models {
                             if let Some(p_cfg) = models.providers.get(provider_name) {
                                 let provider_key = p_cfg.api_key.trim();
@@ -1108,7 +1141,12 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     )
     .await;
 
-    let session_manager = Arc::new(SessionManager::new(config.clone(), provider.clone(), tools, memory.clone()));
+    let session_manager = Arc::new(SessionManager::new(
+        config.clone(),
+        provider.clone(),
+        tools,
+        memory.clone(),
+    ));
 
     // Start Inbound Dispatcher
     let bus_clone = bus.clone();
@@ -1251,4 +1289,3 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     info!("Daemon stopped");
     Ok(())
 }
-

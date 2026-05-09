@@ -48,7 +48,11 @@ pub async fn analyze_session(
          Recent conversation:\n{}\n\n\
          Respond with ONLY the updated profile text (max 800 chars). Be concise. \
          If nothing new is worth adding, respond with the existing profile unchanged.",
-        if existing.is_empty() { "(empty)" } else { &existing },
+        if existing.is_empty() {
+            "(empty)"
+        } else {
+            &existing
+        },
         summary
     );
 

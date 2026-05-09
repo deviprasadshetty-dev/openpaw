@@ -60,7 +60,7 @@ impl Tool for SessionSearchTool {
         let db_path = format!("{}/memory.db", self.workspace_dir);
         if !Path::new(&db_path).exists() {
             return Ok(ToolResult::fail(
-                "No SQLite memory database found. Session search requires the sqlite memory backend."
+                "No SQLite memory database found. Session search requires the sqlite memory backend.",
             ));
         }
 
@@ -148,7 +148,7 @@ impl SessionSearchTool {
              WHERE messages_fts MATCH ? \
              ORDER BY bm25(messages_fts) \
              LIMIT ?"
-            .to_string()
+                .to_string()
         };
 
         let mut stmt = conn.prepare(&sql)?;
@@ -225,9 +225,13 @@ impl SessionSearchTool {
         Ok(ids)
     }
 
-    fn load_session_context(&self, conn: &rusqlite::Connection, session_id: &str) -> Result<String> {
+    fn load_session_context(
+        &self,
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> Result<String> {
         let mut stmt = conn.prepare(
-            "SELECT role, content, created_at FROM messages WHERE session_id = ? ORDER BY id ASC"
+            "SELECT role, content, created_at FROM messages WHERE session_id = ? ORDER BY id ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| {
             Ok((
@@ -247,10 +251,7 @@ impl SessionSearchTool {
         Ok(parts.join("\n"))
     }
 
-    fn format_raw_context(
-        &self,
-        sessions: &[(String, String)],
-    ) -> String {
+    fn format_raw_context(&self, sessions: &[(String, String)]) -> String {
         let mut result = String::from("## Past Session Results\n\n");
         for (session_id, context) in sessions {
             result.push_str(&format!("### Session: {}\n", session_id));
@@ -302,10 +303,7 @@ impl SessionSearchTool {
                 Err(_) => "(summary failed)".to_string(),
             };
 
-            summaries.push(format!(
-                "### Session: {}\n{}",
-                session_id, summary
-            ));
+            summaries.push(format!("### Session: {}\n{}", session_id, summary));
         }
 
         summaries.join("\n\n")

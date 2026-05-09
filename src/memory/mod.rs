@@ -92,7 +92,7 @@ pub trait MemoryStore: Send + Sync {
     fn get_recent(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
         Ok(Vec::new())
     }
-    
+
     fn forget_by_id(&self, _id: &str) -> Result<bool> {
         Ok(false)
     }

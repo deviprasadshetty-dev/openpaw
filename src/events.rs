@@ -50,7 +50,9 @@ fn watchers_path() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".openpaw").join("event_watchers.json")
+    PathBuf::from(home)
+        .join(".openpaw")
+        .join("event_watchers.json")
 }
 
 impl EventRegistry {
@@ -121,7 +123,8 @@ impl EventRegistry {
 
     /// Remove a watcher by ID. Returns true if it existed.
     pub fn unwatch(&self, watcher_id: u64) -> bool {
-        let removed = self.watchers
+        let removed = self
+            .watchers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&watcher_id)
@@ -176,7 +179,10 @@ impl EventRegistry {
                         &session_key,
                     );
                     if let Err(e) = self.bus.publish_inbound(inbound) {
-                        warn!("EventRegistry: failed to publish inbound for watcher {}: {}", watcher.id, e);
+                        warn!(
+                            "EventRegistry: failed to publish inbound for watcher {}: {}",
+                            watcher.id, e
+                        );
                     } else {
                         info!(
                             "EventRegistry: event '{}' triggered agent task for watcher {}",
@@ -230,8 +236,16 @@ impl EventRegistry {
                                     ev_name,
                                     watcher_id,
                                     out.status.code().unwrap_or(-1),
-                                    if stdout.is_empty() { String::new() } else { format!("stdout: {}", stdout) },
-                                    if stderr.is_empty() { String::new() } else { format!("\nstderr: {}", stderr) },
+                                    if stdout.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("stdout: {}", stdout)
+                                    },
+                                    if stderr.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("\nstderr: {}", stderr)
+                                    },
                                 )
                             }
                             Err(e) => format!(
@@ -239,7 +253,8 @@ impl EventRegistry {
                                 ev_name, watcher_id, e
                             ),
                         };
-                        let outbound = make_outbound(&shell_origin_channel, &shell_origin_chat, &report);
+                        let outbound =
+                            make_outbound(&shell_origin_channel, &shell_origin_chat, &report);
                         let _ = bus.publish_outbound(outbound);
                     });
                 }

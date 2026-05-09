@@ -194,7 +194,9 @@ fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &D
     // Send the message
     let send_result = match msg.stage {
         OutboundStage::Chunk => channel.send_stream_chunk(&msg.chat_id, &msg.content),
-        OutboundStage::Final => channel.send_message(&msg.chat_id, &msg.content),
+        OutboundStage::Final => {
+            channel.send_message_with_reply(&msg.chat_id, &msg.content, msg.reply_to_message_id)
+        }
     };
 
     if let Err(e) = send_result {
@@ -212,7 +214,7 @@ fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &D
                 let is_empty = msg.content.trim().is_empty() && msg.media.is_empty();
                 info!(
                     "Dispatched final message to {} ({}){}",
-                    msg.channel, 
+                    msg.channel,
                     msg.chat_id,
                     if is_empty { " (empty)" } else { "" }
                 );

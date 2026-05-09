@@ -55,12 +55,9 @@ impl Tool for EventEmitTool {
             .unwrap_or("")
             .to_string();
 
-        let triggered = self.event_registry.emit(
-            &event,
-            &payload,
-            &context.channel,
-            &context.chat_id,
-        );
+        let triggered =
+            self.event_registry
+                .emit(&event, &payload, &context.channel, &context.chat_id);
 
         if triggered == 0 {
             Ok(ToolResult::ok(format!(

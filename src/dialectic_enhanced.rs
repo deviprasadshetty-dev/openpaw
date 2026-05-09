@@ -1,11 +1,10 @@
 /// Enhanced dialectic user modeling — Honcho-style cross-session user profiling.
-/// 
+///
 /// This module extends the basic dialectic analysis with:
 /// 1. Periodic nudges to persist knowledge (not just on turn boundaries)
 /// 2. Multi-file user model (USER.md, PREFERENCES.md, PATTERNS.md)
 /// 3. Cross-session search with LLM summarization for episodic recall
 /// 4. Dialectic modeling — building a "theory of mind" about the user
-
 use crate::providers::{ChatMessage, ChatRequest};
 use std::path::Path;
 use std::sync::Arc;
@@ -48,8 +47,10 @@ pub async fn analyze_session_enhanced(
     let patterns = read_file(workspace_dir, PATTERNS_FILE).await;
 
     // Run three focused analyses in parallel for better coverage
-    let dialectic_update = analyze_dialectic(provider.clone(), model_name, &summary, &dialectic).await;
-    let preferences_update = analyze_preferences(provider.clone(), model_name, &summary, &preferences).await;
+    let dialectic_update =
+        analyze_dialectic(provider.clone(), model_name, &summary, &dialectic).await;
+    let preferences_update =
+        analyze_preferences(provider.clone(), model_name, &summary, &preferences).await;
     let patterns_update = analyze_patterns(provider.clone(), model_name, &summary, &patterns).await;
 
     // Write updates (only if non-empty and changed)
@@ -60,7 +61,8 @@ pub async fn analyze_session_enhanced(
     }
     if let Some(content) = preferences_update {
         if !content.is_empty() && content != preferences {
-            let _ = tokio::fs::write(Path::new(workspace_dir).join(PREFERENCES_FILE), content).await;
+            let _ =
+                tokio::fs::write(Path::new(workspace_dir).join(PREFERENCES_FILE), content).await;
         }
     }
     if let Some(content) = patterns_update {
@@ -93,7 +95,11 @@ async fn analyze_dialectic(
          Respond with ONLY the updated profile (max 600 chars). Focus on: \
          communication style, patience levels, frustration triggers, work habits. \
          Be concise. If nothing new, return the existing profile unchanged.",
-        if existing.is_empty() { "(empty)" } else { existing },
+        if existing.is_empty() {
+            "(empty)"
+        } else {
+            existing
+        },
         summary
     );
 
@@ -128,7 +134,11 @@ async fn analyze_preferences(
          Respond with ONLY updated preferences (max 600 chars). Focus on: \
          preferred tools, output formats, coding style, documentation habits. \
          Use bullet points. If nothing new, return existing unchanged.",
-        if existing.is_empty() { "(empty)" } else { existing },
+        if existing.is_empty() {
+            "(empty)"
+        } else {
+            existing
+        },
         summary
     );
 
@@ -163,7 +173,11 @@ async fn analyze_patterns(
          Respond with ONLY updated patterns (max 600 chars). Focus on: \
          recurring tasks, common workflows, typical requests, domain expertise areas. \
          Use bullet points. If nothing new, return existing unchanged.",
-        if existing.is_empty() { "(empty)" } else { existing },
+        if existing.is_empty() {
+            "(empty)"
+        } else {
+            existing
+        },
         summary
     );
 
@@ -186,12 +200,12 @@ async fn analyze_patterns(
 /// Load the combined dialectic context for prompt injection.
 /// This aggregates all user model files into a single context block.
 pub fn load_dialectic_context_enhanced(workspace_dir: &str) -> String {
-    let dialectic = std::fs::read_to_string(Path::new(workspace_dir).join(DIALECTIC_FILE))
-        .unwrap_or_default();
+    let dialectic =
+        std::fs::read_to_string(Path::new(workspace_dir).join(DIALECTIC_FILE)).unwrap_or_default();
     let preferences = std::fs::read_to_string(Path::new(workspace_dir).join(PREFERENCES_FILE))
         .unwrap_or_default();
-    let patterns = std::fs::read_to_string(Path::new(workspace_dir).join(PATTERNS_FILE))
-        .unwrap_or_default();
+    let patterns =
+        std::fs::read_to_string(Path::new(workspace_dir).join(PATTERNS_FILE)).unwrap_or_default();
 
     let mut parts = Vec::new();
     if !dialectic.trim().is_empty() {
@@ -263,19 +277,18 @@ pub async fn search_session_memory(
 
 async fn search_sqlite_memory(db_path: &str, query: &str) -> Result<String, anyhow::Error> {
     use rusqlite::Connection;
-    
+
     let conn = Connection::open(db_path)?;
     // Try FTS5 virtual table
     let sql = "SELECT content FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT 10";
     let mut stmt = conn.prepare(sql)?;
-    let rows: Result<Vec<String>, _> = stmt
-        .query_map([query], |row| row.get(0))?
-        .collect();
-    
+    let rows: Result<Vec<String>, _> = stmt.query_map([query], |row| row.get(0))?.collect();
+
     match rows {
-        Ok(contents) if !contents.is_empty() => {
-            Ok(format!("## Relevant Past Memories\n{}", contents.join("\n\n")))
-        }
+        Ok(contents) if !contents.is_empty() => Ok(format!(
+            "## Relevant Past Memories\n{}",
+            contents.join("\n\n")
+        )),
         _ => Ok(String::new()),
     }
 }
@@ -283,10 +296,10 @@ async fn search_sqlite_memory(db_path: &str, query: &str) -> Result<String, anyh
 fn extract_relevant_lines(content: &str, query: &str, max_lines: usize) -> String {
     let query_lower = query.to_lowercase();
     let words: Vec<&str> = query_lower.split_whitespace().collect();
-    
+
     let lines: Vec<&str> = content.lines().collect();
     let mut scored: Vec<(usize, &str)> = Vec::new();
-    
+
     for (i, line) in lines.iter().enumerate() {
         let line_lower = line.to_lowercase();
         let score = words.iter().filter(|w| line_lower.contains(*w)).count();
@@ -294,9 +307,13 @@ fn extract_relevant_lines(content: &str, query: &str, max_lines: usize) -> Strin
             scored.push((score, *line));
         }
     }
-    
+
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.truncate(max_lines);
-    
-    scored.into_iter().map(|(_, line)| line).collect::<Vec<_>>().join("\n")
+
+    scored
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }

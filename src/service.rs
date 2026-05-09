@@ -14,10 +14,7 @@ pub enum ServiceCommand {
 pub struct Service;
 
 impl Service {
-    pub fn handle_command(
-        command: ServiceCommand,
-        _config_path: &str,
-    ) -> Result<()> {
+    pub fn handle_command(command: ServiceCommand, _config_path: &str) -> Result<()> {
         match command {
             ServiceCommand::Install => Self::install(),
             ServiceCommand::Start => Self::start(),
@@ -58,11 +55,18 @@ impl Service {
         // Platform specific start logic
         #[cfg(target_os = "macos")]
         {
-            Command::new("launchctl").arg("start").arg("com.openpaw.daemon").status()?;
+            Command::new("launchctl")
+                .arg("start")
+                .arg("com.openpaw.daemon")
+                .status()?;
         }
         #[cfg(target_os = "linux")]
         {
-            Command::new("systemctl").arg("--user").arg("start").arg("openpaw.service").status()?;
+            Command::new("systemctl")
+                .arg("--user")
+                .arg("start")
+                .arg("openpaw.service")
+                .status()?;
         }
         Ok(())
     }
@@ -70,11 +74,18 @@ impl Service {
     fn stop() -> Result<()> {
         #[cfg(target_os = "macos")]
         {
-            Command::new("launchctl").arg("stop").arg("com.openpaw.daemon").status()?;
+            Command::new("launchctl")
+                .arg("stop")
+                .arg("com.openpaw.daemon")
+                .status()?;
         }
         #[cfg(target_os = "linux")]
         {
-            Command::new("systemctl").arg("--user").arg("stop").arg("openpaw.service").status()?;
+            Command::new("systemctl")
+                .arg("--user")
+                .arg("stop")
+                .arg("openpaw.service")
+                .status()?;
         }
         Ok(())
     }
@@ -87,11 +98,18 @@ impl Service {
     fn status() -> Result<()> {
         #[cfg(target_os = "macos")]
         {
-            Command::new("launchctl").arg("list").arg("com.openpaw.daemon").status()?;
+            Command::new("launchctl")
+                .arg("list")
+                .arg("com.openpaw.daemon")
+                .status()?;
         }
         #[cfg(target_os = "linux")]
         {
-            Command::new("systemctl").arg("--user").arg("status").arg("openpaw.service").status()?;
+            Command::new("systemctl")
+                .arg("--user")
+                .arg("status")
+                .arg("openpaw.service")
+                .status()?;
         }
         Ok(())
     }

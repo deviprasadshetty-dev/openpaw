@@ -30,7 +30,8 @@ fn apply_cache_marker(msg: &mut ChatMessage, native_anthropic: bool) {
     // special sentinel that the Anthropic provider adapter can detect.
     // The sentinel is invisible to the model but signals where to place
     // the cache_control breakpoint.
-    msg.content.push_str("\n\n[anthropic:cache_control:ephemeral]");
+    msg.content
+        .push_str("\n\n[anthropic:cache_control:ephemeral]");
 }
 
 /// Apply `system_and_3` caching strategy to messages for Anthropic models.
@@ -118,18 +119,36 @@ mod tests {
         ];
 
         let cached = apply_anthropic_cache_control(&messages, false);
-        assert!(cached[0].content.contains("[anthropic:cache_control:ephemeral]"));
-        assert!(!cached[1].content.contains("[anthropic:cache_control:ephemeral]"));
-        assert!(cached[2].content.contains("[anthropic:cache_control:ephemeral]")
-            || cached[3].content.contains("[anthropic:cache_control:ephemeral]"));
+        assert!(
+            cached[0]
+                .content
+                .contains("[anthropic:cache_control:ephemeral]")
+        );
+        assert!(
+            !cached[1]
+                .content
+                .contains("[anthropic:cache_control:ephemeral]")
+        );
+        assert!(
+            cached[2]
+                .content
+                .contains("[anthropic:cache_control:ephemeral]")
+                || cached[3]
+                    .content
+                    .contains("[anthropic:cache_control:ephemeral]")
+        );
     }
 
     #[test]
     fn test_strip_cache_markers() {
-        let mut messages = vec![
-            ChatMessage::system("You are helpful.\n\n[anthropic:cache_control:ephemeral]"),
-        ];
+        let mut messages = vec![ChatMessage::system(
+            "You are helpful.\n\n[anthropic:cache_control:ephemeral]",
+        )];
         strip_cache_markers(&mut messages);
-        assert!(!messages[0].content.contains("[anthropic:cache_control:ephemeral]"));
+        assert!(
+            !messages[0]
+                .content
+                .contains("[anthropic:cache_control:ephemeral]")
+        );
     }
 }

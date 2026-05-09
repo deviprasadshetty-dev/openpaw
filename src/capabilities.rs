@@ -51,8 +51,6 @@ pub enum OptionalToolMode {
     Disabled,
 }
 
-
-
 fn optional_tool_enabled_by_config(cfg: &Config, name: &str) -> bool {
     match name {
         "http_request" => cfg.http_request.enabled,
@@ -67,10 +65,7 @@ fn optional_tool_enabled_by_config(cfg: &Config, name: &str) -> bool {
     }
 }
 
-fn collect_channel_names(
-    cfg_opt: Option<&Config>,
-    mode: ChannelMode,
-) -> Vec<String> {
+fn collect_channel_names(cfg_opt: Option<&Config>, mode: ChannelMode) -> Vec<String> {
     let mut out = Vec::new();
 
     for meta in channel_catalog::KNOWN_CHANNELS {
@@ -104,7 +99,7 @@ fn collect_memory_engine_names(mode: EngineMode) -> Vec<String> {
         // In my registry implementation, find_backend returns the descriptor if found.
         // Assuming all in KNOWN_BACKEND_NAMES are available.
         let enabled = memory_registry::find_backend(name).is_some();
-        
+
         let include = match mode {
             EngineMode::BuildEnabled => enabled,
             EngineMode::BuildDisabled => !enabled,
@@ -117,10 +112,7 @@ fn collect_memory_engine_names(mode: EngineMode) -> Vec<String> {
     out
 }
 
-fn collect_optional_tools(
-    cfg_opt: Option<&Config>,
-    mode: OptionalToolMode,
-) -> Vec<String> {
+fn collect_optional_tools(cfg_opt: Option<&Config>, mode: OptionalToolMode) -> Vec<String> {
     let mut out = Vec::new();
 
     let cfg = if let Some(c) = cfg_opt {
@@ -180,38 +172,44 @@ pub fn build_manifest_json(
         Vec::new()
     };
 
-    let channels_data: Vec<serde_json::Value> = channel_catalog::KNOWN_CHANNELS.iter().map(|meta| {
-        let enabled = channel_catalog::is_build_enabled(meta.id);
-        let configured_count = if let Some(cfg) = cfg_opt {
-            channel_catalog::configured_count(cfg, meta.id)
-        } else {
-            0
-        };
-        let configured = enabled && configured_count > 0;
-        
-        json!({
-            "key": meta.key,
-            "label": meta.label,
-            "enabled_in_build": enabled,
-            "configured": configured,
-            "configured_count": configured_count
-        })
-    }).collect();
+    let channels_data: Vec<serde_json::Value> = channel_catalog::KNOWN_CHANNELS
+        .iter()
+        .map(|meta| {
+            let enabled = channel_catalog::is_build_enabled(meta.id);
+            let configured_count = if let Some(cfg) = cfg_opt {
+                channel_catalog::configured_count(cfg, meta.id)
+            } else {
+                0
+            };
+            let configured = enabled && configured_count > 0;
 
-    let memory_engines_data: Vec<serde_json::Value> = memory_registry::KNOWN_BACKEND_NAMES.iter().map(|name| {
-        let enabled = memory_registry::find_backend(name).is_some();
-        let configured = if let Some(cfg) = cfg_opt {
-            cfg.memory.backend == *name
-        } else {
-            false
-        };
-        
-        json!({
-            "name": name,
-            "enabled_in_build": enabled,
-            "configured": configured
+            json!({
+                "key": meta.key,
+                "label": meta.label,
+                "enabled_in_build": enabled,
+                "configured": configured,
+                "configured_count": configured_count
+            })
         })
-    }).collect();
+        .collect();
+
+    let memory_engines_data: Vec<serde_json::Value> = memory_registry::KNOWN_BACKEND_NAMES
+        .iter()
+        .map(|name| {
+            let enabled = memory_registry::find_backend(name).is_some();
+            let configured = if let Some(cfg) = cfg_opt {
+                cfg.memory.backend == *name
+            } else {
+                false
+            };
+
+            json!({
+                "name": name,
+                "enabled_in_build": enabled,
+                "configured": configured
+            })
+        })
+        .collect();
 
     let optional_enabled = collect_optional_tools(cfg_opt, OptionalToolMode::Enabled);
     let optional_disabled = collect_optional_tools(cfg_opt, OptionalToolMode::Disabled);
@@ -233,7 +231,8 @@ pub fn build_manifest_json(
             "optional_enabled_by_config": optional_enabled,
             "optional_disabled_by_config": optional_disabled
         }
-    }).to_string()
+    })
+    .to_string()
 }
 
 pub fn build_summary_text(

@@ -14,14 +14,18 @@ impl SkillManageTool {
             return Err(ToolResult::fail("Missing 'name' parameter"));
         }
         if name.contains('/') || name.contains('\\') || name.contains("..") {
-            return Err(ToolResult::fail("Skill name must be a simple alphanumeric string without path separators"));
+            return Err(ToolResult::fail(
+                "Skill name must be a simple alphanumeric string without path separators",
+            ));
         }
         Ok(())
     }
 
     fn validate_subpath(file_path: &str) -> Result<(), ToolResult> {
         if file_path.contains("..") || file_path.starts_with('/') || file_path.starts_with('\\') {
-            return Err(ToolResult::fail("Invalid file path: path traversal is not allowed"));
+            return Err(ToolResult::fail(
+                "Invalid file path: path traversal is not allowed",
+            ));
         }
         Ok(())
     }
@@ -40,9 +44,10 @@ impl SkillManageTool {
         ];
         for pattern in &blocked {
             if lower.contains(pattern) {
-                return Err(ToolResult::fail(
-                    format!("Security scan blocked: content contains dangerous pattern '{}'", pattern)
-                ));
+                return Err(ToolResult::fail(format!(
+                    "Security scan blocked: content contains dangerous pattern '{}'",
+                    pattern
+                )));
             }
         }
         Ok(())
@@ -112,7 +117,9 @@ impl Tool for SkillManageTool {
                 };
 
                 if content.len() > 100_000 {
-                    return Ok(ToolResult::fail("Skill content exceeds 100,000 character limit"));
+                    return Ok(ToolResult::fail(
+                        "Skill content exceeds 100,000 character limit",
+                    ));
                 }
 
                 if let Err(e) = Self::security_scan(content).await {
@@ -122,19 +129,26 @@ impl Tool for SkillManageTool {
                 // Validate YAML frontmatter
                 if !content.trim_start().starts_with("---") {
                     return Ok(ToolResult::fail(
-                        "SKILL.md must start with YAML frontmatter (---\\nname: ...\\ndescription: ...\\n---)"
+                        "SKILL.md must start with YAML frontmatter (---\\nname: ...\\ndescription: ...\\n---)",
                     ));
                 }
 
                 if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
-                    return Ok(ToolResult::fail(format!("Failed to create skill directory: {}", e)));
+                    return Ok(ToolResult::fail(format!(
+                        "Failed to create skill directory: {}",
+                        e
+                    )));
                 }
 
                 if let Err(e) = tokio::fs::write(&skill_md, content).await {
                     return Ok(ToolResult::fail(format!("Failed to write SKILL.md: {}", e)));
                 }
 
-                Ok(ToolResult::ok(format!("Skill '{}' created successfully at {}", name, skill_dir.display())))
+                Ok(ToolResult::ok(format!(
+                    "Skill '{}' created successfully at {}",
+                    name,
+                    skill_dir.display()
+                )))
             }
             "edit" => {
                 let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -143,14 +157,20 @@ impl Tool for SkillManageTool {
                 };
 
                 if !skill_md.exists() {
-                    return Ok(ToolResult::fail(format!("Skill '{}' does not exist. Use action='create' first.", name)));
+                    return Ok(ToolResult::fail(format!(
+                        "Skill '{}' does not exist. Use action='create' first.",
+                        name
+                    )));
                 }
 
                 if let Err(e) = tokio::fs::write(&skill_md, content).await {
                     return Ok(ToolResult::fail(format!("Failed to write SKILL.md: {}", e)));
                 }
 
-                Ok(ToolResult::ok(format!("Skill '{}' updated successfully.", name)))
+                Ok(ToolResult::ok(format!(
+                    "Skill '{}' updated successfully.",
+                    name
+                )))
             }
             "patch" => {
                 let old_text = match args.get("old_text").and_then(|v| v.as_str()) {
@@ -163,18 +183,23 @@ impl Tool for SkillManageTool {
                 };
 
                 if !skill_md.exists() {
-                    return Ok(ToolResult::fail(format!("Skill '{}' does not exist.", name)));
+                    return Ok(ToolResult::fail(format!(
+                        "Skill '{}' does not exist.",
+                        name
+                    )));
                 }
 
                 let existing = match tokio::fs::read_to_string(&skill_md).await {
                     Ok(s) => s,
-                    Err(e) => return Ok(ToolResult::fail(format!("Failed to read SKILL.md: {}", e))),
+                    Err(e) => {
+                        return Ok(ToolResult::fail(format!("Failed to read SKILL.md: {}", e)));
+                    }
                 };
 
                 if !existing.contains(old_text) {
-                    return Ok(ToolResult::fail(
-                        format!("old_text not found in SKILL.md. The file may have changed.")
-                    ));
+                    return Ok(ToolResult::fail(format!(
+                        "old_text not found in SKILL.md. The file may have changed."
+                    )));
                 }
 
                 let updated = existing.replace(old_text, new_text);
@@ -182,27 +207,47 @@ impl Tool for SkillManageTool {
                     return Ok(ToolResult::fail(format!("Failed to write SKILL.md: {}", e)));
                 }
 
-                Ok(ToolResult::ok(format!("Skill '{}' patched successfully.", name)))
+                Ok(ToolResult::ok(format!(
+                    "Skill '{}' patched successfully.",
+                    name
+                )))
             }
             "delete" => {
                 if !skill_dir.exists() {
-                    return Ok(ToolResult::fail(format!("Skill '{}' does not exist.", name)));
+                    return Ok(ToolResult::fail(format!(
+                        "Skill '{}' does not exist.",
+                        name
+                    )));
                 }
 
                 if let Err(e) = tokio::fs::remove_dir_all(&skill_dir).await {
-                    return Ok(ToolResult::fail(format!("Failed to delete skill directory: {}", e)));
+                    return Ok(ToolResult::fail(format!(
+                        "Failed to delete skill directory: {}",
+                        e
+                    )));
                 }
 
-                Ok(ToolResult::ok(format!("Skill '{}' deleted successfully.", name)))
+                Ok(ToolResult::ok(format!(
+                    "Skill '{}' deleted successfully.",
+                    name
+                )))
             }
             "write_file" => {
                 let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
                     Some(fp) => fp,
-                    None => return Ok(ToolResult::fail("Missing 'file_path' parameter for write_file")),
+                    None => {
+                        return Ok(ToolResult::fail(
+                            "Missing 'file_path' parameter for write_file",
+                        ));
+                    }
                 };
                 let content = match args.get("content").and_then(|v| v.as_str()) {
                     Some(c) => c,
-                    None => return Ok(ToolResult::fail("Missing 'content' parameter for write_file")),
+                    None => {
+                        return Ok(ToolResult::fail(
+                            "Missing 'content' parameter for write_file",
+                        ));
+                    }
                 };
 
                 if let Err(e) = Self::validate_subpath(file_path) {
@@ -213,13 +258,19 @@ impl Tool for SkillManageTool {
                 }
 
                 if !skill_dir.exists() {
-                    return Ok(ToolResult::fail(format!("Skill '{}' does not exist. Use action='create' first.", name)));
+                    return Ok(ToolResult::fail(format!(
+                        "Skill '{}' does not exist. Use action='create' first.",
+                        name
+                    )));
                 }
 
                 let target = skill_dir.join(file_path);
                 if let Some(parent) = target.parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        return Ok(ToolResult::fail(format!("Failed to create parent directory: {}", e)));
+                        return Ok(ToolResult::fail(format!(
+                            "Failed to create parent directory: {}",
+                            e
+                        )));
                     }
                 }
 
@@ -227,12 +278,19 @@ impl Tool for SkillManageTool {
                     return Ok(ToolResult::fail(format!("Failed to write file: {}", e)));
                 }
 
-                Ok(ToolResult::ok(format!("Wrote file '{}' in skill '{}'.", file_path, name)))
+                Ok(ToolResult::ok(format!(
+                    "Wrote file '{}' in skill '{}'.",
+                    file_path, name
+                )))
             }
             "remove_file" => {
                 let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
                     Some(fp) => fp,
-                    None => return Ok(ToolResult::fail("Missing 'file_path' parameter for remove_file")),
+                    None => {
+                        return Ok(ToolResult::fail(
+                            "Missing 'file_path' parameter for remove_file",
+                        ));
+                    }
                 };
 
                 if let Err(e) = Self::validate_subpath(file_path) {
@@ -241,16 +299,25 @@ impl Tool for SkillManageTool {
 
                 let target = skill_dir.join(file_path);
                 if !target.exists() {
-                    return Ok(ToolResult::fail(format!("File '{}' does not exist in skill '{}'.", file_path, name)));
+                    return Ok(ToolResult::fail(format!(
+                        "File '{}' does not exist in skill '{}'.",
+                        file_path, name
+                    )));
                 }
 
                 if let Err(e) = tokio::fs::remove_file(&target).await {
                     return Ok(ToolResult::fail(format!("Failed to remove file: {}", e)));
                 }
 
-                Ok(ToolResult::ok(format!("Removed file '{}' from skill '{}'.", file_path, name)))
+                Ok(ToolResult::ok(format!(
+                    "Removed file '{}' from skill '{}'.",
+                    file_path, name
+                )))
             }
-            _ => Ok(ToolResult::fail(format!("Unknown action: {}. Use create, edit, patch, delete, write_file, or remove_file.", action))),
+            _ => Ok(ToolResult::fail(format!(
+                "Unknown action: {}. Use create, edit, patch, delete, write_file, or remove_file.",
+                action
+            ))),
         }
     }
 }

@@ -1,11 +1,10 @@
 /// Skill self-improvement system — Hermes-style learning loop.
-/// 
+///
 /// This module enables skills to improve themselves during use by:
 /// 1. Tracking execution success/failure per skill
 /// 2. Capturing user feedback (implicit via corrections, explicit via ratings)
 /// 3. Periodically rewriting skill definitions based on accumulated learnings
 /// 4. Maintaining a "skill journal" of executions for pattern recognition
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -110,7 +109,9 @@ impl SkillJournal {
             return Ok(());
         }
 
-        let journal_path = Path::new(&self.workspace_dir).join("state").join("skill_journal.jsonl");
+        let journal_path = Path::new(&self.workspace_dir)
+            .join("state")
+            .join("skill_journal.jsonl");
         if let Some(parent) = journal_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -145,7 +146,7 @@ pub async fn analyze_skill_improvements(
     model_name: &str,
 ) -> HashMap<String, String> {
     let mut improvements = HashMap::new();
-    
+
     // Collect all skill names from journal
     let skill_names = {
         let entries = journal.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,7 +218,7 @@ pub async fn improve_skill_file(
     model_name: &str,
 ) -> anyhow::Result<bool> {
     let existing = tokio::fs::read_to_string(skill_path).await?;
-    
+
     let prompt = format!(
         "You are a skill rewriting engine. Given the existing skill definition and improvement suggestions, \
          produce an updated skill definition.\n\n\
@@ -255,8 +256,10 @@ pub async fn improve_skill_file(
 /// Load historical skill journal from disk.
 pub fn load_journal(workspace_dir: &str) -> SkillJournal {
     let journal = SkillJournal::new(workspace_dir.to_string());
-    let journal_path = Path::new(workspace_dir).join("state").join("skill_journal.jsonl");
-    
+    let journal_path = Path::new(workspace_dir)
+        .join("state")
+        .join("skill_journal.jsonl");
+
     if let Ok(content) = std::fs::read_to_string(&journal_path) {
         for line in content.lines() {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
@@ -276,7 +279,9 @@ fn parse_execution_from_json(value: &serde_json::Value) -> Option<SkillExecution
         tool_name: value.get("tool_name")?.as_str()?.to_string(),
         timestamp_secs: value.get("timestamp_secs")?.as_u64()?,
         success: value.get("success")?.as_bool()?,
-        user_correction: value.get("user_correction").and_then(|v| v.as_str().map(|s| s.to_string())),
+        user_correction: value
+            .get("user_correction")
+            .and_then(|v| v.as_str().map(|s| s.to_string())),
         execution_time_ms: value.get("execution_time_ms")?.as_u64()?,
         notes: value.get("notes")?.as_str()?.to_string(),
     })

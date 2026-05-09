@@ -68,6 +68,7 @@ pub struct PartialConfig {
     pub kilocode_fallback_models: Option<Vec<String>>,
     pub brave_api_key: Option<Option<String>>,
     pub search_provider: Option<String>,
+    pub tinfish_api_key: Option<Option<String>>,
     pub pushover: Option<Option<(String, String)>>,
     pub custom_base_url: Option<Option<String>>,
     pub custom_model: Option<Option<String>>,
@@ -128,11 +129,17 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         fs::write(&config_path, &json_str)?;
         println!("[openpaw] Written config.json: {}", config_path.display());
         let ctx = ProjectContext {
-            timezone: partial.timezone.clone().unwrap_or_else(|| "UTC".to_string()),
+            timezone: partial
+                .timezone
+                .clone()
+                .unwrap_or_else(|| "UTC".to_string()),
             ..ProjectContext::default()
         };
         scaffold_workspace(dir, &ctx)?;
-        println!("[openpaw] Workspace templates scaffolded in: {}", dir.display());
+        println!(
+            "[openpaw] Workspace templates scaffolded in: {}",
+            dir.display()
+        );
     } else {
         println!("[openpaw] Setup was cancelled or discarded — nothing saved.");
     }
@@ -146,6 +153,7 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
 
 impl PartialConfig {
     pub fn default_values_from_json(&mut self, json: &serde_json::Value) {
+        let p_name = json["default_provider"].as_str().unwrap_or("gemini");
         if let Some(p) = json["default_provider"].as_str() {
             self.provider = Some(ProviderConfig {
                 name: p.to_string(),
@@ -189,8 +197,22 @@ impl PartialConfig {
         if let Some(tz) = json["timezone"].as_str() {
             self.timezone = Some(tz.to_string());
         }
-        if let Some(backend) = json["memory"]["backend"].as_str() {
-            self.memory_backend = Some(backend.to_string());
+        if let Some(mem) = json.get("memory") {
+            if let Some(backend) = mem["backend"].as_str() {
+                self.memory_backend = Some(backend.to_string());
+            }
+            self.embed_provider = Some(mem["embedding_provider"].as_str().map(|s| s.to_string()));
+            self.embed_model = Some(mem["embedding_model"].as_str().map(|s| s.to_string()));
+        }
+        // Load embed key from the embedding provider's config
+        if let Some(Some(ep)) = &self.embed_provider {
+            if ep != p_name {
+                self.embed_key = Some(
+                    json["models"]["providers"][ep]["api_key"]
+                        .as_str()
+                        .map(|s| s.to_string()),
+                );
+            }
         }
         if let Some(voice) = json.get("voice") {
             self.groq_key = voice["api_key"].as_str().map(|s| s.to_string());
@@ -216,7 +238,9 @@ impl PartialConfig {
             self.composio_entity_id = comp["entity_id"].as_str().map(|s| s.to_string());
         }
         if let Some(http) = json.get("http_request") {
+            self.search_provider = http["search_provider"].as_str().map(|s| s.to_string());
             self.brave_api_key = Some(http["brave_search_api_key"].as_str().map(|s| s.to_string()));
+            self.tinfish_api_key = Some(http["tinfish_api_key"].as_str().map(|s| s.to_string()));
         }
         if let Some(wa_list) = json["channels"]["whatsapp_native"].as_array() {
             if !wa_list.is_empty() {
@@ -231,6 +255,22 @@ impl PartialConfig {
                 self.whatsapp_native = Some(Some((url, allow)));
             } else {
                 self.whatsapp_native = Some(None);
+            }
+        }
+        if let Some(email_list) = json["channels"]["email"].as_array() {
+            if !email_list.is_empty() {
+                let em = &email_list[0];
+                let smtp_user = em["smtp_user"].as_str().unwrap_or("").to_string();
+                let smtp_pass = em["smtp_pass"].as_str().unwrap_or("").to_string();
+                let smtp_host = em["smtp_host"].as_str().unwrap_or("").to_string();
+                let smtp_port = em["smtp_port"].as_u64().unwrap_or(587) as u16;
+                let imap_host = em["imap_host"].as_str().unwrap_or("").to_string();
+                let imap_port = em["imap_port"].as_u64().unwrap_or(993) as u16;
+                self.email = Some(Some((
+                    smtp_user, smtp_pass, smtp_host, smtp_port, imap_host, imap_port,
+                )));
+            } else {
+                self.email = Some(None);
             }
         }
         if let Some(push) = json.get("pushover") {
@@ -343,6 +383,7 @@ impl PartialConfig {
             },
             "http_request": {
                 "enabled": true,
+                "tinfish_api_key": self.tinfish_api_key.as_ref().and_then(|k| k.as_ref()).cloned(),
                 "search_provider": self.search_provider.as_deref().unwrap_or_else(|| {
                     if self.brave_api_key.as_ref().and_then(|k| k.as_ref()).is_some() { "brave" } else { "gemini_cli" }
                 }),

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result, Context};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::process::Command;
@@ -116,11 +116,21 @@ pub fn parse_multimodal_markers(content: &str) -> ParseResult {
 
 pub fn detect_mime_type(data: &[u8], path: &str) -> String {
     if data.len() >= 4 {
-        if data.starts_with(&[0x89, b'P', b'N', b'G']) { return "image/png".to_string(); }
-        if data.starts_with(&[0xFF, 0xD8, 0xFF]) { return "image/jpeg".to_string(); }
-        if data.starts_with(b"GIF8") { return "image/gif".to_string(); }
-        if data.starts_with(b"BM") { return "image/bmp".to_string(); }
-        if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" { return "image/webp".to_string(); }
+        if data.starts_with(&[0x89, b'P', b'N', b'G']) {
+            return "image/png".to_string();
+        }
+        if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg".to_string();
+        }
+        if data.starts_with(b"GIF8") {
+            return "image/gif".to_string();
+        }
+        if data.starts_with(b"BM") {
+            return "image/bmp".to_string();
+        }
+        if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+            return "image/webp".to_string();
+        }
     }
 
     let ext = std::path::Path::new(path)
@@ -173,8 +183,7 @@ pub fn is_gemini_cli_available() -> bool {
 pub fn process_with_gemini_cli(prompt: &str, files: &[String]) -> Result<String> {
     let mut full_prompt = String::new();
     for file in files {
-        let abs = std::fs::canonicalize(file)
-            .unwrap_or_else(|_| std::path::PathBuf::from(file));
+        let abs = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
         full_prompt.push_str(&format!(
             "Read and analyze the file at path: {}\n",
             abs.display()
@@ -214,6 +223,28 @@ pub fn process_with_gemini_cli(prompt: &str, files: &[String]) -> Result<String>
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        #[cfg(windows)]
+        {
+            match Command::new("gemini.cmd")
+                .arg("--approval-mode")
+                .arg("yolo")
+                .arg("--output-format")
+                .arg("text")
+                .arg("-p")
+                .arg(&full_prompt)
+                .output()
+            {
+                Ok(retry_output) if retry_output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&retry_output.stdout)
+                        .trim()
+                        .to_string();
+                    if !stdout.is_empty() {
+                        return Ok(stdout);
+                    }
+                }
+                _ => {}
+            }
+        }
         return Err(anyhow!("Gemini CLI error: {}", stderr));
     }
 
@@ -258,7 +289,7 @@ pub fn read_local_file(path: &str, config: &MultimodalConfig) -> Result<Multimod
 
     let data = fs::read(&resolved)?;
     let mime_type = detect_mime_type(&data, path);
-    
+
     let kind = if mime_type.starts_with("image/") {
         MultimodalKind::Image
     } else if mime_type.starts_with("audio/") {

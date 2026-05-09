@@ -5,7 +5,6 @@ pub mod approval;
 pub mod auth;
 pub mod build_options;
 pub mod bus;
-pub mod events;
 pub mod capabilities;
 pub mod channel_adapters;
 pub mod channel_catalog;
@@ -23,6 +22,7 @@ pub mod dialectic;
 pub mod dialectic_enhanced;
 pub mod doctor;
 pub mod dream;
+pub mod events;
 pub mod gateway;
 pub mod goals;
 pub mod hardware;
@@ -43,7 +43,6 @@ pub mod multimodal;
 pub mod net_security;
 pub mod observability;
 pub mod onboard;
-pub mod tui_onboard;
 pub mod peripherals;
 pub mod plan;
 pub mod platform;
@@ -64,6 +63,7 @@ pub mod streaming;
 pub mod subagent;
 pub mod token_estimator;
 pub mod tools;
+pub mod tui_onboard;
 pub mod tunnel;
 pub mod update;
 pub mod util;
@@ -244,6 +244,7 @@ async fn main() -> Result<()> {
                         group_policy: "allowlist".to_string(),
                         reply_in_private: true,
                         proxy: std::env::var("TELEGRAM_PROXY").ok(),
+                        webhook_url: std::env::var("TELEGRAM_WEBHOOK_URL").ok(),
                     });
 
                     info!("Telegram bot configured from environment");
@@ -309,6 +310,7 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     agent.skill_nudge_interval = config.skills.creation_nudge_interval;
     agent.memory_nudge_interval = config.self_learning.memory_nudge_interval;
     agent.memory_flush_min_turns = config.self_learning.flush_min_turns;
+    agent.efficiency_config = config.efficiency.clone();
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {

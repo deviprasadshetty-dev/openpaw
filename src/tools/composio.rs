@@ -125,9 +125,10 @@ impl ComposioTool {
             query.push(("toolkit_slug", slug.clone()));
         }
         if let Some(search) = &search_term
-            && !search.is_empty() {
-                query.push(("query", search.clone()));
-            }
+            && !search.is_empty()
+        {
+            query.push(("query", search.clone()));
+        }
 
         let mut resp = self
             .api_request(Method::GET, "/tools", &query, None)
@@ -144,16 +145,15 @@ impl ComposioTool {
             && extract_array_entries(json_body)
                 .map(|a| a.is_empty())
                 .unwrap_or(false)
-            {
-                let fallback_query =
-                    vec![("limit", "100".to_string()), ("query", slug.to_string())];
-                let fallback_resp = self
-                    .api_request(Method::GET, "/tools", &fallback_query, None)
-                    .await?;
-                if is_success(fallback_resp.status) {
-                    resp = fallback_resp;
-                }
+        {
+            let fallback_query = vec![("limit", "100".to_string()), ("query", slug.to_string())];
+            let fallback_resp = self
+                .api_request(Method::GET, "/tools", &fallback_query, None)
+                .await?;
+            if is_success(fallback_resp.status) {
+                resp = fallback_resp;
             }
+        }
 
         let Some(json_body) = resp.body_json else {
             return Ok(ToolResult::ok(resp.body_text));
@@ -277,13 +277,14 @@ impl ComposioTool {
             .or(best_tool.get("tool_slug"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-            
+
         let toolkit_slug = best_tool
             .get("toolkit_slug")
             .and_then(Value::as_str)
             .or_else(|| best_tool.get("toolkit").and_then(Value::as_str))
             .or_else(|| {
-                best_tool.get("toolkit")
+                best_tool
+                    .get("toolkit")
                     .and_then(|v| v.get("slug"))
                     .and_then(Value::as_str)
             })
@@ -295,22 +296,25 @@ impl ComposioTool {
         exec_args["text"] = json!(text);
 
         let result = self.execute_action(&exec_args).await?;
-        
+
         if !result.is_error {
             Ok(ToolResult::ok(format!(
-                "Successfully executed natural language query via tool '{}' (toolkit: {}):\n\n{}", 
+                "Successfully executed natural language query via tool '{}' (toolkit: {}):\n\n{}",
                 tool_slug, toolkit_slug, result.content
             )))
         } else {
             let out = &result.content;
-            if out.to_lowercase().contains("auth") || out.contains("HTTP 401") || out.contains("HTTP 422") {
+            if out.to_lowercase().contains("auth")
+                || out.contains("HTTP 401")
+                || out.contains("HTTP 422")
+            {
                 Ok(ToolResult::fail(format!(
-                    "Failed to execute query using tool '{}' (toolkit: {}). This is likely an authentication issue.\n\nPlease use action='connect' with app='{}' to authenticate, then try your query again.\n\nDetails:\n{}", 
+                    "Failed to execute query using tool '{}' (toolkit: {}). This is likely an authentication issue.\n\nPlease use action='connect' with app='{}' to authenticate, then try your query again.\n\nDetails:\n{}",
                     tool_slug, toolkit_slug, toolkit_slug, out
                 )))
             } else {
                 Ok(ToolResult::fail(format!(
-                    "Failed to execute query using tool '{}' (toolkit: {}):\n\n{}", 
+                    "Failed to execute query using tool '{}' (toolkit: {}):\n\n{}",
                     tool_slug, toolkit_slug, out
                 )))
             }
@@ -383,7 +387,9 @@ impl ComposioTool {
 
     async fn find_toolkit_slug(&self, query: &str) -> Result<Option<String>> {
         let params = vec![("query", query.to_string()), ("limit", "1".to_string())];
-        let resp = self.api_request(Method::GET, "/tools", &params, None).await?;
+        let resp = self
+            .api_request(Method::GET, "/tools", &params, None)
+            .await?;
         if !is_success(resp.status) {
             return Ok(None);
         }
@@ -475,14 +481,15 @@ impl ComposioTool {
         }
 
         if let Some(ref v) = resp.body_json
-            && let Some(url) = extract_auth_url(v) {
-                return Ok(ToolResult::ok(format!(
-                    "Open this URL to authenticate {}: {}\n\n{}",
-                    user_id,
-                    url,
-                    pretty_json_or_text(resp.body_json, resp.body_text)
-                )));
-            }
+            && let Some(url) = extract_auth_url(v)
+        {
+            return Ok(ToolResult::ok(format!(
+                "Open this URL to authenticate {}: {}\n\n{}",
+                user_id,
+                url,
+                pretty_json_or_text(resp.body_json, resp.body_text)
+            )));
+        }
 
         Ok(ToolResult::ok(pretty_json_or_text(
             resp.body_json,
@@ -548,7 +555,7 @@ impl ComposioTool {
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
         });
-        
+
         let tools = args.get("tools").and_then(Value::as_array).map(|arr| {
             arr.iter()
                 .filter_map(Value::as_str)
@@ -612,7 +619,7 @@ impl ComposioTool {
             .await?;
 
         let mut output = format!("Created Composio Tool Router Session: {}\n", session_id);
-        
+
         // Handle auth requirements if returned
         if let Some(json_body) = &session_resp.body_json {
             if let Some(auth_reqs) = json_body.get("auth_requirements").and_then(Value::as_array) {
@@ -620,14 +627,20 @@ impl ComposioTool {
                     output.push_str("\n⚠️ Authentication Required for this session:\n");
                     for req in auth_reqs {
                         if let Some(url) = extract_auth_url(req) {
-                            let toolkit = req.get("toolkit").and_then(Value::as_str).unwrap_or("toolkit");
+                            let toolkit = req
+                                .get("toolkit")
+                                .and_then(Value::as_str)
+                                .unwrap_or("toolkit");
                             output.push_str(&format!("- Please connect {}: {}\n", toolkit, url));
                         }
                     }
                     output.push('\n');
                 }
             } else if let Some(url) = extract_auth_url(json_body) {
-                output.push_str(&format!("\n⚠️ Authentication Required: Please visit {}\n\n", url));
+                output.push_str(&format!(
+                    "\n⚠️ Authentication Required: Please visit {}\n\n",
+                    url
+                ));
             }
         }
 
@@ -770,9 +783,10 @@ fn extract_auth_url(value: &Value) -> Option<String> {
     }
 
     if let Some(link_obj) = value.get("link")
-        && let Some(url) = link_obj.get("url").and_then(Value::as_str) {
-            return Some(url.to_string());
-        }
+        && let Some(url) = link_obj.get("url").and_then(Value::as_str)
+    {
+        return Some(url.to_string());
+    }
 
     if let Some(data) = value.get("data") {
         return extract_auth_url(data);

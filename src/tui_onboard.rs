@@ -1,41 +1,38 @@
-use std::{
-    io::stdout,
-    time::Duration,
-};
+use std::{io::stdout, time::Duration};
 
 use anyhow::Result;
-use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::{Receiver, bounded};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
-        Wrap,
+        Block, BorderType, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
+        Row, Table, Wrap,
     },
-    Frame, Terminal,
 };
-use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
+use tui_input::backend::crossterm::EventHandler;
 
 use crate::onboard::{
-    fetch_anthropic_models, fetch_gemini_models, fetch_ollama_compat_models, fetch_ollama_models,
-    fetch_openai_compat_models, fetch_openai_models, PartialConfig, ProviderConfig,
-    COMMON_TIMEZONES,
+    COMMON_TIMEZONES, PartialConfig, ProviderConfig, fetch_anthropic_models, fetch_gemini_models,
+    fetch_ollama_compat_models, fetch_ollama_models, fetch_openai_compat_models,
+    fetch_openai_models,
 };
 use crate::providers::kilocode::fetch_kilocode_free_models;
 use crate::providers::openrouter::{
-    fetch_openrouter_free_models, format_openrouter_model, preferred_openrouter_model_index,
-    OpenRouterFreeModel,
+    OpenRouterFreeModel, fetch_openrouter_free_models, format_openrouter_model,
+    preferred_openrouter_model_index,
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -56,16 +53,16 @@ struct Theme {
 }
 
 const THEME: Theme = Theme {
-    bg: Color::Black,
-    fg: Color::Gray,
-    primary: Color::Cyan,
-    success: Color::Green,
-    warning: Color::Yellow,
-    error: Color::Red,
-    muted: Color::DarkGray,
-    border: Color::Gray,
-    highlight_bg: Color::DarkGray,
-    highlight_fg: Color::White,
+    bg: Color::Rgb(12, 12, 16),
+    fg: Color::Rgb(220, 220, 230),
+    primary: Color::Rgb(96, 180, 255),
+    success: Color::Rgb(80, 220, 120),
+    warning: Color::Rgb(255, 200, 80),
+    error: Color::Rgb(255, 100, 100),
+    muted: Color::Rgb(100, 100, 120),
+    border: Color::Rgb(50, 50, 65),
+    highlight_bg: Color::Rgb(40, 45, 60),
+    highlight_fg: Color::Rgb(255, 255, 255),
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -158,6 +155,7 @@ enum ChannelStage {
     Telegram,
     Whatsapp,
     Email,
+    AskAnother,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,9 +166,7 @@ enum ComposioStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WebSearchStage {
-    Select,
-    BraveKey,
-    GeminiCheck,
+    ApiKey,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,7 +286,11 @@ impl App {
             is_edit,
             should_save: false,
             should_quit: false,
-            current_step: if is_edit { Step::Summary } else { Step::Welcome },
+            current_step: if is_edit {
+                Step::Summary
+            } else {
+                Step::Welcome
+            },
             sub_stage: SubStage::None,
             list_state: ListState::default(),
             summary_list: ListState::default(),
@@ -741,8 +741,7 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => self.list_up(),
                 KeyCode::Down | KeyCode::Char('j') => self.list_down(),
                 KeyCode::Enter => {
-                    self.selected_cheap_provider_idx =
-                        self.list_state.selected().unwrap_or(0);
+                    self.selected_cheap_provider_idx = self.list_state.selected().unwrap_or(0);
                     let (id, _) = self.cheap_providers[self.selected_cheap_provider_idx];
                     if id == "none" {
                         self.config.cheap_provider = Some(None);
@@ -847,8 +846,7 @@ impl App {
             SubStage::Memory(MemoryStage::ConfirmEmbed) => match key.code {
                 KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
                     let sel = self.list_state.selected().unwrap_or(0);
-                    self.list_state
-                        .select(Some(if sel == 0 { 1 } else { 0 }));
+                    self.list_state.select(Some(if sel == 0 { 1 } else { 0 }));
                 }
                 KeyCode::Enter => {
                     if self.list_state.selected().unwrap_or(0) == 0 {
@@ -879,8 +877,7 @@ impl App {
                 if key.code == KeyCode::Enter {
                     let key_val = self.inputs[0].value().to_string();
                     self.config.embed_provider = Some(Some("huggingface".to_string()));
-                    self.config.embed_model =
-                        Some(Some("Qwen/Qwen3-Embedding-0.6B".to_string()));
+                    self.config.embed_model = Some(Some("Qwen/Qwen3-Embedding-0.6B".to_string()));
                     self.config.embed_key = Some(Some(key_val));
                     self.advance_step();
                 } else if key.code == KeyCode::Esc {
@@ -897,8 +894,7 @@ impl App {
             SubStage::Voice(VoiceStage::Confirm) => match key.code {
                 KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
                     let sel = self.list_state.selected().unwrap_or(0);
-                    self.list_state
-                        .select(Some(if sel == 0 { 1 } else { 0 }));
+                    self.list_state.select(Some(if sel == 0 { 1 } else { 0 }));
                 }
                 KeyCode::Enter => {
                     if self.list_state.selected().unwrap_or(0) == 0 {
@@ -967,18 +963,11 @@ impl App {
                         }
                         3 => {
                             // Email
-                            let e = self
-                                .config
-                                .email
-                                .as_ref()
-                                .and_then(|e| e.as_ref())
-                                .cloned();
+                            let e = self.config.email.as_ref().and_then(|e| e.as_ref()).cloned();
                             let (em, pa, sh, sp, ih, ip) = match e {
-                                Some((a, b, c, d, e, f)) => (
-                                    a, b, c,
-                                    d.to_string(), e,
-                                    f.to_string(),
-                                ),
+                                Some((a, b, c, d, e, f)) => {
+                                    (a, b, c, d.to_string(), e, f.to_string())
+                                }
                                 None => (
                                     String::new(),
                                     String::new(),
@@ -1015,11 +1004,8 @@ impl App {
                                 .and_then(|w| w.as_ref())
                                 .map(|(_, p)| p.clone())
                                 .unwrap_or_else(|| "+1".to_string());
-                            self.inputs = vec![
-                                Input::new(tok),
-                                Input::new(user),
-                                Input::new(phone),
-                            ];
+                            self.inputs =
+                                vec![Input::new(tok), Input::new(user), Input::new(phone)];
                             self.focused_input = 0;
                             // We'll use a virtual "Both" stage reusing Telegram widget for now
                             // but actually we need a new stage. Let's hack it by storing in Telegram
@@ -1039,26 +1025,28 @@ impl App {
                 _ => {}
             },
             SubStage::Channel(ChannelStage::Telegram) => {
-                if let Some(flow) = self.handle_form_input(key, 2) {
+                let input_count = self.inputs.len();
+                if let Some(flow) = self.handle_form_input(key, input_count) {
                     return flow;
                 }
                 if key.code == KeyCode::Enter {
                     let token = self.inputs[0].value().to_string();
                     let user = self.inputs[1].value().to_string();
                     self.config.telegram = Some(Some((token, user)));
-                    // If user selected "Both", we need to go to Whatsapp next.
-                    // We need to know if original choice was "Both". Let's check list_state selected before we changed stage?
-                    // Actually, we can infer: if email is None AND telegram is being set and whatsapp was previously None... it's messy.
-                    // Simpler: "Both" is not supported in this TUI version, or we treat "Both" as Telegram + prompt for WhatsApp.
-                    // Let's use a trick: if inputs.len() == 3, it was "Both".
                     if self.inputs.len() == 3 {
                         let phone = self.inputs[2].value().to_string();
-                        self.config.whatsapp_native =
-                            Some(Some(("http://localhost:18790".to_string(), phone)));
-                        self.advance_step();
-                    } else {
-                        self.advance_step();
+                        let existing_url = self
+                            .config
+                            .whatsapp_native
+                            .as_ref()
+                            .and_then(|w| w.as_ref())
+                            .map(|(url, _)| url.clone())
+                            .unwrap_or_else(|| "http://localhost:18790".to_string());
+                        self.config.whatsapp_native = Some(Some((existing_url, phone)));
                     }
+                    // Ask if user wants to configure another channel
+                    self.sub_stage = SubStage::Channel(ChannelStage::AskAnother);
+                    self.list_state.select(Some(1)); // Default to "No"
                 } else if key.code == KeyCode::Esc {
                     self.sub_stage = SubStage::Channel(ChannelStage::Select);
                 }
@@ -1069,9 +1057,17 @@ impl App {
                 }
                 if key.code == KeyCode::Enter {
                     let phone = self.inputs[0].value().to_string();
-                    self.config.whatsapp_native =
-                        Some(Some(("http://localhost:18790".to_string(), phone)));
-                    self.advance_step();
+                    let existing_url = self
+                        .config
+                        .whatsapp_native
+                        .as_ref()
+                        .and_then(|w| w.as_ref())
+                        .map(|(url, _)| url.clone())
+                        .unwrap_or_else(|| "http://localhost:18790".to_string());
+                    self.config.whatsapp_native = Some(Some((existing_url, phone)));
+                    // Ask if user wants to configure another channel
+                    self.sub_stage = SubStage::Channel(ChannelStage::AskAnother);
+                    self.list_state.select(Some(1)); // Default to "No"
                 } else if key.code == KeyCode::Esc {
                     self.sub_stage = SubStage::Channel(ChannelStage::Select);
                 }
@@ -1090,11 +1086,34 @@ impl App {
                     self.config.email = Some(Some((
                         email, pass, smtp_host, smtp_port, imap_host, imap_port,
                     )));
-                    self.advance_step();
+                    // Ask if user wants to configure another channel
+                    self.sub_stage = SubStage::Channel(ChannelStage::AskAnother);
+                    self.list_state.select(Some(1)); // Default to "No"
                 } else if key.code == KeyCode::Esc {
                     self.sub_stage = SubStage::Channel(ChannelStage::Select);
                 }
             }
+            SubStage::Channel(ChannelStage::AskAnother) => match key.code {
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
+                    let sel = self.list_state.selected().unwrap_or(0);
+                    self.list_state.select(Some(if sel == 0 { 1 } else { 0 }));
+                }
+                KeyCode::Enter => {
+                    if self.list_state.selected().unwrap_or(0) == 0 {
+                        // Yes - go back to channel selection
+                        self.sub_stage = SubStage::Channel(ChannelStage::Select);
+                        self.list_state.select(Some(0));
+                    } else {
+                        // No - advance to next step
+                        self.advance_step();
+                    }
+                }
+                KeyCode::Esc => {
+                    // Go back to channel select
+                    self.sub_stage = SubStage::Channel(ChannelStage::Select);
+                }
+                _ => {}
+            },
             _ => {}
         }
         std::ops::ControlFlow::Continue(())
@@ -1105,8 +1124,7 @@ impl App {
             SubStage::Composio(ComposioStage::Confirm) => match key.code {
                 KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
                     let sel = self.list_state.selected().unwrap_or(0);
-                    self.list_state
-                        .select(Some(if sel == 0 { 1 } else { 0 }));
+                    self.list_state.select(Some(if sel == 0 { 1 } else { 0 }));
                 }
                 KeyCode::Enter => {
                     if self.list_state.selected().unwrap_or(0) == 0 {
@@ -1154,70 +1172,15 @@ impl App {
     }
 
     fn handle_websearch(&mut self, key: KeyEvent) -> std::ops::ControlFlow<()> {
-        match self.sub_stage {
-            SubStage::WebSearch(WebSearchStage::Select) => match key.code {
-                KeyCode::Up | KeyCode::Char('k') => self.list_up(),
-                KeyCode::Down | KeyCode::Char('j') => self.list_down(),
-                KeyCode::Enter => {
-                    let idx = self.list_state.selected().unwrap_or(0);
-                    match idx {
-                        0 => {
-                            self.config.search_provider = Some("gemini_cli".to_string());
-                            if which::which("gemini").is_ok() {
-                                self.config.brave_api_key = Some(None);
-                                self.advance_step();
-                            } else {
-                                self.sub_stage = SubStage::WebSearch(WebSearchStage::GeminiCheck);
-                            }
-                        }
-                        1 => {
-                            self.config.search_provider = Some("brave".to_string());
-                            let existing = self
-                                .config
-                                .brave_api_key
-                                .as_ref()
-                                .and_then(|k| k.as_ref())
-                                .cloned()
-                                .unwrap_or_default();
-                            self.inputs = vec![Input::new(existing)];
-                            self.focused_input = 0;
-                            self.sub_stage = SubStage::WebSearch(WebSearchStage::BraveKey);
-                        }
-                        2 => {
-                            self.config.search_provider = Some("duckduckgo".to_string());
-                            self.config.brave_api_key = Some(None);
-                            self.advance_step();
-                        }
-                        _ => {
-                            self.config.search_provider = Some("duckduckgo".to_string());
-                            self.config.brave_api_key = Some(None);
-                            self.advance_step();
-                        }
-                    }
-                }
-                KeyCode::Esc => self.go_back(),
-                _ => {}
-            },
-            SubStage::WebSearch(WebSearchStage::BraveKey) => {
-                if let Some(flow) = self.handle_form_input(key, 1) {
-                    return flow;
-                }
-                if key.code == KeyCode::Enter {
-                    let key_val = self.inputs[0].value().to_string();
-                    self.config.brave_api_key = Some(Some(key_val));
-                    self.advance_step();
-                } else if key.code == KeyCode::Esc {
-                    self.sub_stage = SubStage::WebSearch(WebSearchStage::Select);
-                }
-            }
-            SubStage::WebSearch(WebSearchStage::GeminiCheck) => match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    self.config.brave_api_key = Some(None);
-                    self.advance_step();
-                }
-                _ => {}
-            },
-            _ => {}
+        if let Some(flow) = self.handle_form_input(key, 1) {
+            return flow;
+        }
+        if key.code == KeyCode::Enter {
+            let key_val = self.inputs[0].value().to_string();
+            self.config.tinfish_api_key = Some(if key_val.is_empty() { None } else { Some(key_val) });
+            self.advance_step();
+        } else if key.code == KeyCode::Esc {
+            self.advance_step();
         }
         std::ops::ControlFlow::Continue(())
     }
@@ -1227,8 +1190,7 @@ impl App {
             SubStage::Pushover(PushoverStage::Confirm) => match key.code {
                 KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
                     let sel = self.list_state.selected().unwrap_or(0);
-                    self.list_state
-                        .select(Some(if sel == 0 { 1 } else { 0 }));
+                    self.list_state.select(Some(if sel == 0 { 1 } else { 0 }));
                 }
                 KeyCode::Enter => {
                     if self.list_state.selected().unwrap_or(0) == 0 {
@@ -1295,7 +1257,8 @@ impl App {
                         1 => {
                             self.current_step = Step::CheapModel;
                             self.sub_stage = SubStage::Cheap(CheapStage::Select);
-                            self.list_state.select(Some(self.selected_cheap_provider_idx));
+                            self.list_state
+                                .select(Some(self.selected_cheap_provider_idx));
                         }
                         2 => {
                             self.current_step = Step::Timezone;
@@ -1360,19 +1323,26 @@ impl App {
                         }
                         7 => {
                             self.current_step = Step::WebSearch;
-                            self.sub_stage = SubStage::WebSearch(WebSearchStage::Select);
-                            let idx = match self.config.search_provider.as_deref() {
-                                Some("brave") => 1,
-                                Some("duckduckgo") => 2,
-                                Some("none") => 3,
-                                _ => 0,
-                            };
-                            self.list_state.select(Some(idx));
+                            self.sub_stage = SubStage::WebSearch(WebSearchStage::ApiKey);
+                            let existing = self
+                                .config
+                                .tinfish_api_key
+                                .as_ref()
+                                .and_then(|k| k.as_ref())
+                                .cloned()
+                                .unwrap_or_default();
+                            self.inputs = vec![Input::new(existing)];
+                            self.focused_input = 0;
                         }
                         8 => {
                             self.current_step = Step::Pushover;
                             self.sub_stage = SubStage::Pushover(PushoverStage::Confirm);
-                            let has = self.config.pushover.as_ref().and_then(|p| p.as_ref()).is_some();
+                            let has = self
+                                .config
+                                .pushover
+                                .as_ref()
+                                .and_then(|p| p.as_ref())
+                                .is_some();
                             self.list_state.select(Some(if has { 0 } else { 1 }));
                         }
                         9 => {
@@ -1406,7 +1376,12 @@ impl App {
                 } else {
                     self.current_step = Step::Pushover;
                     self.sub_stage = SubStage::Pushover(PushoverStage::Confirm);
-                    let has = self.config.pushover.as_ref().and_then(|p| p.as_ref()).is_some();
+                    let has = self
+                        .config
+                        .pushover
+                        .as_ref()
+                        .and_then(|p| p.as_ref())
+                        .is_some();
                     self.list_state.select(Some(if has { 0 } else { 1 }));
                 }
             }
@@ -1427,6 +1402,15 @@ impl App {
     // ═════════════════════════════════════════════════════════════════════════
 
     fn advance_step(&mut self) {
+        // When editing, always return to Summary after completing a step
+        if self.is_edit {
+            self.current_step = Step::Summary;
+            self.sub_stage = SubStage::None;
+            self.summary_list.select(Some(0));
+            self.inputs.clear();
+            self.focused_input = 0;
+            return;
+        }
         let steps = Step::all();
         let current_idx = steps.iter().position(|s| *s == self.current_step);
         if let Some(idx) = current_idx {
@@ -1439,7 +1423,7 @@ impl App {
                     Step::Voice => SubStage::Voice(VoiceStage::Confirm),
                     Step::Channels => SubStage::Channel(ChannelStage::Select),
                     Step::Composio => SubStage::Composio(ComposioStage::Confirm),
-                    Step::WebSearch => SubStage::WebSearch(WebSearchStage::Select),
+                    Step::WebSearch => SubStage::WebSearch(WebSearchStage::ApiKey),
                     Step::Pushover => SubStage::Pushover(PushoverStage::Confirm),
                     _ => SubStage::None,
                 };
@@ -1455,6 +1439,14 @@ impl App {
     }
 
     fn go_back(&mut self) {
+        if self.is_edit {
+            self.current_step = Step::Summary;
+            self.sub_stage = SubStage::None;
+            self.summary_list.select(Some(0));
+            self.inputs.clear();
+            self.focused_input = 0;
+            return;
+        }
         let steps = Step::all();
         let current_idx = steps.iter().position(|s| *s == self.current_step);
         if let Some(idx) = current_idx {
@@ -1467,7 +1459,7 @@ impl App {
                     Step::Voice => SubStage::Voice(VoiceStage::Confirm),
                     Step::Channels => SubStage::Channel(ChannelStage::Select),
                     Step::Composio => SubStage::Composio(ComposioStage::Confirm),
-                    Step::WebSearch => SubStage::WebSearch(WebSearchStage::Select),
+                    Step::WebSearch => SubStage::WebSearch(WebSearchStage::ApiKey),
                     Step::Pushover => SubStage::Pushover(PushoverStage::Confirm),
                     _ => SubStage::None,
                 };
@@ -1488,7 +1480,8 @@ impl App {
                 self.sub_stage = SubStage::Provider(ProviderStage::Select);
             }
             Step::CheapModel => {
-                self.list_state.select(Some(self.selected_cheap_provider_idx));
+                self.list_state
+                    .select(Some(self.selected_cheap_provider_idx));
                 self.sub_stage = SubStage::Cheap(CheapStage::Select);
             }
             Step::Timezone => {
@@ -1544,16 +1537,22 @@ impl App {
                 self.list_state.select(Some(if has { 0 } else { 1 }));
             }
             Step::WebSearch => {
-                let idx = match self.config.search_provider.as_deref() {
-                    Some("brave") => 1,
-                    Some("duckduckgo") => 2,
-                    Some("none") => 3,
-                    _ => 0,
-                };
-                self.list_state.select(Some(idx));
+                let existing = self
+                    .config
+                    .tinfish_api_key
+                    .as_ref()
+                    .and_then(|k| k.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                self.inputs = vec![Input::new(existing)];
             }
             Step::Pushover => {
-                let has = self.config.pushover.as_ref().and_then(|p| p.as_ref()).is_some();
+                let has = self
+                    .config
+                    .pushover
+                    .as_ref()
+                    .and_then(|p| p.as_ref())
+                    .is_some();
                 self.list_state.select(Some(if has { 0 } else { 1 }));
             }
             _ => {}
@@ -1588,7 +1587,17 @@ impl App {
                 self.focused_input = (self.focused_input + max_inputs - 1) % max_inputs;
                 return Some(std::ops::ControlFlow::Continue(()));
             }
-            KeyCode::Esc | KeyCode::Enter => {
+            KeyCode::Enter => {
+                // If not on last input, move to next field instead of submitting
+                if self.focused_input < max_inputs - 1 && self.focused_input < self.inputs.len() - 1
+                {
+                    self.focused_input = (self.focused_input + 1) % max_inputs;
+                    return Some(std::ops::ControlFlow::Continue(()));
+                }
+                // On last input, let caller handle submission
+                return None;
+            }
+            KeyCode::Esc => {
                 // Let caller handle
                 return None;
             }
@@ -1620,11 +1629,10 @@ impl App {
                     }
                 }
                 FetchKind::OpenAi(key) => fetch_openai_models(&key).map(FetchResult::Strings),
-                FetchKind::Anthropic(key) => {
-                    fetch_anthropic_models(&key).map(FetchResult::Strings)
+                FetchKind::Anthropic(key) => fetch_anthropic_models(&key).map(FetchResult::Strings),
+                FetchKind::OpenRouter(key) => {
+                    fetch_openrouter_free_models(&key).map(FetchResult::OpenRouterModels)
                 }
-                FetchKind::OpenRouter(key) => fetch_openrouter_free_models(&key)
-                    .map(FetchResult::OpenRouterModels),
                 FetchKind::OpenCode(key) => {
                     fetch_openai_compat_models("https://opencode.ai/zen/v1", &key)
                         .map(FetchResult::Strings)
@@ -1639,8 +1647,9 @@ impl App {
                 FetchKind::Custom(url, key) => {
                     fetch_openai_compat_models(&url, &key).map(FetchResult::Strings)
                 }
-                FetchKind::CheapOpenRouter(key) => fetch_openrouter_free_models(&key)
-                    .map(FetchResult::OpenRouterModels),
+                FetchKind::CheapOpenRouter(key) => {
+                    fetch_openrouter_free_models(&key).map(FetchResult::OpenRouterModels)
+                }
                 FetchKind::CheapOpenCode(key) => {
                     fetch_openai_compat_models("https://opencode.ai/zen/v1", &key)
                         .map(FetchResult::Strings)
@@ -1697,10 +1706,14 @@ impl App {
             "OpenPaw · Setup Wizard"
         };
         let block = Block::default()
-            .title(
-                Span::styled(title, Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)),
-            )
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::BOTTOM)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         f.render_widget(block, area);
     }
@@ -1731,8 +1744,14 @@ impl App {
 
     fn draw_sidebar(&mut self, f: &mut Frame, area: Rect) {
         let block = Block::default()
-            .title(Span::styled("Steps", Style::default().fg(THEME.muted)))
+            .title(Span::styled(
+                " Steps ",
+                Style::default()
+                    .fg(THEME.muted)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::RIGHT)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -1746,7 +1765,7 @@ impl App {
                 let is_current = *step == self.current_step;
                 let style = if is_current {
                     Style::default()
-                        .fg(THEME.highlight_fg)
+                        .fg(THEME.primary)
                         .bg(THEME.highlight_bg)
                         .add_modifier(Modifier::BOLD)
                 } else if is_done {
@@ -1775,6 +1794,8 @@ impl App {
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
         let help_text = if self.show_help {
             "Press Esc or ? to close help"
+        } else if self.is_edit && self.current_step != Step::Summary {
+            "? Help  ↑↓ Navigate  Enter Select  Esc Return to Summary  Ctrl+C Quit"
         } else {
             "? Help  ↑↓ Navigate  Enter Select  Esc Back  Ctrl+C Quit"
         };
@@ -1795,6 +1816,7 @@ impl App {
         f.render_widget(Clear, toast_area);
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.error))
             .style(Style::default().bg(THEME.bg));
         let inner = block.inner(toast_area);
@@ -1818,6 +1840,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border))
             .style(Style::default().bg(THEME.bg));
         let inner = block.inner(popup_area);
@@ -1833,12 +1856,9 @@ impl App {
             Row::new(vec!["Ctrl+C", "Quit immediately"]),
             Row::new(vec!["?", "Toggle this help"]),
         ];
-        let table = Table::new(
-            rows,
-            [Constraint::Length(12), Constraint::Min(20)],
-        )
-        .style(Style::default().fg(THEME.fg))
-        .column_spacing(2);
+        let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(20)])
+            .style(Style::default().fg(THEME.fg))
+            .column_spacing(2);
         f.render_widget(table, inner);
     }
 
@@ -1847,6 +1867,7 @@ impl App {
     fn draw_welcome(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -1908,14 +1929,26 @@ impl App {
                         ListItem::new(line).style(Style::default().fg(THEME.fg))
                     })
                     .collect();
-                self.draw_list_screen(f, area, "Select AI Provider", items, "Choose the LLM provider that powers your agent.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Select AI Provider",
+                    items,
+                    "Choose the LLM provider that powers your agent.",
+                );
             }
             SubStage::Provider(ProviderStage::GeminiAuth) => {
                 let items = vec![
                     ListItem::new("API Key    — Paste your Gemini API key"),
                     ListItem::new("CLI OAuth  — Use existing Gemini CLI login"),
                 ];
-                self.draw_list_screen(f, area, "Gemini Authentication", items, "How do you want to authenticate with Gemini?");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Gemini Authentication",
+                    items,
+                    "How do you want to authenticate with Gemini?",
+                );
             }
             SubStage::Provider(ProviderStage::Key) => {
                 let title = match self.providers[self.selected_provider_idx].0 {
@@ -1927,10 +1960,22 @@ impl App {
                     "kilocode" => "Kilocode API Key",
                     _ => "API Key",
                 };
-                self.draw_input_screen(f, area, title, true, "Paste your API key. It will be masked.");
+                self.draw_input_screen(
+                    f,
+                    area,
+                    title,
+                    true,
+                    "Paste your API key. It will be masked.",
+                );
             }
             SubStage::Provider(ProviderStage::BaseUrl) => {
-                self.draw_input_screen(f, area, "Custom Base URL", false, "e.g. http://localhost:8080/v1");
+                self.draw_input_screen(
+                    f,
+                    area,
+                    "Custom Base URL",
+                    false,
+                    "e.g. http://localhost:8080/v1",
+                );
             }
             SubStage::Provider(ProviderStage::Fetching) => {
                 self.draw_spinner_screen(f, area, "Fetching available models…");
@@ -1941,7 +1986,13 @@ impl App {
                     .iter()
                     .map(|label| ListItem::new(label.clone()).style(Style::default().fg(THEME.fg)))
                     .collect();
-                self.draw_list_screen(f, area, "Select Model", items, "Choose the model to use for this provider.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Select Model",
+                    items,
+                    "Choose the model to use for this provider.",
+                );
             }
             _ => {}
         }
@@ -1955,11 +2006,15 @@ impl App {
                 let items: Vec<ListItem> = self
                     .cheap_providers
                     .iter()
-                    .map(|(_, label)| {
-                        ListItem::new(*label).style(Style::default().fg(THEME.fg))
-                    })
+                    .map(|(_, label)| ListItem::new(*label).style(Style::default().fg(THEME.fg)))
                     .collect();
-                self.draw_list_screen(f, area, "Background Tasks Provider", items, "Select a free/cheap provider for background planning to save money.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Background Tasks Provider",
+                    items,
+                    "Select a free/cheap provider for background planning to save money.",
+                );
             }
             SubStage::Cheap(CheapStage::Key) => {
                 let title = match self.cheap_providers[self.selected_cheap_provider_idx].0 {
@@ -1968,7 +2023,13 @@ impl App {
                     "kilocode" => "Kilocode API Key",
                     _ => "API Key",
                 };
-                self.draw_input_screen(f, area, title, true, "API key for the background task provider.");
+                self.draw_input_screen(
+                    f,
+                    area,
+                    title,
+                    true,
+                    "API key for the background task provider.",
+                );
             }
             SubStage::Cheap(CheapStage::Fetching) => {
                 self.draw_spinner_screen(f, area, "Fetching free models…");
@@ -1979,7 +2040,13 @@ impl App {
                     .iter()
                     .map(|label| ListItem::new(label.clone()).style(Style::default().fg(THEME.fg)))
                     .collect();
-                self.draw_list_screen(f, area, "Select Background Model", items, "Choose a model for background tasks.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Select Background Model",
+                    items,
+                    "Choose a model for background tasks.",
+                );
             }
             _ => {}
         }
@@ -1995,7 +2062,13 @@ impl App {
                 ListItem::new(line).style(Style::default().fg(THEME.fg))
             })
             .collect();
-        self.draw_list_screen(f, area, "Select Timezone", items, "So the agent knows when it's late and when to reach you.");
+        self.draw_list_screen(
+            f,
+            area,
+            "Select Timezone",
+            items,
+            "So the agent knows when it's late and when to reach you.",
+        );
     }
 
     // ── Memory ──────────────────────────────────────────────────────────────
@@ -2008,17 +2081,35 @@ impl App {
                     ListItem::new("Markdown  — Human-readable files in your workspace"),
                     ListItem::new("None      — Ephemeral, no memory between sessions"),
                 ];
-                self.draw_list_screen(f, area, "Memory Backend", items, "How should your agent remember things?");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Memory Backend",
+                    items,
+                    "How should your agent remember things?",
+                );
             }
             SubStage::Memory(MemoryStage::ConfirmEmbed) => {
                 let items = vec![
                     ListItem::new("Yes — Enable vector embeddings for semantic recall"),
                     ListItem::new("No  — Use keyword search only"),
                 ];
-                self.draw_list_screen(f, area, "Vector Embeddings", items, "Embeddings require a HuggingFace API key.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Vector Embeddings",
+                    items,
+                    "Embeddings require a HuggingFace API key.",
+                );
             }
             SubStage::Memory(MemoryStage::EmbedKey) => {
-                self.draw_input_screen(f, area, "HuggingFace API Key", true, "Get a token at huggingface.co/settings/tokens");
+                self.draw_input_screen(
+                    f,
+                    area,
+                    "HuggingFace API Key",
+                    true,
+                    "Get a token at huggingface.co/settings/tokens",
+                );
             }
             _ => {}
         }
@@ -2033,10 +2124,22 @@ impl App {
                     ListItem::new("Yes — Enable Groq Whisper speech-to-text"),
                     ListItem::new("No  — Skip voice transcription"),
                 ];
-                self.draw_list_screen(f, area, "Voice Transcription", items, "Optional: transcribe voice messages via Groq Whisper.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Voice Transcription",
+                    items,
+                    "Optional: transcribe voice messages via Groq Whisper.",
+                );
             }
             SubStage::Voice(VoiceStage::Key) => {
-                self.draw_input_screen(f, area, "Groq API Key", true, "Get a key at console.groq.com/keys");
+                self.draw_input_screen(
+                    f,
+                    area,
+                    "Groq API Key",
+                    true,
+                    "Get a key at console.groq.com/keys",
+                );
             }
             _ => {}
         }
@@ -2054,12 +2157,24 @@ impl App {
                     ListItem::new("Email     — Talk via Email (SMTP/IMAP)"),
                     ListItem::new("Both      — Telegram + WhatsApp"),
                 ];
-                self.draw_list_screen(f, area, "Communication Channels", items, "How will you talk to your agent?");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Communication Channels",
+                    items,
+                    "How will you talk to your agent?",
+                );
             }
             SubStage::Channel(ChannelStage::Telegram) => {
                 let block = Block::default()
-                    .title(Span::styled("Telegram Setup", Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+                    .title(Span::styled(
+                        " Telegram Setup ",
+                        Style::default()
+                            .fg(THEME.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(THEME.border));
                 let inner = block.inner(area);
                 f.render_widget(block, area);
@@ -2094,22 +2209,55 @@ impl App {
 
                 let hint_para = Paragraph::new(hint).style(Style::default().fg(THEME.muted));
                 f.render_widget(hint_para, layout[0]);
-                self.draw_input_widget(f, layout[1], "Bot Token", &self.inputs[0], true, self.focused_input == 0);
-                self.draw_input_widget(f, layout[2], "Your Username (e.g. @you)", &self.inputs[1], false, self.focused_input == 1);
+                self.draw_input_widget(
+                    f,
+                    layout[1],
+                    "Bot Token",
+                    &self.inputs[0],
+                    true,
+                    self.focused_input == 0,
+                );
+                self.draw_input_widget(
+                    f,
+                    layout[2],
+                    "Your Username (e.g. @you)",
+                    &self.inputs[1],
+                    false,
+                    self.focused_input == 1,
+                );
                 if self.inputs.len() == 3 {
-                    self.draw_input_widget(f, layout[3], "WhatsApp Phone (e.g. +1234)", &self.inputs[2], false, self.focused_input == 2);
+                    self.draw_input_widget(
+                        f,
+                        layout[3],
+                        "WhatsApp Phone (e.g. +1234)",
+                        &self.inputs[2],
+                        false,
+                        self.focused_input == 2,
+                    );
                 }
                 let tab_hint = Paragraph::new("[Tab to switch fields, Enter to confirm]")
                     .style(Style::default().fg(THEME.muted));
                 f.render_widget(tab_hint, layout[layout.len() - 2]);
             }
             SubStage::Channel(ChannelStage::Whatsapp) => {
-                self.draw_input_screen(f, area, "WhatsApp Phone Number", false, "Enter your phone number with country code.");
+                self.draw_input_screen(
+                    f,
+                    area,
+                    "WhatsApp Phone Number",
+                    false,
+                    "Enter your phone number with country code.",
+                );
             }
             SubStage::Channel(ChannelStage::Email) => {
                 let block = Block::default()
-                    .title(Span::styled("Email Setup", Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+                    .title(Span::styled(
+                        " Email Setup ",
+                        Style::default()
+                            .fg(THEME.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(THEME.border));
                 let inner = block.inner(area);
                 f.render_widget(block, area);
@@ -2117,21 +2265,52 @@ impl App {
                 let layout = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), Constraint::Length(3), Constraint::Length(3),
-                        Constraint::Length(3), Constraint::Length(3), Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
                         Constraint::Length(1),
                         Constraint::Min(1),
                     ])
                     .split(inner);
 
-                let labels = ["Email Address", "App Password", "SMTP Host", "SMTP Port", "IMAP Host", "IMAP Port"];
+                let labels = [
+                    "Email Address",
+                    "App Password",
+                    "SMTP Host",
+                    "SMTP Port",
+                    "IMAP Host",
+                    "IMAP Port",
+                ];
                 for (i, label) in labels.iter().enumerate() {
                     let is_password = *label == "App Password";
-                    self.draw_input_widget(f, layout[i], label, &self.inputs[i], is_password, self.focused_input == i);
+                    self.draw_input_widget(
+                        f,
+                        layout[i],
+                        label,
+                        &self.inputs[i],
+                        is_password,
+                        self.focused_input == i,
+                    );
                 }
                 let tab_hint = Paragraph::new("[Tab to switch fields, Enter to confirm]")
                     .style(Style::default().fg(THEME.muted));
                 f.render_widget(tab_hint, layout[6]);
+            }
+            SubStage::Channel(ChannelStage::AskAnother) => {
+                let items = vec![
+                    ListItem::new("Yes — Configure another channel"),
+                    ListItem::new("No  — Continue to next step"),
+                ];
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Add Another Channel?",
+                    items,
+                    "Do you want to set up another communication channel?",
+                );
             }
             _ => {}
         }
@@ -2146,23 +2325,54 @@ impl App {
                     ListItem::new("Yes — Enable Composio integrations"),
                     ListItem::new("No  — Skip external app connections"),
                 ];
-                self.draw_list_screen(f, area, "Composio", items, "Connect external apps like GitHub, Gmail, Notion.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Composio",
+                    items,
+                    "Connect external apps like GitHub, Gmail, Notion.",
+                );
             }
             SubStage::Composio(ComposioStage::Details) => {
                 let block = Block::default()
-                    .title(Span::styled("Composio Setup", Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+                    .title(Span::styled(
+                        " Composio Setup ",
+                        Style::default()
+                            .fg(THEME.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(THEME.border));
                 let inner = block.inner(area);
                 f.render_widget(block, area);
 
                 let layout = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Length(1), Constraint::Min(1)])
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(1),
+                        Constraint::Min(1),
+                    ])
                     .split(inner);
 
-                self.draw_input_widget(f, layout[0], "API Key (app.composio.dev)", &self.inputs[0], true, self.focused_input == 0);
-                self.draw_input_widget(f, layout[1], "Entity ID", &self.inputs[1], false, self.focused_input == 1);
+                self.draw_input_widget(
+                    f,
+                    layout[0],
+                    "API Key (app.composio.dev)",
+                    &self.inputs[0],
+                    true,
+                    self.focused_input == 0,
+                );
+                self.draw_input_widget(
+                    f,
+                    layout[1],
+                    "Entity ID",
+                    &self.inputs[1],
+                    false,
+                    self.focused_input == 1,
+                );
                 let tab_hint = Paragraph::new("[Tab to switch fields, Enter to confirm]")
                     .style(Style::default().fg(THEME.muted));
                 f.render_widget(tab_hint, layout[2]);
@@ -2174,34 +2384,24 @@ impl App {
     // ── Web Search ──────────────────────────────────────────────────────────
 
     fn draw_websearch(&mut self, f: &mut Frame, area: Rect) {
-        match self.sub_stage {
-            SubStage::WebSearch(WebSearchStage::Select) => {
-                let items = vec![
-                    ListItem::new("Gemini CLI  — Free, uses installed Gemini CLI (recommended)"),
-                    ListItem::new("Brave API   — Brave Search API key required"),
-                    ListItem::new("DuckDuckGo  — Free but rate-limited"),
-                    ListItem::new("None        — Skip web search"),
-                ];
-                self.draw_list_screen(f, area, "Web Search Provider", items, "How should your agent search the web?");
-            }
-            SubStage::WebSearch(WebSearchStage::BraveKey) => {
-                self.draw_input_screen(f, area, "Brave API Key", true, "Get a key at brave.com/search/api");
-            }
-            SubStage::WebSearch(WebSearchStage::GeminiCheck) => {
-                let block = Block::default()
-                    .title(Span::styled("Gemini CLI Not Found", Style::default().fg(THEME.warning).add_modifier(Modifier::BOLD)))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(THEME.warning));
-                let inner = block.inner(area);
-                f.render_widget(block, area);
-                let msg = "Gemini CLI was not found on PATH.\nInstall it with: npm install -g @google/gemini-cli\n\nPress Enter to continue anyway (you can install it later).";
-                let para = Paragraph::new(msg)
-                    .style(Style::default().fg(THEME.fg))
-                    .wrap(Wrap { trim: true });
-                f.render_widget(para, inner);
-            }
-            _ => {}
+        if self.inputs.is_empty() {
+            let existing = self
+                .config
+                .tinfish_api_key
+                .as_ref()
+                .and_then(|k| k.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            self.inputs = vec![Input::new(existing)];
+            self.focused_input = 0;
         }
+        self.draw_input_screen(
+            f,
+            area,
+            "TinyFish API Key",
+            true,
+            "Get a free key at https://agent.tinyfish.ai/api-keys\nSearch does not use credits. Leave blank to skip.",
+        );
     }
 
     // ── Pushover ────────────────────────────────────────────────────────────
@@ -2213,23 +2413,54 @@ impl App {
                     ListItem::new("Yes — Enable Pushover push notifications"),
                     ListItem::new("No  — Skip push notifications"),
                 ];
-                self.draw_list_screen(f, area, "Pushover", items, "Receive desktop & mobile push alerts.");
+                self.draw_list_screen(
+                    f,
+                    area,
+                    "Pushover",
+                    items,
+                    "Receive desktop & mobile push alerts.",
+                );
             }
             SubStage::Pushover(PushoverStage::Details) => {
                 let block = Block::default()
-                    .title(Span::styled("Pushover Setup", Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+                    .title(Span::styled(
+                        " Pushover Setup ",
+                        Style::default()
+                            .fg(THEME.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(THEME.border));
                 let inner = block.inner(area);
                 f.render_widget(block, area);
 
                 let layout = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Length(1), Constraint::Min(1)])
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(1),
+                        Constraint::Min(1),
+                    ])
                     .split(inner);
 
-                self.draw_input_widget(f, layout[0], "App Token (pushover.net/apps)", &self.inputs[0], true, self.focused_input == 0);
-                self.draw_input_widget(f, layout[1], "User Key (pushover.net)", &self.inputs[1], true, self.focused_input == 1);
+                self.draw_input_widget(
+                    f,
+                    layout[0],
+                    "App Token (pushover.net/apps)",
+                    &self.inputs[0],
+                    true,
+                    self.focused_input == 0,
+                );
+                self.draw_input_widget(
+                    f,
+                    layout[1],
+                    "User Key (pushover.net)",
+                    &self.inputs[1],
+                    true,
+                    self.focused_input == 1,
+                );
                 let tab_hint = Paragraph::new("[Tab to switch fields, Enter to confirm]")
                     .style(Style::default().fg(THEME.muted));
                 f.render_widget(tab_hint, layout[2]);
@@ -2242,8 +2473,14 @@ impl App {
 
     fn draw_summary(&mut self, f: &mut Frame, area: Rect) {
         let block = Block::default()
-            .title(Span::styled("Configuration Summary", Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                " Configuration Summary ",
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -2300,12 +2537,24 @@ impl App {
                 _ => "CLI only".to_string(),
             }
         };
-        let search = if self.config.search_provider.as_deref() == Some("brave") {
-            "Brave"
+        let search = if self
+            .config
+            .tinfish_api_key
+            .as_ref()
+            .and_then(|k| k.as_ref())
+            .is_some()
+        {
+            "TinyFish"
         } else {
-            self.config.search_provider.as_deref().unwrap_or("gemini_cli")
+            "not configured"
         };
-        let push = if self.config.pushover.as_ref().and_then(|p| p.as_ref()).is_some() {
+        let push = if self
+            .config
+            .pushover
+            .as_ref()
+            .and_then(|p| p.as_ref())
+            .is_some()
+        {
             "enabled"
         } else {
             "disabled"
@@ -2324,7 +2573,11 @@ impl App {
         let table = Table::new(rows, [Constraint::Length(14), Constraint::Min(20)])
             .header(
                 Row::new(vec!["Setting", "Value"])
-                    .style(Style::default().add_modifier(Modifier::BOLD).fg(THEME.primary))
+                    .style(
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(THEME.primary),
+                    )
                     .bottom_margin(1),
             )
             .style(Style::default().fg(THEME.fg))
@@ -2348,12 +2601,20 @@ impl App {
                 ListItem::new("Edit Composio"),
                 ListItem::new("Edit Web Search"),
                 ListItem::new("Edit Pushover"),
-                ListItem::new("Save & Exit").style(Style::default().fg(THEME.success).add_modifier(Modifier::BOLD)),
+                ListItem::new("Save & Exit").style(
+                    Style::default()
+                        .fg(THEME.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 ListItem::new("Discard & Exit").style(Style::default().fg(THEME.error)),
             ]
         } else {
             vec![
-                ListItem::new("Save & Exit").style(Style::default().fg(THEME.success).add_modifier(Modifier::BOLD)),
+                ListItem::new("Save & Exit").style(
+                    Style::default()
+                        .fg(THEME.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 ListItem::new("Go Back"),
                 ListItem::new("Discard").style(Style::default().fg(THEME.error)),
             ]
@@ -2362,8 +2623,9 @@ impl App {
         let actions = List::new(action_items)
             .block(
                 Block::default()
-                    .title("Actions")
+                    .title(" Actions ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(THEME.border)),
             )
             .highlight_style(
@@ -2381,6 +2643,7 @@ impl App {
     fn draw_done(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.success));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -2396,14 +2659,20 @@ impl App {
             .split(inner);
 
         let check = Paragraph::new("✓ Setup Complete!")
-            .style(Style::default().fg(THEME.success).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(THEME.success)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center);
         f.render_widget(check, layout[1]);
 
-        let msg = Paragraph::new("Press Enter to save your configuration and exit.\nRun `openpaw agent` to start.")
-            .style(Style::default().fg(THEME.fg))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true });
+        let msg = Paragraph::new(
+            "Press Enter to save your configuration and exit.\nRun `openpaw agent` to start.",
+        )
+        .style(Style::default().fg(THEME.fg))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
         f.render_widget(msg, layout[2]);
     }
 
@@ -2420,8 +2689,14 @@ impl App {
         hint: &str,
     ) {
         let block = Block::default()
-            .title(Span::styled(title, Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                format!(" {} ", title),
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -2457,15 +2732,25 @@ impl App {
         hint: &str,
     ) {
         let block = Block::default()
-            .title(Span::styled(title, Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                format!(" {} ", title),
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Length(3), Constraint::Length(2)])
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Length(3),
+                Constraint::Length(2),
+            ])
             .margin(1)
             .split(inner);
 
@@ -2476,14 +2761,15 @@ impl App {
             self.draw_input_widget(f, chunks[1], title, &self.inputs[0], is_password, true);
         }
 
-        let enter_hint = Paragraph::new("[ Press Enter to confirm ]")
-            .style(Style::default().fg(THEME.muted));
+        let enter_hint =
+            Paragraph::new("[ Press Enter to confirm ]").style(Style::default().fg(THEME.muted));
         f.render_widget(enter_hint, chunks[2]);
     }
 
     fn draw_spinner_screen(&self, f: &mut Frame, area: Rect, message: &str) {
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(THEME.border));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -2513,7 +2799,9 @@ impl App {
         };
 
         let border_style = if is_focused {
-            Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(THEME.primary)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(THEME.border)
         };
@@ -2536,10 +2824,7 @@ impl App {
 
         if is_focused {
             let cursor_pos = input.visual_cursor().saturating_sub(scroll);
-            f.set_cursor_position(Position::new(
-                inner.x + cursor_pos as u16,
-                inner.y,
-            ));
+            f.set_cursor_position(Position::new(inner.x + cursor_pos as u16, inner.y));
         }
     }
 }

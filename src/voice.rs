@@ -57,9 +57,10 @@ impl WhisperTranscriber {
     /// Resolve Groq API key: explicit value > GROQ_API_KEY env var.
     pub fn resolve_groq_key(explicit: Option<&str>) -> String {
         if let Some(k) = explicit
-            && !k.is_empty() {
-                return k.to_string();
-            }
+            && !k.is_empty()
+        {
+            return k.to_string();
+        }
         std::env::var("GROQ_API_KEY").unwrap_or_default()
     }
 }

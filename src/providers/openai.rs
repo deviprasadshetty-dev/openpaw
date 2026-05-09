@@ -2,12 +2,117 @@ use crate::providers::{
     ChatMessage, ChatRequest, ChatResponse, ContentPart, FunctionCall, Provider, StreamCallback,
     StreamChunk, TokenUsage, ToolCall,
 };
+use anyhow::{Result, bail};
 use base64::Engine;
-use anyhow::Result;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
+
+/// Maximum HTTP request payload size in bytes (8MB, conservative to account for
+/// estimation errors and provider-specific overhead).
+const MAX_PAYLOAD_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Estimate the serialized JSON size of a slice of ChatMessages.
+/// This is an approximation: it sums content lengths plus overhead for keys/structure.
+fn estimate_payload_bytes(
+    messages: &[ChatMessage],
+    model: &str,
+    tools: Option<&[crate::providers::ToolSpec]>,
+) -> usize {
+    let mut bytes = 0usize;
+    // Rough JSON overhead for the request wrapper
+    bytes += 64; // {"model":"","messages":[],"temperature":0.7,"stream":false}
+    bytes += model.len() + 16;
+
+    for msg in messages {
+        // Per-message overhead: {"role":"","content":"","name":"","tool_calls":[],"tool_call_id":""}
+        bytes += 64;
+        bytes += msg.role.len();
+        bytes += msg.content.len();
+
+        if let Some(ref name) = msg.name {
+            bytes += name.len() + 16;
+        }
+        if let Some(ref tcid) = msg.tool_call_id {
+            bytes += tcid.len() + 32;
+        }
+        if let Some(ref tcs) = msg.tool_calls {
+            for tc in tcs {
+                // {"id":"","type":"function","function":{"name":"","arguments":""}}
+                bytes += 64;
+                bytes += tc.id.len() + tc.function.name.len() + tc.function.arguments.len();
+            }
+        }
+        if let Some(ref parts) = msg.content_parts {
+            for p in parts {
+                match p {
+                    ContentPart::Text(t) => bytes += t.len() + 16,
+                    ContentPart::ImageBase64 { data, .. } => bytes += data.len() + 64,
+                    ContentPart::ImageUrl { url } => bytes += url.len() + 32,
+                    ContentPart::Media { data, .. } => bytes += data.len() + 32,
+                }
+            }
+        }
+    }
+
+    if let Some(tools) = tools {
+        // Per-tool overhead plus the tool definitions
+        bytes += 32;
+        for t in tools {
+            bytes += t.name.len() + t.description.len() + 128;
+        }
+    }
+
+    bytes
+}
+
+/// Truncate messages to fit within the payload size limit.
+/// Preserves the system prompt (if present at index 0) and recent messages.
+fn truncate_messages_by_payload(
+    messages: &[ChatMessage],
+    model: &str,
+    tools: Option<&[crate::providers::ToolSpec]>,
+) -> Vec<ChatMessage> {
+    let has_system = !messages.is_empty() && messages[0].role == "system";
+
+    // Collect indices of messages to keep (in reverse order, most recent first)
+    let mut keep_indices: Vec<usize> = Vec::new();
+
+    // Always keep system message at index 0
+    if has_system {
+        keep_indices.push(0);
+    }
+
+    // Start from the most recent and work backward
+    let start_idx = if has_system { 1 } else { 0 };
+
+    for i in (start_idx..messages.len()).rev() {
+        let mut trial_indices = keep_indices.clone();
+        trial_indices.push(i);
+
+        // Build a temporary vec for size estimation
+        let trial: Vec<ChatMessage> = trial_indices
+            .iter()
+            .map(|&idx| messages[idx].clone())
+            .collect();
+        let estimated = estimate_payload_bytes(&trial, model, tools);
+
+        if estimated > MAX_PAYLOAD_SIZE_BYTES
+            && keep_indices.len() > (if has_system { 1 } else { 0 })
+        {
+            break;
+        }
+        keep_indices.push(i);
+    }
+
+    // Build result in original order
+    keep_indices.sort();
+    keep_indices
+        .iter()
+        .map(|&idx| messages[idx].clone())
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,7 +185,10 @@ impl OpenAiCompatibleProvider {
             });
 
             if !system_prompt.is_empty() && msg.role == "user" {
-                let enriched_content = format!("[System Instructions]:\n{}\n\n{}", system_prompt, msg.content);
+                let enriched_content = format!(
+                    "[System Instructions]:\n{}\n\n{}",
+                    system_prompt, msg.content
+                );
                 msg_json["content"] = json!(enriched_content);
                 system_prompt.clear();
             } else if let Some(parts) = &msg.content_parts {
@@ -164,32 +272,41 @@ impl OpenAiCompatibleProvider {
         }
 
         if let Some(tools) = request.tools
-            && !tools.is_empty() {
-                let tool_defs: Vec<_> = tools
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": t.name,
-                                "description": t.description,
-                                "parameters": t.parameters
-                            }
-                        })
+            && !tools.is_empty()
+        {
+            let tool_defs: Vec<_> = tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters
+                        }
                     })
-                    .collect();
-                obj.insert("tools".to_string(), json!(tool_defs));
-            }
+                })
+                .collect();
+            obj.insert("tools".to_string(), json!(tool_defs));
+        }
 
         body
     }
 
-    fn apply_auth(&self, builder: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    fn apply_auth(
+        &self,
+        builder: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
         match self.auth_style {
-            AuthStyle::Bearer => builder.header("Authorization", format!("Bearer {}", self.api_key)),
+            AuthStyle::Bearer => {
+                builder.header("Authorization", format!("Bearer {}", self.api_key))
+            }
             AuthStyle::XApiKey => builder.header("x-api-key", &self.api_key),
             AuthStyle::Custom(ref name) => {
-                let header = name.map(|s| s.to_string()).or_else(|| self.custom_header.clone()).unwrap_or_else(|| "Authorization".to_string());
+                let header = name
+                    .map(|s| s.to_string())
+                    .or_else(|| self.custom_header.clone())
+                    .unwrap_or_else(|| "Authorization".to_string());
                 builder.header(header, &self.api_key)
             }
         }
@@ -201,7 +318,9 @@ fn extract_reasoning(text: &str) -> (Option<String>, String) {
     if let Some(start_idx) = text.find("<think>") {
         if let Some(end_idx) = text.find("</think>") {
             let reasoning = text[start_idx + 7..end_idx].trim().to_string();
-            let content = format!("{}{}", &text[..start_idx], &text[end_idx + 8..]).trim().to_string();
+            let content = format!("{}{}", &text[..start_idx], &text[end_idx + 8..])
+                .trim()
+                .to_string();
             return (Some(reasoning), content);
         } else {
             // Unclosed think tag
@@ -221,7 +340,11 @@ struct ThinkStripper {
 
 impl ThinkStripper {
     fn new(strip: bool) -> Self {
-        Self { in_think: false, buffer: String::new(), strip }
+        Self {
+            in_think: false,
+            buffer: String::new(),
+            strip,
+        }
     }
 
     fn process(&mut self, delta: &str) -> (Option<String>, Option<String>) {
@@ -264,8 +387,16 @@ impl ThinkStripper {
             }
         }
 
-        let v = if visible.is_empty() { None } else { Some(visible) };
-        let t = if thought.is_empty() { None } else { Some(thought) };
+        let v = if visible.is_empty() {
+            None
+        } else {
+            Some(visible)
+        };
+        let t = if thought.is_empty() {
+            None
+        } else {
+            Some(thought)
+        };
         (t, v)
     }
 }
@@ -279,12 +410,50 @@ impl Provider for OpenAiCompatibleProvider {
             format!("{}/chat/completions", base)
         };
 
-        let body = self.build_request_body(request, false);
+        // Check payload size and truncate if necessary
+        let messages = if estimate_payload_bytes(request.messages, request.model, request.tools)
+            > MAX_PAYLOAD_SIZE_BYTES
+        {
+            let truncated =
+                truncate_messages_by_payload(request.messages, request.model, request.tools);
+            tracing::warn!(
+                "Payload too large, truncated from {} to {} messages",
+                request.messages.len(),
+                truncated.len()
+            );
+            truncated
+        } else {
+            request.messages.to_vec()
+        };
 
-        let mut req = self.client.post(&endpoint)
+        let truncated_request = ChatRequest {
+            messages: &messages,
+            model: request.model,
+            temperature: request.temperature,
+            max_tokens: request.max_tokens,
+            tools: request.tools,
+            timeout_secs: request.timeout_secs,
+            reasoning_effort: request.reasoning_effort,
+        };
+
+        // Final safety: if still too large, fail with a clear error
+        let final_estimate = estimate_payload_bytes(&messages, request.model, request.tools);
+        if final_estimate > MAX_PAYLOAD_SIZE_BYTES {
+            anyhow::bail!(
+                "Payload still too large ({} bytes) after truncation ({} messages). System prompt or recent messages may be too large.",
+                final_estimate,
+                messages.len()
+            );
+        }
+
+        let body = self.build_request_body(&truncated_request, false);
+
+        let mut req = self
+            .client
+            .post(&endpoint)
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
-        
+
         req = self.apply_auth(req);
 
         let res = req.json(&body).send()?;
@@ -300,7 +469,7 @@ impl Provider for OpenAiCompatibleProvider {
         let msg = &choice["message"];
 
         let mut raw_content = msg["content"].as_str().unwrap_or("").to_string();
-        
+
         // Native reasoning fields
         let mut reasoning_content = msg["reasoning_content"]
             .as_str()
@@ -328,8 +497,14 @@ impl Provider for OpenAiCompatibleProvider {
                     id: tc["id"].as_str().unwrap_or_default().to_string(),
                     kind: tc["type"].as_str().unwrap_or("function").to_string(),
                     function: FunctionCall {
-                        name: tc["function"]["name"].as_str().unwrap_or_default().to_string(),
-                        arguments: tc["function"]["arguments"].as_str().unwrap_or_default().to_string(),
+                        name: tc["function"]["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        arguments: tc["function"]["arguments"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
                         thought_signature: None,
                     },
                 });
@@ -344,7 +519,11 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         Ok(ChatResponse {
-            content: if raw_content.is_empty() { None } else { Some(raw_content) },
+            content: if raw_content.is_empty() {
+                None
+            } else {
+                Some(raw_content)
+            },
             tool_calls,
             usage,
             model: request.model.to_string(),
@@ -375,12 +554,50 @@ impl Provider for OpenAiCompatibleProvider {
             format!("{}/chat/completions", base)
         };
 
-        let body = self.build_request_body(request, true);
+        // Check payload size and truncate if necessary
+        let messages = if estimate_payload_bytes(request.messages, request.model, request.tools)
+            > MAX_PAYLOAD_SIZE_BYTES
+        {
+            let truncated =
+                truncate_messages_by_payload(request.messages, request.model, request.tools);
+            tracing::warn!(
+                "Payload too large, truncated from {} to {} messages",
+                request.messages.len(),
+                truncated.len()
+            );
+            truncated
+        } else {
+            request.messages.to_vec()
+        };
 
-        let mut req = self.client.post(&endpoint)
+        let truncated_request = ChatRequest {
+            messages: &messages,
+            model: request.model,
+            temperature: request.temperature,
+            max_tokens: request.max_tokens,
+            tools: request.tools,
+            timeout_secs: request.timeout_secs,
+            reasoning_effort: request.reasoning_effort,
+        };
+
+        // Final safety: if still too large, fail with a clear error
+        let final_estimate = estimate_payload_bytes(&messages, request.model, request.tools);
+        if final_estimate > MAX_PAYLOAD_SIZE_BYTES {
+            bail!(
+                "Payload still too large ({} bytes) after truncation ({} messages). System prompt or recent messages may be too large.",
+                final_estimate,
+                messages.len()
+            );
+        }
+
+        let body = self.build_request_body(&truncated_request, true);
+
+        let mut req = self
+            .client
+            .post(&endpoint)
             .timeout(Duration::from_secs(request.timeout_secs))
             .header("Content-Type", "application/json");
-        
+
         req = self.apply_auth(req);
 
         let res = req.json(&body).send()?;
@@ -396,17 +613,23 @@ impl Provider for OpenAiCompatibleProvider {
         let mut full_reasoning = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tc_arg_bufs: Vec<String> = Vec::new();
-        
+
         let mut stripper = ThinkStripper::new(true); // Default to true for better UX
 
         while let Some(data) = sse_reader.next_data() {
-            if data == "[DONE]" { break; }
+            if data == "[DONE]" {
+                break;
+            }
 
             if let Ok(parsed) = serde_json::from_str::<Value>(&data) {
                 let delta = &parsed["choices"][0]["delta"];
-                
+
                 // Native reasoning delta
-                if let Some(reasoning) = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(|v| v.as_str()) {
+                if let Some(reasoning) = delta
+                    .get("reasoning_content")
+                    .or_else(|| delta.get("reasoning"))
+                    .and_then(|v| v.as_str())
+                {
                     full_reasoning.push_str(reasoning);
                     // For now, we don't stream reasoning content deltas separately in our StreamChunk enum,
                     // but we could extend it if needed.
@@ -441,8 +664,12 @@ impl Provider for OpenAiCompatibleProvider {
                             tc_arg_bufs.push(String::new());
                         }
 
-                        if let Some(id) = tc_delta["id"].as_str() { tool_calls[idx].id = id.to_string(); }
-                        if let Some(name) = tc_delta["function"]["name"].as_str() { tool_calls[idx].function.name = name.to_string(); }
+                        if let Some(id) = tc_delta["id"].as_str() {
+                            tool_calls[idx].id = id.to_string();
+                        }
+                        if let Some(name) = tc_delta["function"]["name"].as_str() {
+                            tool_calls[idx].function.name = name.to_string();
+                        }
                         let args = tc_delta["function"]["arguments"].as_str().unwrap_or("");
                         tc_arg_bufs[idx].push_str(args);
 
@@ -458,7 +685,9 @@ impl Provider for OpenAiCompatibleProvider {
         }
 
         for (i, buf) in tc_arg_bufs.into_iter().enumerate() {
-            if i < tool_calls.len() { tool_calls[i].function.arguments = buf; }
+            if i < tool_calls.len() {
+                tool_calls[i].function.arguments = buf;
+            }
         }
 
         let usage = TokenUsage {
@@ -470,13 +699,20 @@ impl Provider for OpenAiCompatibleProvider {
         callback(StreamChunk::Done(usage.clone()));
 
         Ok(ChatResponse {
-            content: if full_content.is_empty() { None } else { Some(full_content) },
+            content: if full_content.is_empty() {
+                None
+            } else {
+                Some(full_content)
+            },
             tool_calls,
             usage,
             model: request.model.to_string(),
-            reasoning_content: if full_reasoning.is_empty() { None } else { Some(full_reasoning) },
+            reasoning_content: if full_reasoning.is_empty() {
+                None
+            } else {
+                Some(full_reasoning)
+            },
             thought_signature: None,
         })
     }
 }
-

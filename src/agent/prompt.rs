@@ -126,7 +126,13 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     let has_vision = ctx.tools.iter().any(|t| t.name() == "vision");
 
     // Identity section
-    build_identity_section(&mut out, ctx.workspace_dir, is_lean, ctx.user_snapshot, ctx.memory_snapshot);
+    build_identity_section(
+        &mut out,
+        ctx.workspace_dir,
+        is_lean,
+        ctx.user_snapshot,
+        ctx.memory_snapshot,
+    );
 
     // Tools section
     build_tools_section(&mut out, ctx.tools, ctx.use_native_tools, is_lean);
@@ -302,21 +308,28 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
         append_safety_and_group_logic(&mut out, ctx.conversation_context);
     }
 
-
     // Self-Learning & Skill Management
     out.push_str("## Self-Learning & Skill Management\n\n");
     out.push_str("You are a self-learning agent. You must evolve by creating, using, editing, and deleting your own local skills.\n\n");
     out.push_str("### 1. When to Create a Skill\n");
     out.push_str("Create a skill using `skill_manage` under these four conditions:\n");
-    out.push_str("- **After complex tasks**: Successfully completing tasks requiring 5+ tool calls.\n");
-    out.push_str("- **Error recovery**: Finding a working path after hitting errors or dead ends.\n");
-    out.push_str("- **User corrections**: When the user provides a corrected approach that works.\n");
+    out.push_str(
+        "- **After complex tasks**: Successfully completing tasks requiring 5+ tool calls.\n",
+    );
+    out.push_str(
+        "- **Error recovery**: Finding a working path after hitting errors or dead ends.\n",
+    );
+    out.push_str(
+        "- **User corrections**: When the user provides a corrected approach that works.\n",
+    );
     out.push_str("- **Workflow discovery**: When discovering non-trivial, reusable workflows.\n\n");
     out.push_str("### 2. How to Use Skills\n");
     out.push_str("Whenever starting a non-simple task, check skills FIRST before proceeding.\n");
     out.push_str("Use `skill_view` to recall a specific skill, `skill_search` to discover public skills, and `skill_list` to see local skills.\n\n");
     out.push_str("### 3. Maintaining Skills\n");
-    out.push_str("You must actively maintain skills. Use `skill_manage` to edit or delete them when:\n");
+    out.push_str(
+        "You must actively maintain skills. Use `skill_manage` to edit or delete them when:\n",
+    );
     out.push_str("- Instructions become stale or wrong.\n");
     out.push_str("- OS-specific failures are discovered.\n");
     out.push_str("- Missing steps or pitfalls are found during use.\n");
@@ -735,6 +748,3 @@ fn append_channel_attachments_section(out: &mut String) {
     out.push_str("- `id` must be lowercase and contain only `a-z`, `0-9`, `_`, `-` (example: `yes`, `no`, `later_10m`).\n");
     out.push_str("- Example: `<nc_choices>{\"v\":1,\"options\":[{\"id\":\"yes\",\"label\":\"Yes\",\"submit_text\":\"Yes\"},{\"id\":\"no\",\"label\":\"No\"}]}</nc_choices>`\n\n");
 }
-
-
-

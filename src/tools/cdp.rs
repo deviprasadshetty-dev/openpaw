@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU32, Ordering};
+use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
@@ -51,7 +51,15 @@ impl CdpClient {
 
     pub async fn connect(&self) -> Result<()> {
         let ws_url = self.resolve_ws_url().await?;
-        let (stream, _) = tokio_tungstenite::connect_async(&ws_url)
+        self.connect_to_ws(&ws_url).await
+    }
+
+    pub async fn connect_to_target(&self, ws_url: &str) -> Result<()> {
+        self.connect_to_ws(ws_url).await
+    }
+
+    async fn connect_to_ws(&self, ws_url: &str) -> Result<()> {
+        let (stream, _) = tokio_tungstenite::connect_async(ws_url)
             .await
             .context("Failed to connect to Chrome CDP WebSocket")?;
         let mut guard = self.ws.lock().await;
@@ -75,19 +83,23 @@ impl CdpClient {
             .await
             .context("Failed to reach Chrome DevTools HTTP endpoint — make sure Chrome is running with --remote-debugging-port enabled")?;
 
-        let body = resp.text().await.context("Failed to read CDP response body")?;
+        let body = resp
+            .text()
+            .await
+            .context("Failed to read CDP response body")?;
 
         let targets: Vec<CdpListTarget> = serde_json::from_str(&body).with_context(|| {
             // Show the first 200 chars so the user can see if it returned HTML instead of JSON
-            let preview = if body.len() > 200 { &body[..200] } else { &body };
+            let preview = if body.len() > 200 {
+                &body[..200]
+            } else {
+                &body
+            };
             format!(
                 "Failed to parse Chrome DevTools target list. \
                  Make sure the browser is running with --remote-debugging-port={}. \
                  Response preview: {}",
-                self.endpoint
-                    .split(':')
-                    .last()
-                    .unwrap_or("9222"),
+                self.endpoint.split(':').last().unwrap_or("9222"),
                 preview
             )
         })?;
@@ -170,20 +182,11 @@ impl CdpClient {
                                     .get("message")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("Unknown CDP error");
-                                let err_code = error
-                                    .get("code")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(-1);
-                                return Err(anyhow!(
-                                    "CDP error {}: {}",
-                                    err_code,
-                                    err_msg
-                                ));
+                                let err_code =
+                                    error.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+                                return Err(anyhow!("CDP error {}: {}", err_code, err_msg));
                             }
-                            return Ok(parsed
-                                .get("result")
-                                .cloned()
-                                .unwrap_or(json!({})));
+                            return Ok(parsed.get("result").cloned().unwrap_or(json!({})));
                         }
                     }
                 }
@@ -229,7 +232,10 @@ impl CdpClient {
 
     pub async fn get_current_url(&self) -> Result<String> {
         let result = self
-            .send_command("Runtime.evaluate", json!({ "expression": "window.location.href" }))
+            .send_command(
+                "Runtime.evaluate",
+                json!({ "expression": "window.location.href" }),
+            )
             .await?;
         result
             .get("result")
@@ -241,7 +247,10 @@ impl CdpClient {
 
     pub async fn get_title(&self) -> Result<String> {
         let result = self
-            .send_command("Runtime.evaluate", json!({ "expression": "document.title" }))
+            .send_command(
+                "Runtime.evaluate",
+                json!({ "expression": "document.title" }),
+            )
             .await?;
         result
             .get("result")
@@ -267,8 +276,11 @@ impl CdpClient {
             serde_json::to_string(selector)?,
             serde_json::to_string(selector)?
         );
-        self.send_command("Runtime.evaluate", json!({ "expression": expr, "awaitPromise": true }))
-            .await
+        self.send_command(
+            "Runtime.evaluate",
+            json!({ "expression": expr, "awaitPromise": true }),
+        )
+        .await
     }
 
     pub async fn dblclick(&self, selector: &str) -> Result<Value> {
@@ -286,8 +298,11 @@ impl CdpClient {
             serde_json::to_string(selector)?,
             serde_json::to_string(selector)?
         );
-        self.send_command("Runtime.evaluate", json!({ "expression": expr, "awaitPromise": true }))
-            .await
+        self.send_command(
+            "Runtime.evaluate",
+            json!({ "expression": expr, "awaitPromise": true }),
+        )
+        .await
     }
 
     pub async fn fill(&self, selector: &str, value: &str) -> Result<Value> {
@@ -368,7 +383,13 @@ impl CdpClient {
         .await
     }
 
-    pub async fn mouse_click(&self, x: f64, y: f64, button: &str, click_count: i32) -> Result<Value> {
+    pub async fn mouse_click(
+        &self,
+        x: f64,
+        y: f64,
+        button: &str,
+        click_count: i32,
+    ) -> Result<Value> {
         self.send_command(
             "Input.dispatchMouseEvent",
             json!({
@@ -468,11 +489,7 @@ impl CdpClient {
         self.send_command("Page.captureScreenshot", params).await
     }
 
-    pub async fn screenshot_element(
-        &self,
-        selector: &str,
-        format: &str,
-    ) -> Result<Value> {
+    pub async fn screenshot_element(&self, selector: &str, format: &str) -> Result<Value> {
         let clip_expr = format!(
             r#"
             (function() {{
@@ -484,9 +501,7 @@ impl CdpClient {
             "#,
             serde_json::to_string(selector)?
         );
-        let clip = self
-            .evaluate(&clip_expr, false)
-            .await?;
+        let clip = self.evaluate(&clip_expr, false).await?;
         let clip_val = clip
             .get("result")
             .and_then(|r| r.get("value"))
@@ -524,7 +539,13 @@ impl CdpClient {
         self.send_command("Network.getCookies", json!({})).await
     }
 
-    pub async fn set_cookie(&self, name: &str, value: &str, domain: Option<&str>, path: Option<&str>) -> Result<Value> {
+    pub async fn set_cookie(
+        &self,
+        name: &str,
+        value: &str,
+        domain: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<Value> {
         let mut params = json!({
             "name": name,
             "value": value,
@@ -588,10 +609,7 @@ impl CdpClient {
 
     pub async fn create_target(&self, url: &str) -> Result<String> {
         let result = self
-            .send_command(
-                "Target.createTarget",
-                json!({ "url": url }),
-            )
+            .send_command("Target.createTarget", json!({ "url": url }))
             .await?;
         result
             .get("targetId")
@@ -612,7 +630,12 @@ impl CdpClient {
 
     // ── Viewport ───────────────────────────────────────────────
 
-    pub async fn set_viewport(&self, width: i64, height: i64, device_scale_factor: Option<f64>) -> Result<Value> {
+    pub async fn set_viewport(
+        &self,
+        width: i64,
+        height: i64,
+        device_scale_factor: Option<f64>,
+    ) -> Result<Value> {
         let mut params = json!({
             "width": width,
             "height": height,
@@ -649,6 +672,28 @@ impl CdpClient {
         .await
     }
 
+    pub async fn set_network_conditions(
+        &self,
+        offline: bool,
+        latency: Option<f64>,
+        download_throughput: Option<f64>,
+        upload_throughput: Option<f64>,
+    ) -> Result<Value> {
+        let dl = download_throughput.unwrap_or(-1.0);
+        let ul = upload_throughput.unwrap_or(-1.0);
+        let lat = latency.unwrap_or(0.0);
+        self.send_command(
+            "Network.emulateNetworkConditions",
+            json!({
+                "offline": offline,
+                "latency": lat,
+                "downloadThroughput": dl as i64,
+                "uploadThroughput": ul as i64,
+            }),
+        )
+        .await
+    }
+
     pub async fn set_extra_http_headers(&self, headers: Value) -> Result<Value> {
         self.send_command("Network.setExtraHTTPHeaders", json!({ "headers": headers }))
             .await
@@ -660,14 +705,14 @@ impl CdpClient {
             "light" => json!({ "prefersColorScheme": "light" }),
             _ => json!({}),
         };
-        self.send_command("Emulation.setEmulatedMedia", prefers).await
+        self.send_command("Emulation.setEmulatedMedia", prefers)
+            .await
     }
 
     // ── PDF ─────────────────────────────────────────────────────
 
     pub async fn print_pdf(&self) -> Result<Value> {
-        self.send_command("Page.printToPDF", json!({}))
-            .await
+        self.send_command("Page.printToPDF", json!({})).await
     }
 
     // ── Select option ──────────────────────────────────────────
@@ -880,19 +925,13 @@ impl CdpClient {
 
     pub async fn hover(&self, selector: &str) -> Result<Value> {
         let box_result = self.get_bounding_box(selector).await?;
-        let x = box_result
-            .get("x")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
+        let x = box_result.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0)
             + box_result
                 .get("width")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0)
                 / 2.0;
-        let y = box_result
-            .get("y")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
+        let y = box_result.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0)
             + box_result
                 .get("height")
                 .and_then(|v| v.as_f64())
@@ -962,17 +1001,9 @@ impl CdpClient {
                 .unwrap_or(0.0)
                 / 2.0;
         let to_x = to_box.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0)
-            + to_box
-                .get("width")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0)
-                / 2.0;
+            + to_box.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) / 2.0;
         let to_y = to_box.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0)
-            + to_box
-                .get("height")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0)
-                / 2.0;
+            + to_box.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) / 2.0;
 
         self.mouse_move(from_x, from_y).await?;
         self.mouse_click(from_x, from_y, "left", 1).await?;
@@ -1075,7 +1106,9 @@ impl CdpClient {
     // ── Snapshot (compact text-based DOM representation) ────────
 
     pub async fn snapshot_text(&self, compact: bool, max_depth: Option<i32>) -> Result<String> {
-        let depth_expr = max_depth.map(|d| d.to_string()).unwrap_or_else(|| "Infinity".to_string());
+        let depth_expr = max_depth
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "Infinity".to_string());
         let compact_flag = if compact { "true" } else { "false" };
 
         let expr = format!(
@@ -1110,15 +1143,13 @@ impl CdpClient {
             compact = compact_flag,
             depth = depth_expr,
         );
-        self.evaluate(&expr, false)
-            .await
-            .map(|v| {
-                v.get("result")
-                    .and_then(|r| r.get("value"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            })
+        self.evaluate(&expr, false).await.map(|v| {
+            v.get("result")
+                .and_then(|r| r.get("value"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
     }
 
     // ── Emulation ──────────────────────────────────────────────
@@ -1138,7 +1169,15 @@ impl CdpClient {
             .find(|(n, _, _, _)| n.to_lowercase() == name.to_lowercase());
         match device {
             Some((_, w, h, dsf)) => self.set_viewport(*w, *h, Some(*dsf)).await,
-            None => Err(anyhow!("Unknown device: {}. Available: {}", name, devices.iter().map(|(n, _, _, _)| *n).collect::<Vec<_>>().join(", "))),
+            None => Err(anyhow!(
+                "Unknown device: {}. Available: {}",
+                name,
+                devices
+                    .iter()
+                    .map(|(n, _, _, _)| *n)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         }
     }
 
@@ -1148,7 +1187,11 @@ impl CdpClient {
         self.send_command("Network.enable", json!({})).await
     }
 
-    pub async fn intercept_request(&self, pattern: &str, _response: Option<Value>) -> Result<Value> {
+    pub async fn intercept_request(
+        &self,
+        pattern: &str,
+        _response: Option<Value>,
+    ) -> Result<Value> {
         self.send_command(
             "Fetch.enable",
             json!({
@@ -1160,6 +1203,350 @@ impl CdpClient {
 
     pub async fn disable_fetch_interception(&self) -> Result<Value> {
         self.send_command("Fetch.disable", json!({})).await
+    }
+
+    pub async fn handle_dialog(&self, accept: bool, prompt_text: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "accept": accept });
+        if let Some(text) = prompt_text {
+            params["promptText"] = json!(text);
+        }
+        self.send_command("Page.handleJavaScriptDialog", params)
+            .await
+    }
+
+    pub async fn set_file_input_files(
+        &self,
+        selector: &str,
+        file_paths: &[String],
+    ) -> Result<Value> {
+        let doc = self
+            .evaluate(
+                &format!(
+                    "document.querySelector({})",
+                    serde_json::to_string(selector)?
+                ),
+                false,
+            )
+            .await?;
+        let object_id = doc
+            .get("result")
+            .and_then(|r| r.get("objectId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("Element not found for file upload: {}", selector))?;
+
+        let node = self
+            .send_command("DOM.requestNode", json!({ "objectId": object_id }))
+            .await?;
+        let node_id = node
+            .get("nodeId")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| anyhow!("Failed to get node ID for file input"))?;
+
+        self.send_command(
+            "DOM.setFileInputFiles",
+            json!({ "files": file_paths, "nodeId": node_id }),
+        )
+        .await
+    }
+
+    pub async fn set_download_behavior(
+        &self,
+        behavior: &str,
+        download_path: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({ "behavior": behavior });
+        if let Some(path) = download_path {
+            params["downloadPath"] = json!(path);
+        }
+        self.send_command("Browser.setDownloadBehavior", params)
+            .await
+    }
+
+    pub async fn grant_permissions(&self, permissions: &[String]) -> Result<Value> {
+        self.send_command(
+            "Browser.grantPermissions",
+            json!({
+                "permissions": permissions,
+            }),
+        )
+        .await
+    }
+
+    pub async fn clear_geolocation_override(&self) -> Result<Value> {
+        self.send_command("Emulation.clearGeolocationOverride", json!({}))
+            .await
+    }
+
+    pub async fn set_user_agent(&self, user_agent: &str) -> Result<Value> {
+        self.send_command(
+            "Network.setUserAgentOverride",
+            json!({ "userAgent": user_agent }),
+        )
+        .await
+    }
+
+    pub async fn set_page_zoom(&self, zoom: f64) -> Result<Value> {
+        let expr = format!("document.body.style.zoom = '{}'", zoom);
+        self.evaluate(&expr, false).await
+    }
+
+    pub async fn start_console_capture(&self) -> Result<Value> {
+        let expr = r#"
+        (function() {
+            if (window.__opencode_console_log) return;
+            window.__opencode_console_log = [];
+            const methods = ['log', 'warn', 'error', 'info', 'debug'];
+            methods.forEach(m => {
+                const orig = console[m];
+                console[m] = function(...args) {
+                    window.__opencode_console_log.push({
+                        level: m,
+                        text: args.map(a => {
+                            try { return typeof a === 'object' ? JSON.stringify(a) : String(a) } catch(e) { return String(a) }
+                        }).join(' '),
+                        ts: Date.now()
+                    });
+                    if (window.__opencode_console_log.length > 500) window.__opencode_console_log.shift();
+                    orig.apply(console, args);
+                };
+            });
+            return true;
+        })()"#;
+        self.evaluate(expr, false).await
+    }
+
+    pub async fn get_console_log(&self) -> Result<Value> {
+        let expr = "JSON.stringify(window.__opencode_console_log || [])";
+        let result = self.evaluate(expr, false).await?;
+        let entries_str = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("[]");
+        Ok(serde_json::from_str(entries_str).unwrap_or(json!([])))
+    }
+
+    pub async fn clear_console_log(&self) -> Result<Value> {
+        self.evaluate("window.__opencode_console_log = []", false)
+            .await
+    }
+
+    pub async fn start_network_capture(&self) -> Result<Value> {
+        let expr = r#"
+        (function() {
+            if (window.__opencode_network_log) return;
+            window.__opencode_network_log = [];
+            const origFetch = window.fetch;
+            window.fetch = function(...args) {
+                const entry = { method: 'fetch', url: typeof args[0] === 'string' ? args[0] : args[0].url, startTime: Date.now(), status: 'pending' };
+                window.__opencode_network_log.push(entry);
+                if (window.__opencode_network_log.length > 500) window.__opencode_network_log.shift();
+                return origFetch.apply(this, args).then(r => {
+                    entry.status = r.status;
+                    entry.statusText = r.statusText;
+                    return r;
+                }).catch(e => { entry.status = 'error'; entry.error = String(e); throw e; });
+            };
+            const origXHR = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this._opencode_url = url;
+                this._opencode_method = method;
+                const entry = { method: 'xhr-' + method, url: url, startTime: Date.now(), status: 'pending' };
+                window.__opencode_network_log.push(entry);
+                if (window.__opencode_network_log.length > 500) window.__opencode_network_log.shift();
+                this.addEventListener('loadend', function() {
+                    entry.status = this.status;
+                    entry.statusText = this.statusText;
+                });
+                this.addEventListener('error', function() { entry.status = 'error'; });
+                return origXHR.apply(this, arguments);
+            };
+            return true;
+        })()"#;
+        self.evaluate(expr, false).await
+    }
+
+    pub async fn get_network_log(&self) -> Result<Value> {
+        let expr = "JSON.stringify(window.__opencode_network_log || [])";
+        let result = self.evaluate(expr, false).await?;
+        let entries_str = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("[]");
+        Ok(serde_json::from_str(entries_str).unwrap_or(json!([])))
+    }
+
+    pub async fn clear_network_log(&self) -> Result<Value> {
+        self.evaluate("window.__opencode_network_log = []", false)
+            .await
+    }
+
+    pub async fn switch_to_frame(&self, selector: &str) -> Result<Value> {
+        let expr = format!(
+            r#"
+            (function() {{
+                const el = document.querySelector({0});
+                if (!el) throw new Error('Frame not found: ' + {0});
+                if (!el.contentWindow) throw new Error('Element is not an iframe');
+                window.__opencode_frame_root = el.contentWindow.document;
+                return true;
+            }})()
+            "#,
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(&expr, false).await
+    }
+
+    pub async fn default_content(&self) -> Result<Value> {
+        let expr = "window.__opencode_frame_root = document; true";
+        self.evaluate(expr, false).await
+    }
+
+    pub async fn find_by_xpath(&self, xpath: &str) -> Result<Value> {
+        let expr = format!(
+            r#"
+            (function() {{
+                const result = document.evaluate({0}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                const nodes = [];
+                for (let i = 0; i < result.snapshotLength; i++) {{
+                    const el = result.snapshotItem(i);
+                    nodes.push({{
+                        tag: el.tagName ? el.tagName.toLowerCase() : '#text',
+                        id: el.id || '',
+                        className: el.className || '',
+                        text: (el.innerText || '').trim().substring(0, 200),
+                        visible: el.offsetWidth > 0 && el.offsetHeight > 0,
+                        href: el.href || '',
+                    }});
+                }}
+                return nodes;
+            }})()
+            "#,
+            serde_json::to_string(xpath)?
+        );
+        self.evaluate(&expr, false).await.map(|v| {
+            v.get("result")
+                .and_then(|r| r.get("value"))
+                .cloned()
+                .unwrap_or(json!([]))
+        })
+    }
+
+    pub async fn snapshot_structured(
+        &self,
+        compact: bool,
+        max_depth: Option<i32>,
+    ) -> Result<Value> {
+        let depth_expr = max_depth
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "5".to_string());
+        let compact_flag = if compact { "true" } else { "false" };
+        let expr = format!(
+            r#"
+            (function() {{
+                function describe(el, depth, parentRect) {{
+                    if (depth <= 0) return null;
+                    const tag = el.tagName ? el.tagName.toLowerCase() : '#text';
+                    const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                    const style = el.nodeType === 1 ? window.getComputedStyle(el) : null;
+                    const visible = rect && rect.width > 0 && rect.height > 0 &&
+                        style && style.display !== 'none' && style.visibility !== 'hidden';
+                    if ({compact} && !visible) return null;
+
+                    const result = {{
+                        tag: tag,
+                        id: el.id || '',
+                        className: (typeof el.className === 'string' ? el.className : '').substring(0, 100),
+                        text: '',
+                        visible: visible,
+                        rect: rect ? {{x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height)}} : null,
+                        aria: el.getAttribute ? el.getAttribute('aria-label') || '' : '',
+                        role: el.getAttribute ? el.getAttribute('role') || '' : '',
+                        href: (el.href || '').substring(0, 200),
+                        type: el.type || '',
+                        placeholder: el.placeholder || '',
+                        name: el.name || el.getAttribute ? (el.getAttribute('name') || '') : '',
+                        attrs: {{}},
+                        children: [],
+                    }};
+
+                    const keepAttrs = ['src', 'alt', 'title', 'value', 'checked', 'disabled', 'readonly', 'required', 'maxlength', 'min', 'max', 'pattern'];
+                    if (el.getAttribute) {{
+                        keepAttrs.forEach(a => {{
+                            const v = el.getAttribute(a);
+                            if (v) result.attrs[a] = v;
+                        }});
+                    }}
+
+                    if (el.nodeType === 1 && el.childNodes) {{
+                        for (let i = 0; i < el.childNodes.length; i++) {{
+                            const child = el.childNodes[i];
+                            if (child.nodeType === 3) {{
+                                const t = child.textContent.trim();
+                                if (t) result.text += t.substring(0, 200);
+                            }} else if (child.nodeType === 1) {{
+                                const childDesc = describe(child, depth - 1, rect);
+                                if (childDesc) result.children.push(childDesc);
+                            }}
+                        }}
+                    }}
+                    if (result.text.length > 200) result.text = result.text.substring(0, 200);
+
+                    if (!visible && result.children.length === 0 && !result.text && !result.id && !result.aria) return null;
+                    return result;
+                }}
+                return describe(document.body, {depth}, null);
+            }})()
+            "#,
+            compact = compact_flag,
+            depth = depth_expr,
+        );
+        self.evaluate(&expr, false).await.map(|v| {
+            v.get("result")
+                .and_then(|r| r.get("value"))
+                .cloned()
+                .unwrap_or(json!(null))
+        })
+    }
+
+    pub async fn query_selector_structured(&self, selector: &str) -> Result<Value> {
+        let expr = format!(
+            r#"
+            (function() {{
+                const el = document.querySelector({0});
+                if (!el) return null;
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return {{
+                    tag: el.tagName.toLowerCase(),
+                    id: el.id || '',
+                    className: (typeof el.className === 'string' ? el.className : ''),
+                    text: (el.innerText || '').trim().substring(0, 500),
+                    visible: rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden',
+                    rect: {{x:Math.round(rect.x), y:Math.round(rect.y), w:Math.round(rect.width), h:Math.round(rect.height)}},
+                    aria: el.getAttribute('aria-label') || '',
+                    role: el.getAttribute('role') || '',
+                    href: el.href || '',
+                    type: el.type || '',
+                    placeholder: el.placeholder || '',
+                    disabled: !!el.disabled,
+                    checked: !!el.checked,
+                    readonly: !!el.readOnly,
+                    value: el.value || '',
+                    html: el.outerHTML ? el.outerHTML.substring(0, 1000) : '',
+                }};
+            }})()
+            "#,
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(&expr, false).await.map(|v| {
+            v.get("result")
+                .and_then(|r| r.get("value"))
+                .cloned()
+                .unwrap_or(json!(null))
+        })
     }
 }
 
@@ -1211,10 +1598,29 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             r"C:\Program Files\Chromium\Application\chrome.exe",
         ];
         let home_candidates: Vec<std::path::PathBuf> = vec![
-            home.join("AppData").join("Local").join("Google").join("Chrome").join("Application").join("chrome.exe"),
-            home.join("AppData").join("Local").join("Microsoft").join("Edge").join("Application").join("msedge.exe"),
-            home.join("AppData").join("Local").join("BraveSoftware").join("Brave-Browser").join("Application").join("brave.exe"),
-            home.join("AppData").join("Local").join("Vivaldi").join("Application").join("vivaldi.exe"),
+            home.join("AppData")
+                .join("Local")
+                .join("Google")
+                .join("Chrome")
+                .join("Application")
+                .join("chrome.exe"),
+            home.join("AppData")
+                .join("Local")
+                .join("Microsoft")
+                .join("Edge")
+                .join("Application")
+                .join("msedge.exe"),
+            home.join("AppData")
+                .join("Local")
+                .join("BraveSoftware")
+                .join("Brave-Browser")
+                .join("Application")
+                .join("brave.exe"),
+            home.join("AppData")
+                .join("Local")
+                .join("Vivaldi")
+                .join("Application")
+                .join("vivaldi.exe"),
         ];
 
         for c in &candidates {
@@ -1228,7 +1634,9 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             }
         }
 
-        Err(anyhow!("No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."))
+        Err(anyhow!(
+            "No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."
+        ))
     }
 
     #[cfg(target_os = "macos")]
@@ -1258,7 +1666,9 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             }
         }
 
-        Err(anyhow!("No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."))
+        Err(anyhow!(
+            "No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."
+        ))
     }
 
     #[cfg(target_os = "linux")]
@@ -1302,12 +1712,16 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
             }
         }
 
-        Err(anyhow!("No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."))
+        Err(anyhow!(
+            "No Chromium-based browser found. Install Chrome, Edge, Brave, or set browser.native_chrome_path."
+        ))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        Err(anyhow!("Auto-launch not supported on this platform. Set browser.native_chrome_path."))
+        Err(anyhow!(
+            "Auto-launch not supported on this platform. Set browser.native_chrome_path."
+        ))
     }
 }
 
@@ -1331,14 +1745,16 @@ pub async fn launch_browser(
         .map(|s| s.to_string())
         .unwrap_or_else(|| default_profile_dir(workspace_dir));
 
-    std::fs::create_dir_all(&profile_dir)
-        .context("Failed to create browser profile directory")?;
+    std::fs::create_dir_all(&profile_dir).context("Failed to create browser profile directory")?;
 
     // Remove Chrome's SingletonLock so a leftover crashed/killed instance doesn't
     // prevent a fresh launch (Chrome refuses to start a second profile instance).
     let singleton_lock = std::path::Path::new(&profile_dir).join("SingletonLock");
     if singleton_lock.exists() {
-        tracing::warn!("Removing stale SingletonLock from browser profile: {}", singleton_lock.display());
+        tracing::warn!(
+            "Removing stale SingletonLock from browser profile: {}",
+            singleton_lock.display()
+        );
         let _ = std::fs::remove_file(&singleton_lock);
     }
     // Also remove the SingletonCookie / SingletonSocket on Linux/macOS
@@ -1371,15 +1787,19 @@ pub async fn launch_browser(
 
     if headless {
         cmd.arg("--headless=new")
-           // Required for reliable headless operation on Windows
-           .arg("--disable-gpu")
-           .arg("--disable-software-rasterizer")
-           .arg("--disable-dev-shm-usage");
+            // Required for reliable headless operation on Windows
+            .arg("--disable-gpu")
+            .arg("--disable-software-rasterizer")
+            .arg("--disable-dev-shm-usage");
     }
 
     cmd.arg("about:blank");
 
-    tracing::info!("Launching browser: {} with profile at {}", browser_bin, profile_dir);
+    tracing::info!(
+        "Launching browser: {} with profile at {}",
+        browser_bin,
+        profile_dir
+    );
 
     let child = cmd
         .stdout(std::process::Stdio::null())

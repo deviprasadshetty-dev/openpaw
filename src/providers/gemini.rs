@@ -1,8 +1,8 @@
 use crate::providers::{
     ChatRequest, ChatResponse, ContentPart, Provider, StreamCallback, TokenUsage,
 };
-use base64::Engine;
 use anyhow::{Context, Result};
+use base64::Engine;
 use reqwest::blocking::Client;
 use serde_json::json;
 use std::time::Duration;
@@ -20,7 +20,6 @@ pub enum GeminiAuth {
     /// API key from `GOOGLE_API_KEY` env var.
     EnvGoogleKey(String),
 }
-
 
 impl GeminiAuth {
     pub fn is_api_key(&self) -> bool {
@@ -44,7 +43,6 @@ impl GeminiAuth {
     }
 }
 
-
 /// Google Gemini provider using API keys.
 pub struct GeminiProvider {
     auth: Option<GeminiAuth>,
@@ -64,14 +62,18 @@ impl GeminiProvider {
         }
 
         // 2. Environment API keys
-        if auth.is_none() && let Ok(value) = std::env::var("GEMINI_API_KEY") {
+        if auth.is_none()
+            && let Ok(value) = std::env::var("GEMINI_API_KEY")
+        {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 auth = Some(GeminiAuth::EnvGeminiKey(trimmed.to_string()));
             }
         }
 
-        if auth.is_none() && let Ok(value) = std::env::var("GOOGLE_API_KEY") {
+        if auth.is_none()
+            && let Ok(value) = std::env::var("GOOGLE_API_KEY")
+        {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 auth = Some(GeminiAuth::EnvGoogleKey(trimmed.to_string()));
@@ -114,7 +116,6 @@ impl GeminiProvider {
         let separator = if action.contains('?') { "&" } else { "?" };
         let url = format!(
             "{}/{}:{}{}key={}",
-
             BASE_URL,
             model_name,
             action,
@@ -122,7 +123,6 @@ impl GeminiProvider {
             auth.credential()
         );
         Ok((url, body))
-
     }
 
     /// Build a Gemini generateContent request body.
@@ -232,7 +232,6 @@ impl GeminiProvider {
                             // Fallback to text placeholder
                             parts.push(json!({"text": format!("[Image: {}]", url)}));
                         }
-
                     }
                 }
             } else {
@@ -353,7 +352,7 @@ impl GeminiProvider {
                 .and_then(|m| m.as_str())
                 .unwrap_or("Unknown Gemini API error");
             let code = error.get("code").and_then(|c| c.as_u64()).unwrap_or(0);
-            
+
             // Log for diagnostics
             tracing::error!("Gemini API error (code {}): {}", code, msg);
 
@@ -368,7 +367,6 @@ impl GeminiProvider {
 
             anyhow::bail!("Gemini API error ({}): {}", code, msg);
         }
-
 
         let response_root = parsed.get("response").unwrap_or(&parsed);
 
@@ -409,7 +407,10 @@ impl GeminiProvider {
                 for part in parts_array {
                     // Support for reasoning (thought) in newer Gemini models.
                     // Gemini uses a boolean "thought" flag in the Part, while the content is in "text".
-                    let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                    let is_thought = part
+                        .get("thought")
+                        .and_then(|t| t.as_bool())
+                        .unwrap_or(false);
                     if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                         if is_thought {
                             reasoning_content.push_str(text);
@@ -581,7 +582,10 @@ impl Provider for GeminiProvider {
                     }
 
                     for part in parts_array {
-                        let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                        let is_thought = part
+                            .get("thought")
+                            .and_then(|t| t.as_bool())
+                            .unwrap_or(false);
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                             if is_thought {
                                 reasoning_content.push_str(text);
@@ -663,9 +667,6 @@ mod tests {
             "GOOGLE_API_KEY env var"
         );
     }
-
-
-
 
     #[test]
     fn test_parse_response_success() {

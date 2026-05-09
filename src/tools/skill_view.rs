@@ -35,7 +35,8 @@ impl Tool for SkillViewTool {
     }
   },
   "required": ["name"]
-}"#.to_string()
+}"#
+        .to_string()
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
@@ -46,7 +47,9 @@ impl Tool for SkillViewTool {
             return Ok(ToolResult::fail("Missing 'name' parameter"));
         }
         if name.contains('/') || name.contains('\\') || name.contains("..") {
-            return Ok(ToolResult::fail("Skill name must be a simple alphanumeric string"));
+            return Ok(ToolResult::fail(
+                "Skill name must be a simple alphanumeric string",
+            ));
         }
 
         // Search workspace skills first, then builtin
@@ -92,7 +95,12 @@ impl Tool for SkillViewTool {
             };
             let canonical_skill_dir = match tokio::fs::canonicalize(&skill_dir).await {
                 Ok(p) => p,
-                Err(e) => return Ok(ToolResult::fail(format!("Failed to canonicalize skill dir: {}", e))),
+                Err(e) => {
+                    return Ok(ToolResult::fail(format!(
+                        "Failed to canonicalize skill dir: {}",
+                        e
+                    )));
+                }
             };
             if !canonical_target.starts_with(&canonical_skill_dir) {
                 return Ok(ToolResult::fail("Path traversal detected"));

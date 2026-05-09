@@ -150,7 +150,10 @@ pub const MINIMUM_CONTEXT_LENGTH: u64 = 64_000;
 
 /// Get the next lower probe tier, or None if already at minimum.
 pub fn get_next_probe_tier(current_length: u64) -> Option<u64> {
-    CONTEXT_PROBE_TIERS.iter().copied().find(|&t| t < current_length)
+    CONTEXT_PROBE_TIERS
+        .iter()
+        .copied()
+        .find(|&t| t < current_length)
 }
 
 /// Try to extract the actual context limit from an API error message.

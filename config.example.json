@@ -37,7 +37,7 @@
     },
     "http_request": {
         "enabled": true,
-        "search_provider": "duckduckgo",
+        "tinfish_api_key": "YOUR_TINYFISH_API_KEY",
         "allowed_domains": []
     },
     "opencode_cli": {

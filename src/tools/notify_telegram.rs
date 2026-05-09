@@ -57,6 +57,7 @@ impl Tool for NotifyTelegramTool {
             content: message.clone(),
             media: Vec::new(),
             stage: crate::streaming::OutboundStage::Final,
+            reply_to_message_id: None,
         };
 
         match crate::bus::global_bus() {

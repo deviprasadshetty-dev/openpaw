@@ -1,10 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub struct WsClient;
 
 impl WsClient {
     pub fn connect(_url: &str) -> Result<Self> {
-        Err(anyhow!("WebSocket support not enabled (requires tungstenite crate)"))
+        Err(anyhow!(
+            "WebSocket support not enabled (requires tungstenite crate)"
+        ))
     }
 
     pub fn send(&self, _msg: &str) -> Result<()> {

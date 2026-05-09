@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 use crate::providers::{
@@ -15,9 +15,6 @@ use crate::providers::{
 const DEFAULT_MODEL: &str = "gemini-2.0-flash";
 const CLI_NAME: &str = "gemini";
 const ACP_PROTOCOL_VERSION: u32 = 1;
-
-
-
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponse {
@@ -60,7 +57,7 @@ impl GeminiCliProvider {
         }
 
         debug!("Starting Gemini CLI process...");
-        
+
         // Ensure old process is killed if it partially failed
         if let Some(mut child) = inner.child.take() {
             let _ = child.kill();
@@ -75,7 +72,7 @@ impl GeminiCliProvider {
             .context("Failed to spawn gemini CLI. Ensure it is in your PATH.")?;
 
         let session_id = self.initialize_session(&mut child)?;
-        
+
         inner.child = Some(child);
         inner.session_id = Some(session_id);
 
@@ -99,12 +96,12 @@ impl GeminiCliProvider {
         });
 
         Self::send_line(&mut stdin, &init_req)?;
-        
+
         // Read initialize response
         loop {
             let line = Self::read_line(&mut reader)?;
             let resp: JsonRpcResponse = serde_json::from_str(&line)?;
-            
+
             if resp.id.as_ref().and_then(|v| v.as_u64()) == Some(init_id as u64) {
                 if let Some(err) = resp.error {
                     anyhow::bail!("ACP initialize failed: {}", err);
@@ -137,7 +134,8 @@ impl GeminiCliProvider {
                     anyhow::bail!("ACP session/new failed: {}", err);
                 }
                 let res = resp.result.context("No result in session/new response")?;
-                let sid = res.get("sessionId")
+                let sid = res
+                    .get("sessionId")
                     .and_then(|v| v.as_str())
                     .context("No sessionId in result")?;
                 break sid.to_string();
@@ -176,7 +174,9 @@ impl GeminiCliProvider {
     }
 
     fn extract_last_user_message(messages: &[ChatMessage]) -> Option<&str> {
-        messages.iter().rev()
+        messages
+            .iter()
+            .rev()
             .find(|m| m.role == "user")
             .map(|m| m.content.as_str())
     }
@@ -243,7 +243,7 @@ impl Provider for GeminiCliProvider {
                     child.stdout = Some(reader.into_inner());
                     anyhow::bail!("ACP session/prompt failed: {}", err);
                 }
-                
+
                 if let Some(res) = resp.result
                     && let Some(c) = res.get("content").and_then(|v| v.as_str())
                     && !c.is_empty()
@@ -259,7 +259,11 @@ impl Provider for GeminiCliProvider {
         res?;
 
         Ok(ChatResponse {
-            content: if full_content.is_empty() { None } else { Some(full_content) },
+            content: if full_content.is_empty() {
+                None
+            } else {
+                Some(full_content)
+            },
             tool_calls: vec![],
             usage: TokenUsage::default(),
             model: self.model.clone(),
@@ -268,7 +272,11 @@ impl Provider for GeminiCliProvider {
         })
     }
 
-    fn chat_stream(&self, request: &ChatRequest, mut callback: StreamCallback) -> Result<ChatResponse> {
+    fn chat_stream(
+        &self,
+        request: &ChatRequest,
+        mut callback: StreamCallback,
+    ) -> Result<ChatResponse> {
         self.ensure_started()?;
         let mut inner = self.inner.lock().unwrap();
         let session_id = inner.session_id.clone().unwrap();
@@ -338,7 +346,11 @@ impl Provider for GeminiCliProvider {
         res?;
 
         Ok(ChatResponse {
-            content: if full_content.is_empty() { None } else { Some(full_content) },
+            content: if full_content.is_empty() {
+                None
+            } else {
+                Some(full_content)
+            },
             tool_calls: vec![],
             usage: TokenUsage::default(),
             model: self.model.clone(),

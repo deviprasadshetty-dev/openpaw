@@ -89,7 +89,10 @@ impl SessionManager {
 
         let cheap_provider_name = agent_cfg.and_then(|a| a.cheap_provider.clone());
         let cheap_provider = if let Some(cp_name) = cheap_provider_name {
-            Some(crate::providers::factory::create_with_fallbacks(&cp_name, &self.config))
+            Some(crate::providers::factory::create_with_fallbacks(
+                &cp_name,
+                &self.config,
+            ))
         } else {
             None
         };
@@ -113,9 +116,10 @@ impl SessionManager {
         };
 
         if let Some(cfg) = agent_cfg
-            && let Some(prompt) = &cfg.system_prompt {
-                agent = agent.with_system_prompt(prompt);
-            }
+            && let Some(prompt) = &cfg.system_prompt
+        {
+            agent = agent.with_system_prompt(prompt);
+        }
 
         if let Some(mem) = &self.memory {
             agent = agent.with_memory(Arc::clone(mem));
@@ -126,6 +130,7 @@ impl SessionManager {
         agent.skill_nudge_interval = self.config.skills.creation_nudge_interval;
         agent.memory_nudge_interval = self.config.self_learning.memory_nudge_interval;
         agent.memory_flush_min_turns = self.config.self_learning.flush_min_turns;
+        agent.efficiency_config = self.config.efficiency.clone();
 
         let new_session = Arc::new(Session::new(agent, session_key.to_string()));
         sessions.insert(session_key.to_string(), Arc::clone(&new_session));
@@ -170,7 +175,8 @@ impl SessionManager {
             let history = agent_guard.history.clone();
             let workspace_dir = agent_guard.workspace_dir.clone();
             tokio::spawn(async move {
-                crate::dialectic::analyze_session(provider, &model_name, &history, &workspace_dir).await;
+                crate::dialectic::analyze_session(provider, &model_name, &history, &workspace_dir)
+                    .await;
             });
         }
 
@@ -215,7 +221,8 @@ impl SessionManager {
             let history = agent_guard.history.clone();
             let workspace_dir = agent_guard.workspace_dir.clone();
             tokio::spawn(async move {
-                crate::dialectic::analyze_session(provider, &model_name, &history, &workspace_dir).await;
+                crate::dialectic::analyze_session(provider, &model_name, &history, &workspace_dir)
+                    .await;
             });
         }
 

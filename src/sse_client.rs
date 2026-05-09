@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
@@ -59,9 +59,7 @@ impl SseClient {
         F: Fn(String),
     {
         let mut cmd = Command::new("curl");
-        cmd.arg("-s")
-            .arg("--no-buffer")
-            .arg("--fail-with-body");
+        cmd.arg("-s").arg("--no-buffer").arg("--fail-with-body");
 
         if timeout_secs > 0 {
             cmd.arg("--max-time").arg(timeout_secs.to_string());
@@ -86,7 +84,10 @@ impl SseClient {
         cmd.stderr(Stdio::null());
 
         let mut child = cmd.spawn()?;
-        let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to capture stdout"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
         let reader = BufReader::new(stdout);
 
         for line in reader.lines() {

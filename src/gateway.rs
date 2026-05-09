@@ -33,6 +33,7 @@ pub async fn serve(config: Config) -> Result<()> {
         .route("/api/config", post(save_config))
         .route("/api/chat", post(chat_handler))
         .route("/whatsapp/webhook", post(whatsapp_webhook_handler))
+        .route("/telegram/webhook/{token}", post(telegram_webhook_handler))
         .route("/ws/chat", get(websocket_handler))
         // Static files (must be first to catch all static routes)
         .fallback_service(ServeDir::new("static"))
@@ -111,8 +112,8 @@ struct TelegramConfigInput {
 #[derive(Debug, Deserialize)]
 struct HttpRequestConfigInput {
     enabled: Option<bool>,
-    search_provider: Option<String>,
     allowed_domains: Option<Vec<String>>,
+    tinfish_api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,40 +177,43 @@ async fn save_config(
 
     // Update channels
     if let Some(channels) = req.channels
-        && let Some(telegram_list) = channels.telegram {
-            use crate::config_types::TelegramConfig;
-            config.channels.telegram = telegram_list
-                .into_iter()
-                .map(|t| TelegramConfig {
-                    account_id: t.account_id.unwrap_or_else(|| "main".to_string()),
-                    bot_token: t.bot_token,
-                    allow_from: t.allow_from.unwrap_or_default(),
-                    group_policy: t.group_policy.unwrap_or_else(|| "allowlist".to_string()),
-                    reply_in_private: true,
-                    group_allow_from: vec![],
-                    proxy: None,
-                })
-                .collect();
-        }
+        && let Some(telegram_list) = channels.telegram
+    {
+        use crate::config_types::TelegramConfig;
+        config.channels.telegram = telegram_list
+            .into_iter()
+            .map(|t| TelegramConfig {
+                account_id: t.account_id.unwrap_or_else(|| "main".to_string()),
+                bot_token: t.bot_token,
+                allow_from: t.allow_from.unwrap_or_default(),
+                group_policy: t.group_policy.unwrap_or_else(|| "allowlist".to_string()),
+                reply_in_private: true,
+                group_allow_from: vec![],
+                proxy: None,
+                webhook_url: None,
+            })
+            .collect();
+    }
 
     // Update http_request
     if let Some(http_req) = req.http_request {
         if let Some(enabled) = http_req.enabled {
             config.http_request.enabled = enabled;
         }
-        if let Some(provider) = http_req.search_provider {
-            config.http_request.search_provider = provider;
-        }
         if let Some(domains) = http_req.allowed_domains {
             config.http_request.allowed_domains = domains;
+        }
+        if let Some(key) = http_req.tinfish_api_key {
+            config.http_request.tinfish_api_key = Some(key);
         }
     }
 
     // Update browser
     if let Some(ref browser) = req.browser
-        && let Some(enabled) = browser.enabled {
-            config.browser.enabled = enabled;
-        }
+        && let Some(enabled) = browser.enabled
+    {
+        config.browser.enabled = enabled;
+    }
     if let Some(browser) = req.browser {
         if let Some(host) = browser.cdp_host {
             config.browser.cdp_host = host;
@@ -292,9 +296,7 @@ struct WhatsAppWebhookMessage {
     platform: String,
 }
 
-async fn whatsapp_webhook_handler(
-    Json(msg): Json<WhatsAppWebhookMessage>,
-) -> impl IntoResponse {
+async fn whatsapp_webhook_handler(Json(msg): Json<WhatsAppWebhookMessage>) -> impl IntoResponse {
     use crate::bus::{InboundMessage, global_bus};
 
     let inbound = InboundMessage {
@@ -317,4 +319,27 @@ async fn whatsapp_webhook_handler(
         tracing::error!("Global bus not initialized");
         StatusCode::INTERNAL_SERVER_ERROR
     }
+}
+
+// ── Telegram Webhook Handler ────────────────────────────────────────────────
+
+async fn telegram_webhook_handler(
+    axum::extract::Path(token): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let channel = match crate::channels::telegram::find_channel_by_token(&token) {
+        Some(ch) => ch,
+        None => {
+            tracing::warn!("Telegram webhook: unknown bot token");
+            return StatusCode::NOT_FOUND;
+        }
+    };
+
+    // Process the update (downloads files etc. - blocking I/O)
+    let _ = tokio::task::spawn_blocking(move || {
+        channel.process_webhook_update(body);
+    })
+    .await;
+
+    StatusCode::OK
 }

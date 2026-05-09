@@ -11,9 +11,18 @@ Focus on:
 If something stands out, save it using the memory_md tool.
 If nothing is worth saving, just say "Nothing to save." and stop."#;
 
-const SKILL_REVIEW_PROMPT: &str = r#"Review the conversation above and consider saving or updating a skill if appropriate.
+const SKILL_REVIEW_PROMPT: &str = r#"Review the conversation above and consider saving or updating a skill ONLY if there is a genuinely reusable, non-trivial pattern.
 
-Focus on: was a non-trivial approach used to complete a task that required trial and error, or changing course due to experiential findings along the way, or did the user expect or desire a different method or outcome?
+Create or update a skill ONLY when ALL of these are true:
+1. The task required 5+ tool calls OR significant trial-and-error to get right.
+2. The approach is clearly reusable for future similar tasks (not one-off).
+3. There is a specific technique, workaround, or workflow worth codifying.
+
+DO NOT create skills for:
+- Simple one-step tasks (reading a file, running a command).
+- Tasks that are already well-documented or obvious.
+- Error recovery that was just "fix the typo" or "add missing import".
+- Anything the user explicitly said was a one-time task.
 
 If a relevant skill already exists, update it with what you learned.
 Otherwise, create a new skill if the approach is reusable.
@@ -162,7 +171,11 @@ pub async fn flush_memories(
         model: &model_name,
         temperature: 0.3,
         max_tokens: Some(2000),
-        tools: if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+        tools: if tool_specs.is_empty() {
+            None
+        } else {
+            Some(&tool_specs)
+        },
         timeout_secs: 60,
         reasoning_effort: None,
     };

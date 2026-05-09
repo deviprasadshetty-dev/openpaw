@@ -73,8 +73,8 @@ impl ContextCompressor {
         let threshold_tokens = ((config.context_length as f64 * config.threshold_percent) as u64)
             .max(crate::token_estimator::MINIMUM_CONTEXT_LENGTH);
         let target_tokens = (threshold_tokens as f64 * config.summary_target_ratio) as u64;
-        let max_summary_tokens = ((config.context_length as f64 * 0.05) as u64)
-            .min(SUMMARY_TOKENS_CEILING);
+        let max_summary_tokens =
+            ((config.context_length as f64 * 0.05) as u64).min(SUMMARY_TOKENS_CEILING);
 
         Self {
             config,
@@ -96,9 +96,11 @@ impl ContextCompressor {
         self.config.context_length = context_length;
         self.threshold_tokens = ((context_length as f64 * self.config.threshold_percent) as u64)
             .max(crate::token_estimator::MINIMUM_CONTEXT_LENGTH);
-        let target_tokens = (self.threshold_tokens as f64 * self.config.summary_target_ratio) as u64;
+        let target_tokens =
+            (self.threshold_tokens as f64 * self.config.summary_target_ratio) as u64;
         self.tail_token_budget = target_tokens;
-        self.max_summary_tokens = ((context_length as f64 * 0.05) as u64).min(SUMMARY_TOKENS_CEILING);
+        self.max_summary_tokens =
+            ((context_length as f64 * 0.05) as u64).min(SUMMARY_TOKENS_CEILING);
     }
 
     pub fn should_compress(&self, prompt_tokens: u64) -> bool {
@@ -166,8 +168,8 @@ impl ContextCompressor {
                     msg_tokens += tc.function.arguments.len() as u64 / CHARS_PER_TOKEN;
                 }
             }
-            let would_exceed = accumulated + msg_tokens > (protect_tail_tokens * 3 / 2)
-                && (n - i) >= min_protect;
+            let would_exceed =
+                accumulated + msg_tokens > (protect_tail_tokens * 3 / 2) && (n - i) >= min_protect;
             if would_exceed {
                 boundary = i;
                 break;
@@ -190,7 +192,8 @@ impl ContextCompressor {
             let h = format!("{:x}", md5::compute(content));
             let short_hash = &h[..12];
             if content_hashes.contains_key(short_hash) {
-                messages[i].content = "[Duplicate tool output — same content as a more recent call]".to_string();
+                messages[i].content =
+                    "[Duplicate tool output — same content as a more recent call]".to_string();
                 pruned += 1;
             } else {
                 content_hashes.insert(short_hash.to_string(), i);
@@ -235,7 +238,7 @@ impl ContextCompressor {
         let n_messages = messages.len();
         let min_for_compress = self.config.protect_first_n + 3 + 1;
         if n_messages <= min_for_compress {
-            return messages.clone();
+            return sanitize_tool_pairs(messages);
         }
 
         let display_tokens = current_tokens.unwrap_or_else(|| {
@@ -253,7 +256,10 @@ impl ContextCompressor {
             self.config.protect_last_n,
         );
         if pruned_count > 0 && !self.config.quiet_mode {
-            tracing::info!("Pre-compression: pruned {} old tool result(s)", pruned_count);
+            tracing::info!(
+                "Pre-compression: pruned {} old tool result(s)",
+                pruned_count
+            );
         }
 
         // Phase 2: Determine boundaries
@@ -262,16 +268,16 @@ impl ContextCompressor {
         let compress_end = self.find_tail_cut_by_tokens(messages, compress_start);
 
         if compress_start >= compress_end {
-            return messages.clone();
+            return sanitize_tool_pairs(messages);
         }
 
-        let turns_to_summarize: Vec<ChatMessage> =
-            messages[compress_start..compress_end].to_vec();
+        let turns_to_summarize: Vec<ChatMessage> = messages[compress_start..compress_end].to_vec();
 
         if !self.config.quiet_mode {
             tracing::info!(
                 "Context compression triggered ({} tokens >= {} threshold)",
-                display_tokens, self.threshold_tokens
+                display_tokens,
+                self.threshold_tokens
             );
         }
 
@@ -320,7 +326,11 @@ impl ContextCompressor {
         };
         let mut merge_into_tail = false;
         if summary_role == first_tail_role {
-            let flipped = if summary_role == "user" { "assistant" } else { "user" };
+            let flipped = if summary_role == "user" {
+                "assistant"
+            } else {
+                "user"
+            };
             if flipped != last_head_role {
                 summary_role = flipped;
             } else {
@@ -376,7 +386,10 @@ impl ContextCompressor {
         if !self.config.quiet_mode {
             tracing::info!(
                 "Compressed: {} -> {} messages (~{} tokens saved, {:.0}%)",
-                n_messages, compressed.len(), saved_estimate, savings_pct
+                n_messages,
+                compressed.len(),
+                saved_estimate,
+                savings_pct
             );
         }
 
@@ -431,7 +444,8 @@ impl ContextCompressor {
     // ------------------------------------------------------------------
 
     fn compute_summary_budget(&self, turns_to_summarize: &[ChatMessage]) -> u64 {
-        let content_tokens = crate::token_estimator::estimate_history_tokens_rough(turns_to_summarize);
+        let content_tokens =
+            crate::token_estimator::estimate_history_tokens_rough(turns_to_summarize);
         let budget = (content_tokens as f64 * SUMMARY_RATIO) as u64;
         MIN_SUMMARY_TOKENS.max(budget.min(self.max_summary_tokens))
     }
@@ -617,7 +631,7 @@ fn ensure_last_user_message_in_tail(
     cut_idx
 }
 
-fn sanitize_tool_pairs(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+pub fn sanitize_tool_pairs(messages: &[ChatMessage]) -> Vec<ChatMessage> {
     let mut surviving_call_ids = std::collections::HashSet::new();
     for msg in messages {
         if msg.role == "assistant" {
@@ -675,7 +689,9 @@ fn sanitize_tool_pairs(messages: &[ChatMessage]) -> Vec<ChatMessage> {
                         if missing_results.contains(&tc.id) {
                             patched.push(ChatMessage {
                                 role: "tool".to_string(),
-                                content: "[Result from earlier conversation — see context summary above]".to_string(),
+                                content:
+                                    "[Result from earlier conversation — see context summary above]"
+                                        .to_string(),
                                 name: Some(tc.function.name.clone()),
                                 tool_calls: None,
                                 tool_call_id: Some(tc.id.clone()),
@@ -870,7 +886,9 @@ pub fn auto_compact_history_legacy(
     *last_compaction = now;
 
     let mut summary_content = format!("[Compaction summary]\n{}", summary);
-    if let Some(workspace_context) = read_workspace_context_for_summary(config.workspace_dir.as_deref()) {
+    if let Some(workspace_context) =
+        read_workspace_context_for_summary(config.workspace_dir.as_deref())
+    {
         if !workspace_context.is_empty() {
             summary_content.push_str("\n\n");
             summary_content.push_str(&workspace_context);
@@ -906,7 +924,7 @@ pub fn auto_compact_history_legacy(
     }
 
     new_history.extend_from_slice(&history[new_compact_end..]);
-    *history = new_history;
+    *history = sanitize_tool_pairs(&new_history);
     true
 }
 
@@ -1047,5 +1065,5 @@ pub fn trim_history(history: &mut Vec<ChatMessage>, max_history_messages: u32) {
     }
     new_history.extend_from_slice(&history[start + to_remove..]);
 
-    *history = new_history;
+    *history = sanitize_tool_pairs(&new_history);
 }

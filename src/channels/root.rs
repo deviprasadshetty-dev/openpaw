@@ -12,6 +12,16 @@ pub trait Channel: Send + Sync {
     /// Send a text message to a chat
     fn send_message(&self, chat_id: &str, text: &str) -> Result<()>;
 
+    /// Send a text message with optional reply-to. Default delegates to send_message.
+    fn send_message_with_reply(
+        &self,
+        chat_id: &str,
+        text: &str,
+        _reply_to_message_id: Option<i64>,
+    ) -> Result<()> {
+        self.send_message(chat_id, text)
+    }
+
     /// Send a text chunk to a chat (for streaming). Default is no-op.
     fn send_stream_chunk(&self, _chat_id: &str, _text: &str) -> Result<()> {
         Ok(())

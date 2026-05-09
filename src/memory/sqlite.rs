@@ -118,13 +118,31 @@ impl SqliteMemory {
         );
 
         // Sessions table migrations (richer metadata)
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'cli';", []);
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'cli';",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT;", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN message_count INTEGER DEFAULT 0;", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN tool_call_count INTEGER DEFAULT 0;", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN input_tokens INTEGER DEFAULT 0;", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN output_tokens INTEGER DEFAULT 0;", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN started_at TEXT DEFAULT (datetime('now'));", []);
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN message_count INTEGER DEFAULT 0;",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN tool_call_count INTEGER DEFAULT 0;",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN input_tokens INTEGER DEFAULT 0;",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN output_tokens INTEGER DEFAULT 0;",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN started_at TEXT DEFAULT (datetime('now'));",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN ended_at TEXT;", []);
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN end_reason TEXT;", []);
 
@@ -312,9 +330,10 @@ impl MemoryStore for SqliteMemory {
         for e in entries {
             let entry = e?;
             if let Some(sid) = session_id
-                && entry.session_id.as_deref() != Some(sid) {
-                    continue;
-                }
+                && entry.session_id.as_deref() != Some(sid)
+            {
+                continue;
+            }
             results.push(entry);
         }
 
@@ -432,9 +451,10 @@ impl MemoryStore for SqliteMemory {
             for e in mapped {
                 let entry = e?;
                 if let Some(sid) = session_id
-                    && entry.session_id.as_deref() != Some(sid) {
-                        continue;
-                    }
+                    && entry.session_id.as_deref() != Some(sid)
+                {
+                    continue;
+                }
                 results.push(entry);
             }
         } else {
@@ -456,9 +476,10 @@ impl MemoryStore for SqliteMemory {
             for e in mapped {
                 let entry = e?;
                 if let Some(sid) = session_id
-                    && entry.session_id.as_deref() != Some(sid) {
-                        continue;
-                    }
+                    && entry.session_id.as_deref() != Some(sid)
+                {
+                    continue;
+                }
                 results.push(entry);
             }
         }
@@ -490,9 +511,9 @@ impl MemoryStore for SqliteMemory {
         let mut stmt = conn.prepare(
             "SELECT id, key, content, category, created_at, session_id FROM memories 
              WHERE category != 'learning' 
-             ORDER BY updated_at DESC LIMIT ?1"
+             ORDER BY updated_at DESC LIMIT ?1",
         )?;
-        
+
         let mapped = stmt.query_map(params![limit as i64], |row| {
             let cat_s: String = row.get(3)?;
             Ok(MemoryEntry {
@@ -507,7 +528,7 @@ impl MemoryStore for SqliteMemory {
                 embedding: None,
             })
         })?;
-        
+
         let mut results = Vec::new();
         for e in mapped {
             results.push(e?);

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::daemon::DaemonState;
@@ -39,9 +39,12 @@ pub fn dream_thread(
 
         if should_dream {
             info!("System is idle. Triggering Dream Sequence...");
-            
+
             if let Some(mem) = &memory {
-                let model = config.default_model.clone().unwrap_or_else(|| "default".to_string());
+                let model = config
+                    .default_model
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
                 match dream_sequence(provider.clone(), mem.clone(), &model, &config.workspace_dir) {
                     Ok(_) => {
                         info!("Dream Sequence completed successfully.");
@@ -70,7 +73,7 @@ fn dream_sequence(
 ) -> anyhow::Result<()> {
     // 1. Fetch recent memories that aren't learnings
     let recent_memories = memory.get_recent(MEMORY_CHUNK_SIZE)?;
-    
+
     if recent_memories.is_empty() {
         return Ok(()); // Nothing to dream about
     }
@@ -97,8 +100,11 @@ Output format MUST be strict JSON:
     { "name": "skill-name", "description": "when/why to use", "instructions": "the markdown instructions" }
   ]
 }"#;
-    
-    let user_prompt = format!("Review the following memories and provide JSON:\n\n{}", joined_memories);
+
+    let user_prompt = format!(
+        "Review the following memories and provide JSON:\n\n{}",
+        joined_memories
+    );
 
     let messages = vec![
         ChatMessage {
@@ -132,21 +138,26 @@ Output format MUST be strict JSON:
         reasoning_effort: None,
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let response = rt.block_on(async { provider.chat(&req) })?;
-    
+
     // Parse response
     let content_opt = response.content;
     let content_str = content_opt.unwrap_or_default();
     let content = content_str.trim();
-    
+
     // Strip markdown JSON blocks if present
     let content = if content.starts_with("`json") {
-        content.trim_start_matches("`json").trim_end_matches("`").trim()
+        content
+            .trim_start_matches("`json")
+            .trim_end_matches("`")
+            .trim()
     } else {
         content
     };
-    
+
     #[derive(serde::Deserialize)]
     struct DreamResult {
         #[serde(default)]
@@ -169,13 +180,19 @@ Output format MUST be strict JSON:
     }
 
     for learning in result.new_learnings {
-        let key = format!("learning_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let key = format!(
+            "learning_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let _ = memory.store_with_category(
             &key,
             &learning,
             MemoryCategory::Learning,
             None,
-            Some(0.8) // High importance
+            Some(0.8), // High importance
         );
     }
 

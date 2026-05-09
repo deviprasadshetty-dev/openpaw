@@ -23,9 +23,10 @@ impl MemoryMdTool {
 
     async fn read_entries(&self, path: &std::path::PathBuf) -> Vec<String> {
         match tokio::fs::read_to_string(path).await {
-            Ok(content) if !content.trim().is_empty() => {
-                content.split(ENTRY_DELIMITER).map(|s| s.to_string()).collect()
-            }
+            Ok(content) if !content.trim().is_empty() => content
+                .split(ENTRY_DELIMITER)
+                .map(|s| s.to_string())
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -85,12 +86,16 @@ impl Tool for MemoryMdTool {
     }
   },
   "required": ["action", "target"]
-}"#.to_string()
+}"#
+        .to_string()
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("memory");
+        let target = args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("memory");
 
         let (path, limit) = match target {
             "user" => (self.user_file(), self.user_char_limit),
@@ -141,7 +146,9 @@ impl Tool for MemoryMdTool {
             "replace" => {
                 let old_text = match args.get("old_text").and_then(|v| v.as_str()) {
                     Some(t) => t,
-                    None => return Ok(ToolResult::fail("Missing 'old_text' parameter for replace")),
+                    None => {
+                        return Ok(ToolResult::fail("Missing 'old_text' parameter for replace"));
+                    }
                 };
                 let content = match args.get("content").and_then(|v| v.as_str()) {
                     Some(c) => c,
@@ -150,7 +157,9 @@ impl Tool for MemoryMdTool {
 
                 let file_content = match tokio::fs::read_to_string(&path).await {
                     Ok(c) => c,
-                    Err(_) => return Ok(ToolResult::fail(format!("{} file does not exist.", target))),
+                    Err(_) => {
+                        return Ok(ToolResult::fail(format!("{} file does not exist.", target)));
+                    }
                 };
 
                 if !file_content.contains(old_text) {
@@ -161,7 +170,8 @@ impl Tool for MemoryMdTool {
                 if updated.len() > limit {
                     return Ok(ToolResult::fail(format!(
                         "Replace would result in {}/{} chars, exceeding the limit. Remove or consolidate entries first.",
-                        updated.len(), limit
+                        updated.len(),
+                        limit
                     )));
                 }
 
@@ -182,7 +192,9 @@ impl Tool for MemoryMdTool {
 
                 let file_content = match tokio::fs::read_to_string(&path).await {
                     Ok(c) => c,
-                    Err(_) => return Ok(ToolResult::fail(format!("{} file does not exist.", target))),
+                    Err(_) => {
+                        return Ok(ToolResult::fail(format!("{} file does not exist.", target)));
+                    }
                 };
 
                 if !file_content.contains(old_text) {
@@ -195,9 +207,15 @@ impl Tool for MemoryMdTool {
                 let cleaned = updated.replace(&double_delim, ENTRY_DELIMITER);
                 tokio::fs::write(&path, cleaned.trim()).await?;
 
-                Ok(ToolResult::ok(format!("Removed text from {} file.", target)))
+                Ok(ToolResult::ok(format!(
+                    "Removed text from {} file.",
+                    target
+                )))
             }
-            _ => Ok(ToolResult::fail(format!("Unknown action: {}. Use add, replace, or remove.", action))),
+            _ => Ok(ToolResult::fail(format!(
+                "Unknown action: {}. Use add, replace, or remove.",
+                action
+            ))),
         }
     }
 }
