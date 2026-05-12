@@ -89,6 +89,7 @@ pub struct Agent {
 
     /// Cooldown timestamp for background reviews (unix secs) to prevent spam.
     pub last_background_review: u64,
+    pub observer: Option<Arc<dyn crate::observability::Observer>>,
 }
 
 /// QW-6: Conditional follow-through detection.
@@ -138,6 +139,106 @@ fn select_context_window(history: &[ChatMessage], query: &str) -> Vec<ChatMessag
     }
 
     history.to_vec()
+}
+
+fn has_tool(available_tools: &[Arc<dyn Tool>], name: &str) -> bool {
+    available_tools.iter().any(|t| t.name() == name)
+}
+
+fn should_suggest_backgrounding(
+    user_message: &str,
+    available_tools: &[Arc<dyn Tool>],
+    context: &ToolContext,
+) -> bool {
+    if context.sender_id == "subagent" {
+        return false;
+    }
+    if !has_tool(available_tools, "plan_create") && !has_tool(available_tools, "spawn") {
+        return false;
+    }
+
+    let lower = user_message.to_lowercase();
+    let trimmed = lower.trim();
+
+    const OPT_OUTS: &[&str] = &[
+        "don't background",
+        "do not background",
+        "stay in this chat",
+        "foreground",
+        "stream it",
+        "show me step by step",
+        "wait for me",
+    ];
+    if OPT_OUTS.iter().any(|p| lower.contains(p)) {
+        return false;
+    }
+
+    const BIG_TASK_PHRASES: &[&str] = &[
+        "big thing",
+        "large task",
+        "full implementation",
+        "implement",
+        "build",
+        "refactor",
+        "analyze the repo",
+        "check the repo",
+        "fix all",
+        "end to end",
+        "production ready",
+        "autonomous",
+        "entire",
+        "whole",
+        "complete",
+        "multi-step",
+        "full app",
+        "whole repo",
+        "website",
+    ];
+    let phrase_hit = BIG_TASK_PHRASES.iter().any(|p| lower.contains(p));
+    let strong_short_task = trimmed.len() >= 40
+        && ["build", "implement", "refactor", "analyze"]
+            .iter()
+            .any(|p| lower.contains(p))
+        && ["app", "website", "repo", "project", "system", "feature"]
+            .iter()
+            .any(|p| lower.contains(p));
+    let conjunction_count = lower.matches(" and ").count() + lower.matches(",").count();
+    let asks_for_work = trimmed.contains("can you")
+        || trimmed.contains("please")
+        || trimmed.contains("fix")
+        || trimmed.contains("make")
+        || trimmed.contains("create")
+        || trimmed.contains("add");
+
+    phrase_hit
+        || strong_short_task
+        || (asks_for_work && trimmed.len() > 260 && conjunction_count >= 2)
+}
+
+fn backgrounding_instruction(
+    user_message: &str,
+    available_tools: &[Arc<dyn Tool>],
+    context: &ToolContext,
+) -> String {
+    if !should_suggest_backgrounding(user_message, available_tools, context) {
+        return user_message.to_string();
+    }
+
+    let preferred_tool = if has_tool(available_tools, "plan_create") {
+        "plan_create"
+    } else {
+        "spawn"
+    };
+    format!(
+        "<task_routing_hint>\n\
+This looks like a large or multi-step task. Preserve result quality: first think briefly about whether backgrounding is appropriate.\n\
+If the work is independent or long-running, prefer `{}` now instead of doing all work in the foreground. For `plan_create`, create 3-7 concrete subtasks with dependencies and include a verification/review task. For `spawn`, give one bounded task prompt with clear completion criteria.\n\
+If part of the work is tightly coupled, risky, or needs immediate main-agent judgment, keep that part in the foreground and background the independent parts.\n\
+After starting background work, reply briefly with the plan/task id and say progress/final results will be reported here. Do not stream a long foreground execution after backgrounding.\n\
+Current origin for reports: channel=`{}`, chat_id=`{}`.\n\
+</task_routing_hint>\n\n{}",
+        preferred_tool, context.channel, context.chat_id, user_message
+    )
 }
 
 pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]) -> bool {
@@ -445,17 +546,21 @@ impl Agent {
                 },
             )),
             last_background_review: 0,
+            observer: None,
         };
 
-        if context_tokens_resolver::is_small_model_context(token_limit) {
-            agent.max_tool_iterations = 150; // Increased for local models
-        }
+        agent.max_tool_iterations = 150; // High limit to allow complex tasks
 
         agent
     }
 
     pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
         self.memory = memory;
+        self
+    }
+
+    pub fn with_observer(mut self, observer: Arc<dyn crate::observability::Observer>) -> Self {
+        self.observer = Some(observer);
         self
     }
 
@@ -617,6 +722,7 @@ impl Agent {
         } else {
             self.provider.clone()
         };
+        let routed_user_message = backgrounding_instruction(&user_message, &self.tools, context);
 
         // R-1 & QW-2: Memory optimizations
         if self.auto_save && user_message.len() > 20 && !model_router::is_greeting(&user_message) {
@@ -692,23 +798,23 @@ impl Agent {
         }
 
         // R-6 & QW-2: Enrich user message with memory context (only if substantive)
-        let enriched_msg = if user_message.len() > 30
+        let enriched_msg = if routed_user_message.len() > 30
             && !model_router::is_greeting(&user_message)
             && self.memory.as_any().downcast_ref::<NoopMemory>().is_none()
         {
             match memory_loader::enrich_message(
                 self.memory.as_ref(),
-                &user_message,
+                &routed_user_message,
                 self.memory_session_id.as_deref(),
             ) {
                 Ok(msg) => msg,
                 Err(e) => {
                     warn!("Memory enrichment failed: {}", e);
-                    user_message.clone()
+                    routed_user_message.clone()
                 }
             }
         } else {
-            user_message.clone()
+            routed_user_message.clone()
         };
 
         // Hermes-style: inject dialectic user model into the user message (not system prompt)
@@ -940,6 +1046,38 @@ impl Agent {
             };
 
             // DESIGN-1 FIX: Only cache when there are no tool calls in the response.
+
+            let usage = &response.usage;
+            {
+                self.total_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
+                self.current_turn_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
+                if let Some(tracker) = &mut self.cost_tracker {
+                    let token_usage = crate::cost::TokenUsage::new(
+                        &model_to_use,
+                        usage.prompt_tokens as u64,
+                        usage.completion_tokens as u64,
+                        0.0,
+                        0.0,
+                    );
+                    let _ = tracker.record_usage(token_usage);
+                }
+            }
+
+            if let Some(obs) = &self.observer {
+                obs.record_event(&crate::observability::ObserverEvent::LlmResponse {
+                    provider: active_provider.get_name().to_string(),
+                    model: model_to_use.clone(),
+                    duration_ms: 0, // Could compute this if we timed it
+                    success: true,
+                    error_message: None,
+                });
+                let usage = &response.usage;
+                {
+                    obs.record_metric(&crate::observability::ObserverMetric::TokensUsed(
+                        (usage.prompt_tokens + usage.completion_tokens) as u64,
+                    ));
+                }
+            }
             let has_native_tool_calls = !response.tool_calls.is_empty();
             let response_content_str = response.content.clone().unwrap_or_default();
             let has_xml_tool_calls = response_content_str.contains("<tool_call")
@@ -1548,25 +1686,26 @@ impl Agent {
         } else {
             self.provider.clone()
         };
+        let routed_user_message = backgrounding_instruction(&user_message, &self.tools, context);
 
         // R-6 & QW-2: Memory enrichment (only if substantive)
-        let enriched_msg = if user_message.len() > 30
+        let enriched_msg = if routed_user_message.len() > 30
             && !model_router::is_greeting(&user_message)
             && self.memory.as_any().downcast_ref::<NoopMemory>().is_none()
         {
             match memory_loader::enrich_message(
                 self.memory.as_ref(),
-                &user_message,
+                &routed_user_message,
                 self.memory_session_id.as_deref(),
             ) {
                 Ok(msg) => msg,
                 Err(e) => {
                     warn!("Memory enrichment failed: {}", e);
-                    user_message.clone()
+                    routed_user_message.clone()
                 }
             }
         } else {
-            user_message.clone()
+            routed_user_message.clone()
         };
 
         // Hermes-style: inject dialectic user model into the user message (not system prompt)
@@ -1847,6 +1986,38 @@ impl Agent {
             };
 
             // DESIGN-1 FIX: Only cache final text responses, not tool-call responses.
+
+            let usage = &response.usage;
+            {
+                self.total_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
+                self.current_turn_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
+                if let Some(tracker) = &mut self.cost_tracker {
+                    let token_usage = crate::cost::TokenUsage::new(
+                        &model_to_use,
+                        usage.prompt_tokens as u64,
+                        usage.completion_tokens as u64,
+                        0.0,
+                        0.0,
+                    );
+                    let _ = tracker.record_usage(token_usage);
+                }
+            }
+
+            if let Some(obs) = &self.observer {
+                obs.record_event(&crate::observability::ObserverEvent::LlmResponse {
+                    provider: active_provider.get_name().to_string(),
+                    model: model_to_use.clone(),
+                    duration_ms: 0, // Could compute this if we timed it
+                    success: true,
+                    error_message: None,
+                });
+                let usage = &response.usage;
+                {
+                    obs.record_metric(&crate::observability::ObserverMetric::TokensUsed(
+                        (usage.prompt_tokens + usage.completion_tokens) as u64,
+                    ));
+                }
+            }
             let has_native_tool_calls_s = !response.tool_calls.is_empty();
             let response_content_str_s = response.content.clone().unwrap_or_default();
             let has_xml_tool_calls_s = response_content_str_s.contains("<tool_call")
@@ -2326,6 +2497,86 @@ mod tests {
             "Let me know if you need anything else.",
             &tools
         ));
+    }
+
+    #[test]
+    fn test_should_suggest_backgrounding_for_large_task() {
+        use std::sync::Arc;
+        struct NamedTool(&'static str);
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for NamedTool {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "desc"
+            }
+            fn parameters_json(&self) -> String {
+                "{}".into()
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: &crate::tools::ToolContext,
+            ) -> anyhow::Result<crate::tools::ToolResult> {
+                Ok(crate::tools::ToolResult::ok("ok"))
+            }
+        }
+
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(NamedTool("plan_create"))];
+        let context = crate::tools::ToolContext {
+            channel: "telegram".to_string(),
+            chat_id: "123".to_string(),
+            sender_id: "user".to_string(),
+            session_key: "telegram:123".to_string(),
+        };
+        let request = "Please implement a full production ready feature across the whole repo, including code changes, tests, documentation, and verification so the app works end to end.";
+
+        assert!(should_suggest_backgrounding(request, &tools, &context));
+        let routed = backgrounding_instruction(request, &tools, &context);
+        assert!(routed.contains("<task_routing_hint>"));
+        assert!(routed.contains("plan_create"));
+        assert!(routed.contains("telegram"));
+    }
+
+    #[test]
+    fn test_should_not_suggest_backgrounding_when_opted_out() {
+        use std::sync::Arc;
+        struct NamedTool(&'static str);
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for NamedTool {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "desc"
+            }
+            fn parameters_json(&self) -> String {
+                "{}".into()
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: &crate::tools::ToolContext,
+            ) -> anyhow::Result<crate::tools::ToolResult> {
+                Ok(crate::tools::ToolResult::ok("ok"))
+            }
+        }
+
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(NamedTool("spawn"))];
+        let context = crate::tools::ToolContext {
+            channel: "cli".to_string(),
+            chat_id: "local".to_string(),
+            sender_id: "user".to_string(),
+            session_key: "cli:local".to_string(),
+        };
+        let request = "Please implement a full production ready feature across the whole repo, including code changes, tests, documentation, and verification, but do not background it.";
+
+        assert!(!should_suggest_backgrounding(request, &tools, &context));
+        assert_eq!(
+            backgrounding_instruction(request, &tools, &context),
+            request
+        );
     }
 
     #[test]

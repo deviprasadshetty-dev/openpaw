@@ -201,7 +201,7 @@ impl TelegramChannel {
             let url = self.api_url("setWebhook");
             let body = serde_json::json!({
                 "url": hook_url,
-                "allowed_updates": ["message", "callback_query"]
+                "allowed_updates": ["message", "edited_message", "callback_query"]
             });
             match self
                 .client
@@ -211,7 +211,11 @@ impl TelegramChannel {
                 .send()
             {
                 Ok(resp) => {
-                    info!("Telegram setWebhook → {} (status: {})", hook_url, resp.status());
+                    info!(
+                        "Telegram setWebhook → {} (status: {})",
+                        hook_url,
+                        resp.status()
+                    );
                 }
                 Err(e) => {
                     warn!("Telegram setWebhook failed for {}: {}", hook_url, e);
@@ -230,9 +234,18 @@ impl TelegramChannel {
         self.flush_pending_inbound(&mut messages);
 
         for msg in messages {
-            let meta_json = msg.message_id.map(|id| {
-                serde_json::json!({ "message_id": id.to_string() }).to_string()
-            });
+            let meta_json = if msg.message_id.is_some() || msg.message_thread_id.is_some() {
+                Some(
+                    serde_json::json!({
+                        "message_id": msg.message_id.map(|id| id.to_string()),
+                        "thread_id": msg.message_thread_id.map(|id| id.to_string()),
+                        "is_group": msg.is_group,
+                    })
+                    .to_string(),
+                )
+            } else {
+                None
+            };
             let inbound = InboundMessage {
                 channel: "telegram".to_string(),
                 sender_id: msg.sender_id,
@@ -335,7 +348,11 @@ impl TelegramChannel {
     /// Fire a single sendChatAction=typing (best-effort).
     fn send_typing_once(&self, chat_id: &str) {
         let url = self.api_url("sendChatAction");
-        let body = serde_json::json!({ "chat_id": chat_id, "action": "typing" });
+        let (chat_id, thread_id) = split_chat_thread(chat_id);
+        let mut body = serde_json::json!({ "chat_id": chat_id, "action": "typing" });
+        if let Some(thread_id) = thread_id {
+            body["message_thread_id"] = Value::Number(thread_id.into());
+        }
         let _ = self
             .client
             .post(&url)
@@ -351,10 +368,14 @@ impl TelegramChannel {
         let stop_clone = stop.clone();
         let url = self.api_url("sendChatAction");
         let client = self.client.clone();
-        let chat_id_owned = chat_id.to_string();
+        let (chat_id_owned, thread_id) = split_chat_thread(chat_id);
 
         std::thread::spawn(move || {
             let body = serde_json::json!({ "chat_id": chat_id_owned, "action": "typing" });
+            let mut body = body;
+            if let Some(thread_id) = thread_id {
+                body["message_thread_id"] = Value::Number(thread_id.into());
+            }
             while !stop_clone.load(Ordering::Relaxed) {
                 let _ = client
                     .post(&url)
@@ -509,6 +530,67 @@ impl TelegramChannel {
             return format!("[Audio: {} file_id={}]", title, file_id);
         }
 
+        // Sticker
+        if let Some(sticker) = message.get("sticker") {
+            let emoji = sticker.get("emoji").and_then(|v| v.as_str()).unwrap_or("");
+            let set_name = sticker
+                .get("set_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return format!(
+                "[User sent sticker{}{}]",
+                if emoji.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", emoji)
+                },
+                if set_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" from set {}", set_name)
+                }
+            );
+        }
+
+        // Location
+        if let Some(location) = message.get("location") {
+            let lat = location
+                .get("latitude")
+                .and_then(|v| v.as_f64())
+                .unwrap_or_default();
+            let lon = location
+                .get("longitude")
+                .and_then(|v| v.as_f64())
+                .unwrap_or_default();
+            return format!("[User shared location: {}, {}]", lat, lon);
+        }
+
+        // Contact
+        if let Some(contact) = message.get("contact") {
+            let first_name = contact
+                .get("first_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let last_name = contact
+                .get("last_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let phone = contact
+                .get("phone_number")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return format!(
+                "[User shared contact: {}{} phone={}]",
+                first_name,
+                if last_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", last_name)
+                },
+                phone
+            );
+        }
+
         // Video
         if let Some(video) = message.get("video") {
             let file_id = video.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -549,8 +631,12 @@ impl TelegramChannel {
             return;
         }
 
-        let message = match update.get("message") {
-            Some(m) => m,
+        let (message, edited) = match update
+            .get("message")
+            .map(|m| (m, false))
+            .or_else(|| update.get("edited_message").map(|m| (m, true)))
+        {
+            Some(pair) => pair,
             None => return,
         };
 
@@ -597,11 +683,15 @@ impl TelegramChannel {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let message_id = message.get("message_id").and_then(|v| v.as_i64());
+        let message_thread_id = message.get("message_thread_id").and_then(|v| v.as_i64());
         let media_group_id = message.get("media_group_id").and_then(|v| v.as_str());
-        let content = self.extract_message_content(message);
+        let mut content = self.extract_message_content(message);
 
         if content.is_empty() {
             return;
+        }
+        if edited {
+            content = format!("[Edited Telegram message]\n{}", content);
         }
 
         let sender_identity = if username != "unknown" {
@@ -612,12 +702,21 @@ impl TelegramChannel {
 
         let parsed = ParsedMessage {
             sender_id: sender_identity,
-            chat_id: chat_id.clone(),
+            chat_id: if let Some(thread_id) = message_thread_id {
+                format!("{}:thread:{}", chat_id, thread_id)
+            } else {
+                chat_id.clone()
+            },
             content,
-            session_key: format!("telegram:{}", chat_id),
+            session_key: if let Some(thread_id) = message_thread_id {
+                format!("telegram:{}:thread:{}", chat_id, thread_id)
+            } else {
+                format!("telegram:{}", chat_id)
+            },
             is_group,
             update_id,
             message_id,
+            message_thread_id,
             username: if username != "unknown" {
                 Some(username.to_string())
             } else {
@@ -760,12 +859,29 @@ impl TelegramChannel {
 
         messages.push(ParsedMessage {
             sender_id: sender_identity,
-            chat_id: chat_id.clone(),
+            chat_id: if let Some(thread_id) = message_obj
+                .get("message_thread_id")
+                .and_then(|v| v.as_i64())
+            {
+                format!("{}:thread:{}", chat_id, thread_id)
+            } else {
+                chat_id.clone()
+            },
             content: format!("[Callback: {}]", cb_data),
-            session_key: format!("telegram:{}", chat_id),
+            session_key: if let Some(thread_id) = message_obj
+                .get("message_thread_id")
+                .and_then(|v| v.as_i64())
+            {
+                format!("telegram:{}:thread:{}", chat_id, thread_id)
+            } else {
+                format!("telegram:{}", chat_id)
+            },
             is_group,
             update_id,
             message_id: message_obj.get("message_id").and_then(|v| v.as_i64()),
+            message_thread_id: message_obj
+                .get("message_thread_id")
+                .and_then(|v| v.as_i64()),
             username: if username != "unknown" {
                 Some(username.to_string())
             } else {
@@ -1041,18 +1157,22 @@ impl TelegramChannel {
 
     fn send_document(&self, chat_id: &str, path: &Path) -> Result<()> {
         let url = self.api_url("sendDocument");
+        let (chat_id, thread_id) = split_chat_thread(chat_id);
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("document.bin")
             .to_string();
         let bytes = std::fs::read(path)?;
-        let form = multipart::Form::new()
+        let mut form = multipart::Form::new()
             .text("chat_id", chat_id.to_string())
             .part(
                 "document",
                 multipart::Part::bytes(bytes).file_name(file_name),
             );
+        if let Some(thread_id) = thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
         let response = self.client.post(&url).multipart(form).send()?;
         let status = response.status();
         let body = response.text().unwrap_or_default();
@@ -1069,15 +1189,19 @@ impl TelegramChannel {
 
     fn send_photo(&self, chat_id: &str, path: &Path) -> Result<()> {
         let url = self.api_url("sendPhoto");
+        let (chat_id, thread_id) = split_chat_thread(chat_id);
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("image.bin")
             .to_string();
         let bytes = std::fs::read(path)?;
-        let form = multipart::Form::new()
+        let mut form = multipart::Form::new()
             .text("chat_id", chat_id.to_string())
             .part("photo", multipart::Part::bytes(bytes).file_name(file_name));
+        if let Some(thread_id) = thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
         let response = self.client.post(&url).multipart(form).send()?;
         let status = response.status();
         let body = response.text().unwrap_or_default();
@@ -1095,15 +1219,19 @@ impl TelegramChannel {
     /// NEW: send audio via sendAudio (e.g. for [AUDIO:...] markers)
     fn send_audio(&self, chat_id: &str, path: &Path) -> Result<()> {
         let url = self.api_url("sendAudio");
+        let (chat_id, thread_id) = split_chat_thread(chat_id);
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("audio.mp3")
             .to_string();
         let bytes = std::fs::read(path)?;
-        let form = multipart::Form::new()
+        let mut form = multipart::Form::new()
             .text("chat_id", chat_id.to_string())
             .part("audio", multipart::Part::bytes(bytes).file_name(file_name));
+        if let Some(thread_id) = thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
         let response = self.client.post(&url).multipart(form).send()?;
         let status = response.status();
         let body = response.text().unwrap_or_default();
@@ -1120,15 +1248,19 @@ impl TelegramChannel {
 
     fn send_video(&self, chat_id: &str, path: &Path) -> Result<()> {
         let url = self.api_url("sendVideo");
+        let (chat_id, thread_id) = split_chat_thread(chat_id);
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("video.mp4")
             .to_string();
         let bytes = std::fs::read(path)?;
-        let form = multipart::Form::new()
+        let mut form = multipart::Form::new()
             .text("chat_id", chat_id.to_string())
             .part("video", multipart::Part::bytes(bytes).file_name(file_name));
+        if let Some(thread_id) = thread_id {
+            form = form.text("message_thread_id", thread_id.to_string());
+        }
         let response = self.client.post(&url).multipart(form).send()?;
         let status = response.status();
         let body = response.text().unwrap_or_default();
@@ -1152,6 +1284,7 @@ impl TelegramChannel {
         reply_to: Option<i64>,
         edit_message_id: Option<i64>,
     ) -> Result<i64> {
+        let (chat_id, thread_id) = split_chat_thread(chat_id);
         let url = if edit_message_id.is_some() {
             self.api_url("editMessageText")
         } else {
@@ -1186,6 +1319,11 @@ impl TelegramChannel {
             "text": html_text,
             "parse_mode": "HTML"
         });
+        if let Some(thread_id) = thread_id
+            && edit_message_id.is_none()
+        {
+            body["message_thread_id"] = Value::Number(thread_id.into());
+        }
 
         if let Some(msg_id) = edit_message_id {
             body["message_id"] = Value::Number(msg_id.into());
@@ -1214,6 +1352,11 @@ impl TelegramChannel {
                     "chat_id": chat_id,
                     "text": plain_text
                 });
+                if let Some(thread_id) = thread_id
+                    && edit_message_id.is_none()
+                {
+                    plain_body["message_thread_id"] = Value::Number(thread_id.into());
+                }
                 if let Some(reply_id) = reply_to {
                     plain_body["reply_to_message_id"] = Value::Number(reply_id.into());
                 }
@@ -1262,6 +1405,15 @@ impl TelegramChannel {
         self.send_single_message_internal(chat_id, text, reply_to, None)?;
         Ok(())
     }
+}
+
+fn split_chat_thread(chat_id: &str) -> (String, Option<i64>) {
+    if let Some((chat, thread)) = chat_id.split_once(":thread:")
+        && let Ok(thread_id) = thread.parse::<i64>()
+    {
+        return (chat.to_string(), Some(thread_id));
+    }
+    (chat_id.to_string(), None)
 }
 
 // ── Channel trait impl ──────────────────────────────────────────────────────
@@ -1377,7 +1529,7 @@ impl Channel for TelegramChannel {
         let body = serde_json::json!({
             "offset": offset,
             "timeout": 30,
-            "allowed_updates": ["message", "callback_query"]
+            "allowed_updates": ["message", "edited_message", "callback_query"]
         });
 
         let response = self
@@ -1589,6 +1741,60 @@ mod tests {
         let ch = make_channel();
         let msg = serde_json::json!({ "caption": "Photo caption" });
         assert_eq!(ch.extract_message_content(&msg), "Photo caption");
+    }
+
+    #[test]
+    fn test_extract_content_location_contact_sticker() {
+        let ch = make_channel();
+        let location = serde_json::json!({ "location": { "latitude": 12.34, "longitude": 56.78 } });
+        assert_eq!(
+            ch.extract_message_content(&location),
+            "[User shared location: 12.34, 56.78]"
+        );
+
+        let contact = serde_json::json!({
+            "contact": { "first_name": "Ada", "last_name": "Lovelace", "phone_number": "+123" }
+        });
+        assert_eq!(
+            ch.extract_message_content(&contact),
+            "[User shared contact: Ada Lovelace phone=+123]"
+        );
+
+        let sticker = serde_json::json!({ "sticker": { "emoji": "ok", "set_name": "test" } });
+        assert_eq!(
+            ch.extract_message_content(&sticker),
+            "[User sent sticker ok from set test]"
+        );
+    }
+
+    #[test]
+    fn test_process_topic_message_routes_to_thread() {
+        let ch = make_channel();
+        let update = serde_json::json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "message_thread_id": 99,
+                "from": { "id": 123, "username": "testuser", "first_name": "Test" },
+                "chat": { "id": -100, "type": "supergroup" },
+                "text": "hello topic"
+            }
+        });
+        let mut messages = Vec::new();
+        ch.process_update(&update, &mut messages);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].chat_id, "-100:thread:99");
+        assert_eq!(messages[0].session_key, "telegram:-100:thread:99");
+        assert_eq!(messages[0].message_thread_id, Some(99));
+    }
+
+    #[test]
+    fn test_split_chat_thread() {
+        assert_eq!(split_chat_thread("123"), ("123".to_string(), None));
+        assert_eq!(
+            split_chat_thread("-100:thread:99"),
+            ("-100".to_string(), Some(99))
+        );
     }
 
     #[test]

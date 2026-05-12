@@ -23,7 +23,7 @@ impl Tool for SpawnTool {
         r#"{"type":"object","properties":{"task":{"type":"string","minLength":1,"description":"The task/prompt for the subagent"},"label":{"type":"string","description":"Optional human-readable label for tracking"},"agent":{"type":"string","description":"Optional named agent profile from config's agents list to use as persona"},"origin_channel":{"type":"string","description":"Internal: channel to report back to"},"origin_chat_id":{"type":"string","description":"Internal: chat ID to report back to"}},"required":["task"]}"#.to_string()
     }
 
-    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
         let task = match args.get("task").and_then(|v| v.as_str()) {
             Some(t) => t.trim(),
             None => return Ok(ToolResult::fail("Missing 'task' parameter")),
@@ -43,12 +43,12 @@ impl Tool for SpawnTool {
         let origin_channel = args
             .get("origin_channel")
             .and_then(|v| v.as_str())
-            .unwrap_or("system");
+            .unwrap_or(&context.channel);
 
         let origin_chat_id = args
             .get("origin_chat_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("agent");
+            .unwrap_or(&context.chat_id);
 
         match self.subagent_manager.spawn_with_agent(
             task,

@@ -50,6 +50,7 @@ pub struct ParsedMessage {
     /// Channel-level update identifier (e.g., Telegram update_id).
     pub update_id: Option<i64>,
     pub message_id: Option<i64>,
+    pub message_thread_id: Option<i64>,
     pub username: Option<String>,
     pub first_name: Option<String>,
 }
@@ -64,6 +65,7 @@ impl ParsedMessage {
             is_group: false,
             update_id: None,
             message_id: None,
+            message_thread_id: None,
             username: None,
             first_name: None,
         }

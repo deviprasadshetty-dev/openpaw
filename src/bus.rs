@@ -85,7 +85,13 @@ pub fn make_outbound_with_reply(
     content: &str,
     reply_to_message_id: Option<i64>,
 ) -> OutboundMessage {
-    make_outbound_with_stage_reply(channel, chat_id, content, OutboundStage::Final, reply_to_message_id)
+    make_outbound_with_stage_reply(
+        channel,
+        chat_id,
+        content,
+        OutboundStage::Final,
+        reply_to_message_id,
+    )
 }
 
 pub fn make_outbound_chunk(channel: &str, chat_id: &str, content: &str) -> OutboundMessage {

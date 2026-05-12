@@ -7,6 +7,7 @@ use crate::daemon::{build_tools, create_provider};
 use crate::session::SessionManager;
 use anyhow::{Result, anyhow};
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,14 +34,39 @@ pub struct TaskState {
     pub origin_channel: String,
     pub origin_chat_id: String,
     pub abort_handle: Option<tokio::task::AbortHandle>,
+    pub suppress_report: bool,
 }
 
 struct PendingTask {
+    task_id: u64,
     task: String,
     label: String,
     origin_channel: String,
     origin_chat_id: String,
     agent_name: Option<String>,
+}
+
+fn build_subagent_memory(config: &Config) -> Option<Arc<dyn crate::agent::memory_loader::Memory>> {
+    match config.memory.backend.as_str() {
+        "markdown" => {
+            let memory = crate::memory::engines::markdown::MarkdownMemory::from_workspace(
+                &config.workspace_dir,
+            );
+            Some(Arc::new(crate::agent::memory_loader::MemoryAdapter {
+                inner: Arc::new(memory),
+            }))
+        }
+        "none" => None,
+        _ => {
+            let db_path = format!("{}/memory.db", config.workspace_dir);
+            match crate::memory::sqlite::SqliteMemory::new(&db_path) {
+                Ok(memory) => Some(Arc::new(crate::agent::memory_loader::MemoryAdapter {
+                    inner: Arc::new(memory),
+                })),
+                Err(_) => Some(Arc::new(crate::agent::memory_loader::NoopMemory)),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +145,43 @@ impl SubagentManager {
         origin_chat_id: &str,
         agent_name: Option<&str>,
     ) -> Result<u64> {
+        self.spawn_with_agent_internal(
+            task,
+            label,
+            origin_channel,
+            origin_chat_id,
+            agent_name,
+            false,
+        )
+    }
+
+    pub fn spawn_with_agent_silent(
+        &self,
+        task: &str,
+        label: &str,
+        origin_channel: &str,
+        origin_chat_id: &str,
+        agent_name: Option<&str>,
+    ) -> Result<u64> {
+        self.spawn_with_agent_internal(
+            task,
+            label,
+            origin_channel,
+            origin_chat_id,
+            agent_name,
+            true,
+        )
+    }
+
+    fn spawn_with_agent_internal(
+        &self,
+        task: &str,
+        label: &str,
+        origin_channel: &str,
+        origin_chat_id: &str,
+        agent_name: Option<&str>,
+        suppress_report: bool,
+    ) -> Result<u64> {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let running_count = tasks
             .values()
@@ -133,6 +196,7 @@ impl SubagentManager {
         if running_count >= self.config.max_concurrent as usize {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.push_back(PendingTask {
+                task_id,
                 task: task.to_string(),
                 label: label.to_string(),
                 origin_channel: origin_channel.to_string(),
@@ -153,15 +217,18 @@ impl SubagentManager {
                 origin_channel: origin_channel.to_string(),
                 origin_chat_id: origin_chat_id.to_string(),
                 abort_handle: None,
+                suppress_report,
             };
             tasks.insert(task_id, state);
 
-            let msg = format!(
-                "⏳ Subagent '{}' (Task ID: {}) queued — {} slots in use, will start when a slot frees up.",
-                label, task_id, running_count
-            );
-            let outbound = crate::bus::make_outbound(origin_channel, origin_chat_id, &msg);
-            let _ = self.bus.publish_outbound(outbound);
+            if !suppress_report {
+                let msg = format!(
+                    "⏳ Subagent '{}' (Task ID: {}) queued — {} slots in use, will start when a slot frees up.",
+                    label, task_id, running_count
+                );
+                let outbound = crate::bus::make_outbound(origin_channel, origin_chat_id, &msg);
+                let _ = self.bus.publish_outbound(outbound);
+            }
 
             return Ok(task_id);
         }
@@ -174,6 +241,7 @@ impl SubagentManager {
             origin_channel,
             origin_chat_id,
             agent_name,
+            suppress_report,
         )
     }
 
@@ -187,6 +255,7 @@ impl SubagentManager {
         origin_channel: &str,
         origin_chat_id: &str,
         agent_name: Option<&str>,
+        suppress_report: bool,
     ) -> Result<u64> {
         let subagent_session_key = format!("subagent:{}", task_id);
 
@@ -203,6 +272,7 @@ impl SubagentManager {
             origin_channel: origin_channel.to_string(),
             origin_chat_id: origin_chat_id.to_string(),
             abort_handle: None,
+            suppress_report,
         };
         tasks.insert(task_id, state);
 
@@ -254,16 +324,18 @@ impl SubagentManager {
             let subagent_tools = build_tools(
                 &sub_config,
                 None,
+                build_subagent_memory(&sub_config),
                 None,
-                None,
-                None,
+                Some(Arc::new(crate::goals::GoalManager::new(PathBuf::from(
+                    &sub_config.workspace_dir,
+                )))),
                 Some(bus_clone.clone()),
                 Some(mailbox_clone.clone()),
                 Some(approval_clone.clone()),
-                None, // event_registry — main agent only
-                None, // plan_manager — main agent only
-                None, // provider
-                None, // cheap_provider
+                None,                   // event_registry — main agent only
+                None,                   // plan_manager — main agent only
+                Some(provider.clone()), // provider
+                None,                   // cheap_provider
             )
             .await;
 
@@ -282,7 +354,13 @@ impl SubagentManager {
             if let Some(prompt) = custom_system_prompt {
                 agent.has_system_prompt = true;
                 let mut content = format!(
-                    "{}\n\nYou are running as a background subagent.\n\n",
+                    "{}\n\nYou are running as an autonomous background subagent.\n\n\
+## Background Autonomy Rules\n\
+1. Complete the assigned task as fully as possible in this run.\n\
+2. Use available tools proactively to gather context, perform actions, and verify results.\n\
+3. Do not ask the user for routine permission or promise future work; resolve ambiguity with tools when safe.\n\
+4. Ask for approval only for genuinely destructive, external, costly, or sensitive actions.\n\
+5. Finish with a concise summary of what was done, verified, and any remaining gap.\n\n",
                     prompt
                 );
                 crate::agent::prompt::append_date_time_section(&mut content);
@@ -333,36 +411,42 @@ impl SubagentManager {
                 }
                 match result {
                     Ok(response) => {
+                        let should_report = !state.suppress_report;
                         state.status = TaskStatus::Completed;
                         state.result = Some(response.clone());
                         state.completed_at = Some(now_secs());
 
-                        let report = format!(
-                            "✅ Subagent '{}' (ID {}) completed:\n\n{}",
-                            label_copy, task_id, response
-                        );
-                        let outbound = crate::bus::make_outbound(
-                            &origin_channel_copy,
-                            &origin_chat_copy,
-                            &report,
-                        );
-                        let _ = bus_clone.publish_outbound(outbound);
+                        if should_report {
+                            let report = format!(
+                                "✅ Subagent '{}' (ID {}) completed:\n\n{}",
+                                label_copy, task_id, response
+                            );
+                            let outbound = crate::bus::make_outbound(
+                                &origin_channel_copy,
+                                &origin_chat_copy,
+                                &report,
+                            );
+                            let _ = bus_clone.publish_outbound(outbound);
+                        }
                     }
                     Err(e) => {
+                        let should_report = !state.suppress_report;
                         state.status = TaskStatus::Failed;
                         state.error_msg = Some(e.to_string());
                         state.completed_at = Some(now_secs());
 
-                        let report = format!(
-                            "❌ Subagent '{}' (ID {}) failed: {}",
-                            label_copy, task_id, e
-                        );
-                        let outbound = crate::bus::make_outbound(
-                            &origin_channel_copy,
-                            &origin_chat_copy,
-                            &report,
-                        );
-                        let _ = bus_clone.publish_outbound(outbound);
+                        if should_report {
+                            let report = format!(
+                                "❌ Subagent '{}' (ID {}) failed: {}",
+                                label_copy, task_id, e
+                            );
+                            let outbound = crate::bus::make_outbound(
+                                &origin_channel_copy,
+                                &origin_chat_copy,
+                                &report,
+                            );
+                            let _ = bus_clone.publish_outbound(outbound);
+                        }
                     }
                 }
             }
@@ -403,10 +487,7 @@ impl SubagentManager {
                 TaskStatus::Queued => {
                     // Remove from pending queue
                     let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-                    pending.retain(|p| {
-                        // Match by label + channel as a best-effort proxy (task_id not stored in PendingTask)
-                        !(p.label == state.label && p.origin_channel == state.origin_channel)
-                    });
+                    pending.retain(|p| p.task_id != task_id);
                     state.status = TaskStatus::Cancelled;
                     state.completed_at = Some(now_secs());
                     Ok(())
@@ -444,6 +525,45 @@ impl SubagentManager {
         tasks.get(&task_id).and_then(|t| t.result.clone())
     }
 
+    pub fn task_summary(&self, task_id: u64) -> Option<String> {
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        tasks
+            .get(&task_id)
+            .map(|state| format_task_summary(task_id, state))
+    }
+
+    pub fn list_task_summaries(&self, limit: usize, include_completed: bool) -> Vec<String> {
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut summaries: Vec<(u8, u64, String)> = tasks
+            .iter()
+            .filter(|(_, state)| {
+                include_completed
+                    || matches!(state.status, TaskStatus::Queued | TaskStatus::Running)
+            })
+            .map(|(id, state)| {
+                let sort_group = match state.status {
+                    TaskStatus::Running => 0,
+                    TaskStatus::Queued => 1,
+                    TaskStatus::Failed => 2,
+                    TaskStatus::Cancelled => 3,
+                    TaskStatus::Completed => 4,
+                };
+                (
+                    sort_group,
+                    state.started_at,
+                    format_task_summary(*id, state),
+                )
+            })
+            .collect();
+
+        summaries.sort_by_key(|(sort_group, started_at, _)| (*sort_group, *started_at));
+        summaries
+            .into_iter()
+            .take(limit.max(1))
+            .map(|(_, _, summary)| summary)
+            .collect()
+    }
+
     pub fn monitor_tick(&self) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let now = now_secs();
@@ -456,6 +576,10 @@ impl SubagentManager {
                 state.status = TaskStatus::Failed;
                 state.error_msg = Some("Task timed out (exceeded 1 hour)".to_string());
                 state.completed_at = Some(now);
+
+                if state.suppress_report {
+                    continue;
+                }
 
                 let report = format!(
                     "⚠️ Subagent '{}' (ID {}) timed out after 1 hour and was terminated.",
@@ -504,6 +628,49 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+fn format_task_summary(task_id: u64, state: &TaskState) -> String {
+    let now = now_secs();
+    let mut lines = vec![
+        format!("Task {} - {:?}", task_id, state.status),
+        format!("Label: {}", state.label),
+        format!(
+            "Origin: {} / {}",
+            state.origin_channel, state.origin_chat_id
+        ),
+        format!("Started: {}s ago", now.saturating_sub(state.started_at)),
+    ];
+
+    if let Some(completed_at) = state.completed_at {
+        lines.push(format!(
+            "Completed: {}s ago",
+            now.saturating_sub(completed_at)
+        ));
+    }
+    if let Some(session_key) = &state.session_key {
+        lines.push(format!("Session: {}", session_key));
+    }
+    if let Some(error) = &state.error_msg {
+        lines.push(format!("Error: {}", truncate_for_status(error, 1200)));
+    }
+    if let Some(result) = &state.result {
+        lines.push(format!("Result: {}", truncate_for_status(result, 1200)));
+    }
+
+    lines.join("\n")
+}
+
+fn truncate_for_status(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Promote pending tasks into running slots as capacity permits.
 fn drain_pending(
     tasks: Arc<Mutex<HashMap<u64, TaskState>>>,
@@ -532,23 +699,17 @@ fn drain_pending(
         match next {
             None => break,
             Some(pt) => {
-                // Find the Queued task_id for this pending entry (match by label + channel)
-                let task_id = {
+                let task_id = pt.task_id;
+                let is_still_queued = {
                     let tasks_guard = tasks.lock().unwrap_or_else(|e| e.into_inner());
                     tasks_guard
-                        .iter()
-                        .find(|(_, s)| {
-                            s.status == TaskStatus::Queued
-                                && s.label == pt.label
-                                && s.origin_channel == pt.origin_channel
-                        })
-                        .map(|(id, _)| *id)
+                        .get(&task_id)
+                        .is_some_and(|s| s.status == TaskStatus::Queued)
                 };
 
-                let task_id = match task_id {
-                    Some(id) => id,
-                    None => continue, // was cancelled
-                };
+                if !is_still_queued {
+                    continue;
+                }
 
                 let task_copy = pt.task.clone();
                 let label_copy = pt.label.clone();
@@ -601,9 +762,11 @@ fn drain_pending(
                     let subagent_tools = build_tools(
                         &sub_config,
                         None,
+                        build_subagent_memory(&sub_config),
                         None,
-                        None,
-                        None,
+                        Some(Arc::new(crate::goals::GoalManager::new(PathBuf::from(
+                            &sub_config.workspace_dir,
+                        )))),
                         Some(bus_clone2.clone()),
                         Some(mailbox_clone2.clone()),
                         Some(approval_clone2.clone()),
@@ -629,7 +792,13 @@ fn drain_pending(
                     if let Some(prompt) = custom_system_prompt {
                         agent.has_system_prompt = true;
                         let mut content = format!(
-                            "{}\n\nYou are running as a background subagent.\n\n",
+                            "{}\n\nYou are running as an autonomous background subagent.\n\n\
+## Background Autonomy Rules\n\
+1. Complete the assigned task as fully as possible in this run.\n\
+2. Use available tools proactively to gather context, perform actions, and verify results.\n\
+3. Do not ask the user for routine permission or promise future work; resolve ambiguity with tools when safe.\n\
+4. Ask for approval only for genuinely destructive, external, costly, or sensitive actions.\n\
+5. Finish with a concise summary of what was done, verified, and any remaining gap.\n\n",
                             prompt
                         );
                         crate::agent::prompt::append_date_time_section(&mut content);
@@ -676,34 +845,40 @@ fn drain_pending(
                         }
                         match result {
                             Ok(response) => {
+                                let should_report = !state.suppress_report;
                                 state.status = TaskStatus::Completed;
                                 state.result = Some(response.clone());
                                 state.completed_at = Some(now_secs());
-                                let report = format!(
-                                    "✅ Subagent '{}' (ID {}) completed:\n\n{}",
-                                    label_copy, task_id, response
-                                );
-                                let outbound = crate::bus::make_outbound(
-                                    &origin_channel_copy,
-                                    &origin_chat_copy,
-                                    &report,
-                                );
-                                let _ = bus_clone2.publish_outbound(outbound);
+                                if should_report {
+                                    let report = format!(
+                                        "✅ Subagent '{}' (ID {}) completed:\n\n{}",
+                                        label_copy, task_id, response
+                                    );
+                                    let outbound = crate::bus::make_outbound(
+                                        &origin_channel_copy,
+                                        &origin_chat_copy,
+                                        &report,
+                                    );
+                                    let _ = bus_clone2.publish_outbound(outbound);
+                                }
                             }
                             Err(e) => {
+                                let should_report = !state.suppress_report;
                                 state.status = TaskStatus::Failed;
                                 state.error_msg = Some(e.to_string());
                                 state.completed_at = Some(now_secs());
-                                let report = format!(
-                                    "❌ Subagent '{}' (ID {}) failed: {}",
-                                    label_copy, task_id, e
-                                );
-                                let outbound = crate::bus::make_outbound(
-                                    &origin_channel_copy,
-                                    &origin_chat_copy,
-                                    &report,
-                                );
-                                let _ = bus_clone2.publish_outbound(outbound);
+                                if should_report {
+                                    let report = format!(
+                                        "❌ Subagent '{}' (ID {}) failed: {}",
+                                        label_copy, task_id, e
+                                    );
+                                    let outbound = crate::bus::make_outbound(
+                                        &origin_channel_copy,
+                                        &origin_chat_copy,
+                                        &report,
+                                    );
+                                    let _ = bus_clone2.publish_outbound(outbound);
+                                }
                             }
                         }
                     }

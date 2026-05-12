@@ -1,5 +1,6 @@
 pub mod embeddings;
 pub mod engines;
+pub mod hygiene;
 pub mod postgres;
 pub mod sqlite;
 

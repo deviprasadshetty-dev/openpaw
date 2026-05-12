@@ -42,6 +42,7 @@ pub struct DaemonState {
     pub components: Vec<ComponentStatus>,
     pub last_activity_at: i64,
     pub last_dream_at: i64,
+    pub last_hygiene_at: i64,
 }
 
 impl Default for DaemonState {
@@ -57,6 +58,7 @@ impl Default for DaemonState {
             components: Vec::new(),
             last_activity_at: now,
             last_dream_at: now, // Initialize to now so first dream waits the full cooldown
+            last_hygiene_at: now,
         }
     }
 }
@@ -233,6 +235,10 @@ pub fn heartbeat_thread(
     engine: HeartbeatEngine,
 ) {
     let state_path = state_file_path(&config.config_path);
+    let tick_interval = Duration::from_secs((engine.interval_minutes.max(1) as u64) * 60);
+    let mut last_tick = std::time::Instant::now()
+        .checked_sub(tick_interval)
+        .unwrap_or_else(std::time::Instant::now);
 
     while !is_shutdown_requested() {
         // Write state file
@@ -243,8 +249,11 @@ pub fn heartbeat_thread(
             }
         }
 
-        if let Err(e) = engine.tick() {
-            warn!("Heartbeat tick failed: {}", e);
+        if last_tick.elapsed() >= tick_interval {
+            if let Err(e) = engine.tick() {
+                warn!("Heartbeat tick failed: {}", e);
+            }
+            last_tick = std::time::Instant::now();
         }
 
         thread::sleep(Duration::from_secs(STATUS_FLUSH_SECONDS));
@@ -706,6 +715,8 @@ pub async fn build_tools(
         }));
     }
 
+    tools.push(Arc::new(crate::tools::calculator::CalculatorTool));
+
     tools.push(Arc::new(crate::tools::file_read::FileReadTool {
         workspace_dir: config.workspace_dir.clone(),
         allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
@@ -724,6 +735,10 @@ pub async fn build_tools(
         workspace_dir: config.workspace_dir.clone(),
         allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
         max_file_size: 10 * 1024 * 1024,
+    }));
+    tools.push(Arc::new(crate::tools::file_delete::FileDeleteTool {
+        workspace_dir: config.workspace_dir.clone(),
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
     }));
 
     tools.push(Arc::new(crate::tools::shell::ShellTool {
@@ -909,6 +924,12 @@ pub async fn build_tools(
             subagent_manager: sm.clone(),
         }));
         tools.push(Arc::new(crate::tools::task_cancel::TaskCancelTool {
+            subagent_manager: sm.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::task_status::TaskStatusTool {
+            subagent_manager: sm.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::task_status::TaskListTool {
             subagent_manager: sm,
         }));
         tools.push(Arc::new(crate::tools::message::MessageTool::new()));
@@ -964,6 +985,9 @@ pub async fn build_tools(
     // Feature 2: Dependency-aware task planning (main agent only)
     if let Some(pm) = plan_manager {
         tools.push(Arc::new(crate::tools::plan_create::PlanCreateTool {
+            plan_manager: pm.clone(),
+        }));
+        tools.push(Arc::new(crate::tools::plan_status::PlanStatusTool {
             plan_manager: pm,
         }));
     }
@@ -1147,6 +1171,7 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         tools,
         memory.clone(),
     ));
+    scheduler.set_session_manager(session_manager.clone());
 
     // Start Inbound Dispatcher
     let bus_clone = bus.clone();
@@ -1214,8 +1239,20 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         crate::dream::dream_thread(state_handle, config_handle, provider_handle, memory_handle);
     });
 
+    // Start Memory Hygiene Thread
+    let state_handle = daemon_state.clone();
+    let config_handle = config.clone();
+    thread::spawn(move || {
+        crate::memory::hygiene::hygiene_thread(state_handle, config_handle);
+    });
+
     // Start Heartbeat
-    let heartbeat_engine = HeartbeatEngine::init(true, 30, &config.workspace_dir, bus.clone());
+    let heartbeat_engine = HeartbeatEngine::init(
+        true,
+        config.reliability.heartbeat_interval_minutes as u32,
+        &config.workspace_dir,
+        bus.clone(),
+    );
     let ds_clone = daemon_state.clone();
     let config_clone = config.clone();
     thread::spawn(move || heartbeat_thread(config_clone, ds_clone, heartbeat_engine));

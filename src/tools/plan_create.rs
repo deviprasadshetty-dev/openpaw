@@ -64,10 +64,6 @@ impl Tool for PlanCreateTool {
                         "required": ["id", "description"]
                     },
                     "minItems": 1
-                },
-                "plan_id": {
-                    "type": "integer",
-                    "description": "If provided, return the status of an existing plan instead of creating a new one"
                 }
             }
         }"#
@@ -75,14 +71,6 @@ impl Tool for PlanCreateTool {
     }
 
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
-        // Status check mode
-        if let Some(plan_id) = args.get("plan_id").and_then(|v| v.as_u64()) {
-            return match self.plan_manager.get_status(plan_id) {
-                Some(status) => Ok(ToolResult::ok(status)),
-                None => Ok(ToolResult::fail(format!("Plan {} not found.", plan_id))),
-            };
-        }
-
         let goal = match args.get("goal").and_then(|v| v.as_str()) {
             Some(g) if !g.trim().is_empty() => g.trim().to_string(),
             _ => return Ok(ToolResult::fail("Missing or empty 'goal' parameter")),
@@ -138,7 +126,7 @@ impl Tool for PlanCreateTool {
             Ok(plan_id) => Ok(ToolResult::ok(format!(
                 "📋 Plan {} created and started for: \"{}\"\n\
                  Tasks are executing in the background. Progress updates will appear in this channel.\n\
-                 Use plan_create with plan_id={} to check status.",
+                 Use plan_status with plan_id={} to check status.",
                 plan_id, goal, plan_id
             ))),
             Err(e) => Ok(ToolResult::fail(format!("Failed to create plan: {}", e))),

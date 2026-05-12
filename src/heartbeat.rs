@@ -99,22 +99,37 @@ impl HeartbeatEngine {
                 let task_part = line[5..].trim();
                 if let Some(at_idx) = task_part.find("@every") {
                     let description = task_part[..at_idx].trim();
-                    let interval_str = task_part[at_idx + 6..].trim();
+                    let schedule_part = task_part[at_idx + 6..].trim();
+                    let (interval_str, target) = if let Some(to_idx) = schedule_part.find("@to") {
+                        (
+                            schedule_part[..to_idx].trim(),
+                            parse_target(schedule_part[to_idx + 3..].trim()),
+                        )
+                    } else {
+                        (schedule_part, None)
+                    };
 
                     if let Ok(interval_secs) = crate::cron::parse_duration(interval_str) {
                         let last_run = state.last_runs.get(description).cloned().unwrap_or(0);
                         if now >= last_run + (interval_secs as u64) {
+                            let Some((channel, chat_id)) = target.clone() else {
+                                warn!(
+                                    "Skipping heartbeat task without a routable target: {}. Add `@to <channel>:<chat_id>`.",
+                                    description
+                                );
+                                continue;
+                            };
                             info!("Heartbeat triggering proactive task: {}", description);
 
                             let msg = InboundMessage {
-                                channel: "internal".to_string(),
+                                channel: channel.clone(),
                                 sender_id: "heartbeat".to_string(),
-                                chat_id: "proactive".to_string(),
+                                chat_id: chat_id.clone(),
                                 content: format!(
                                     "PROACTIVE TASK CHECK: {}\n\nPlease check on this and take any necessary action.",
                                     description
                                 ),
-                                session_key: "internal:proactive".to_string(),
+                                session_key: format!("{}:{}", channel, chat_id),
                                 media: Vec::new(),
                                 metadata_json: None,
                             };
@@ -140,4 +155,15 @@ impl HeartbeatEngine {
             task_count: tasks_triggered,
         })
     }
+}
+
+fn parse_target(raw: &str) -> Option<(String, String)> {
+    let trimmed = raw.trim();
+    let (channel, chat_id) = trimmed.split_once(':')?;
+    let channel = channel.trim();
+    let chat_id = chat_id.trim();
+    if channel.is_empty() || chat_id.is_empty() {
+        return None;
+    }
+    Some((channel.to_string(), chat_id.to_string()))
 }

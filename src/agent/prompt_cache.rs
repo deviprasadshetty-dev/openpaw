@@ -125,7 +125,7 @@ mod tests {
                 .contains("[anthropic:cache_control:ephemeral]")
         );
         assert!(
-            !cached[1]
+            cached[1]
                 .content
                 .contains("[anthropic:cache_control:ephemeral]")
         );

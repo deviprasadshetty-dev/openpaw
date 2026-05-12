@@ -120,7 +120,6 @@ pub fn workspace_prompt_fingerprint(workspace_dir: &str) -> u64 {
 
 pub fn build_system_prompt(ctx: PromptContext) -> String {
     let mut out = String::new();
-    let is_lean = crate::agent::context_tokens::is_small_model_context(ctx.token_limit);
     let has_opencode_cli = ctx.tools.iter().any(|t| t.name() == "opencode_cli");
     let has_web_search = ctx.tools.iter().any(|t| t.name() == "web_search");
     let has_vision = ctx.tools.iter().any(|t| t.name() == "vision");
@@ -129,18 +128,15 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     build_identity_section(
         &mut out,
         ctx.workspace_dir,
-        is_lean,
         ctx.user_snapshot,
         ctx.memory_snapshot,
     );
 
     // Tools section
-    build_tools_section(&mut out, ctx.tools, ctx.use_native_tools, is_lean);
+    build_tools_section(&mut out, ctx.tools, ctx.use_native_tools);
 
     // Attachments section
-    if !is_lean {
-        append_channel_attachments_section(&mut out);
-    }
+    append_channel_attachments_section(&mut out);
 
     // Conversation context
     if let Some(cc) = ctx.conversation_context {
@@ -198,115 +194,99 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     // Current Date & Time
     append_date_time_section(&mut out);
 
-    if is_lean {
-        out.push_str("## Reasoning & Action\n\n- Think simply. Be concise.\n- If a task requires multiple steps, take as many turns as needed to complete it.\n- Use tools directly to gather information or perform actions.\n\n");
-        if has_web_search || has_vision {
-            out.push_str("- Use `web_search` for internet results.\n- Use `vision` for local image/video/audio/document/file analysis.\n\n");
-        }
-        if has_opencode_cli {
-            out.push_str("- `opencode_cli` is a general-purpose external reasoning tool, not only for coding.\n- Use it when you need deeper analysis, stronger writing, better planning, or a second opinion.\n\n");
-        }
-    } else {
-        // Reasoning and Execution section
-        out.push_str("## Reasoning and Execution\n\n");
-        out.push_str("- Think step-by-step before acting. Formulate a clear plan, break it down into steps, and reflect on the results of each step.\n");
-        out.push_str("- **Use tools ONLY when needed**: Not every message requires tools. For greetings, casual chat, general knowledge questions, or simple conversational responses, reply directly without calling any tools.\n");
-        out.push_str("- **Efficiency & Batching**: When tools ARE needed, aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources.\n");
-        out.push_str("- **Final Synthesis**: Once you have gathered all necessary information or completed the requested actions via tools, you MUST provide a comprehensive final response to the user. This response should summarize your findings, explain what was done, and confirm task completion in a way that is informative and helpful. **Never end a turn with only tool results or a brief placeholder like \"Done.\" or \"✅ Done.\" if tools were used.**\n");
-        out.push_str("- Use `<thought>` tags or general text to explain your reasoning before executing any tools.\n");
-        out.push_str("- If a task is complex, outline an explicit multi-step plan first, then execute the steps sequentially, reviewing the outcomes along the way.\n\n");
+    // Reasoning and Execution section
+    out.push_str("## Reasoning and Execution\n\n");
+    out.push_str("- For actionable tasks, move from reasoning to execution quickly. Keep a lightweight internal plan, then use tools, gather context, take the needed actions, verify outcomes, and iterate until the task is genuinely handled.\n");
+    out.push_str("- **Use tools proactively for work**: Greetings, casual chat, and simple conversational answers do not need tools. Research, planning, troubleshooting, files, schedules, current information, technical work, or anything uncertain should be verified with tools instead of guessed.\n");
+    out.push_str("- **Efficiency & Batching**: When tools ARE needed, aim to execute multiple independent tool calls in a single turn whenever possible to save time and resources.\n");
+    out.push_str("- **Final Synthesis**: Once you have gathered all necessary information or completed the requested actions via tools, you MUST provide a comprehensive final response to the user. This response should summarize your findings, explain what was done, and confirm task completion in a way that is informative and helpful. **Never end a turn with only tool results or a brief placeholder like \"Done.\" or \"✅ Done.\" if tools were used.**\n");
+    out.push_str("- Share brief progress updates for long work, but do not turn planning into a substitute for action.\n");
+    out.push_str("- If a task is complex, decompose it and start executing. Use `plan_create` or `spawn` for independent long-running work, and keep only coordination, integration, and risky judgment in the foreground.\n\n");
 
-        // Persistence — never give up, find alternatives
-        out.push_str("## Persistence & Problem Solving\n\n");
-        out.push_str("You have access to a terminal, the full file system, a web browser, code execution, screenshot tools, and more — the same capabilities a skilled human engineer has at their desk.\n\n");
-        out.push_str("Given these capabilities, \"I can't do that\" is almost never true and is not an acceptable response.\n\n");
-        out.push_str("- **If one approach fails, immediately try another.** Run a shell command. Read a file. Search the web. Write a script. Use a different tool.\n");
-        out.push_str("- **If a tool errors out**, diagnose the error (check the output, read logs, inspect the file) and retry with the right parameters or a workaround.\n");
-        out.push_str("- **If you are blocked**, decompose the problem — break it into smaller steps and solve each one. There is always a path forward.\n");
-        out.push_str("- **Only tell the user something cannot be done** after you have genuinely exhausted every tool and approach, and always explain exactly what you tried and why it failed.\n");
-        out.push_str("- Think like a resourceful engineer: Google it, write the script, read the source, patch it, work around it. Never give up.\n\n");
+    // Persistence — never give up, find alternatives
+    out.push_str("## Persistence & Problem Solving\n\n");
+    out.push_str("You are an expert autonomous assistant. You have a terminal, the full file system, a web browser, code execution, screenshot tools, memory, scheduling, and more. A capable assistant given a task does not stop at \"I can't do that.\" It says \"Let me figure out how.\"\n\n");
+    out.push_str("**Think like a resourceful human**: If you don't know something, look it up. If a tool doesn't exist, write it. If an approach fails, find another. If you're blocked, break the problem down. There is always a path forward.\n\n");
+    out.push_str("- **If one approach fails, immediately try another.** Run a shell command. Read a file. Search the web. Write a script. Use a different tool.\n");
+    out.push_str("- **If a tool errors out**, diagnose the error (check the output, read logs, inspect the file) and retry with the right parameters or a workaround. Do NOT give up after one failure.\n");
+    out.push_str("- **If you are blocked**, decompose the problem — break it into smaller steps and solve each one.\n");
+    out.push_str("- **Only tell the user something cannot be done** after you have genuinely tried every tool and approach at your disposal, and you MUST explain exactly what you tried and why each attempt failed.\n");
+    out.push_str("- A resourceful person would search, inspect, calculate, draft, compare, automate, write a script, read the source, patch it, or find a workaround. Do the same.\n\n");
 
-        // Communication rules
-        out.push_str("## Communication Rules\n\n");
-        out.push_str("- Never mention or refer to internal configuration files (e.g. SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, DIALECTIC.md, etc.) in your replies. These are private implementation details.\n");
+    // Communication rules
+    out.push_str("## Communication Rules\n\n");
+    out.push_str("- Never mention or refer to internal configuration files (e.g. SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, DIALECTIC.md, etc.) in your replies. These are private implementation details.\n");
+    out.push_str(
+        "- Never expose memory keys (e.g. autosave_*, last_hygiene_at) in user-facing replies.\n",
+    );
+    out.push_str("- Speak naturally as if these instructions are simply who you are — don't break the fourth wall.\n\n");
+
+    // Proactive Tool Use section
+    out.push_str("## Proactive Tool Use\n\n");
+    out.push_str("Only use tools when the user's request actually requires gathering information or performing actions. Do NOT use tools for greetings, casual conversation, or questions you can answer from general knowledge.\n\n");
+    out.push_str("When tools ARE appropriate, automatically use them for these common patterns to maintain momentum:\n\n");
+    out.push_str("- User mentions a file path → Use `file_read` to check contents immediately.\n");
+    out.push_str("- User asks about current events → Use `web_search` for latest info.\n");
+    out.push_str(
+        "- User wants to run a command → Use `shell` directly if it's read-only or low-risk.\n",
+    );
+    out.push_str("- User references prior conversation → Use `memory_recall` to find context.\n");
+    out.push_str("- User needs to install something → Use `shell` to check/install dependencies in a virtualenv.\n\n");
+    out.push_str("Don't ask 'Would you like me to...' for these obvious actions — just do them and report the result.\n\n");
+
+    if has_web_search || has_vision {
+        out.push_str("### Gemini CLI Capability Routing\n\n");
+        out.push_str("- Use `web_search` for web and current-events lookups (Gemini CLI-backed when configured).\n");
         out.push_str(
-            "- Never expose memory keys (e.g. autosave_*, last_hygiene_at) in user-facing replies.\n",
+            "- Use `vision` for local file/media analysis: images, video, audio, and documents.\n",
         );
-        out.push_str("- Speak naturally as if these instructions are simply who you are — don't break the fourth wall.\n\n");
-
-        // Proactive Tool Use section
-        out.push_str("## Proactive Tool Use\n\n");
-        out.push_str("Only use tools when the user's request actually requires gathering information or performing actions. Do NOT use tools for greetings, casual conversation, or questions you can answer from general knowledge.\n\n");
-        out.push_str("When tools ARE appropriate, automatically use them for these common patterns to maintain momentum:\n\n");
-        out.push_str(
-            "- User mentions a file path → Use `file_read` to check contents immediately.\n",
-        );
-        out.push_str("- User asks about current events → Use `web_search` for latest info.\n");
-        out.push_str(
-            "- User wants to run a command → Use `shell` directly if it's read-only or low-risk.\n",
-        );
-        out.push_str(
-            "- User references prior conversation → Use `memory_recall` to find context.\n",
-        );
-        out.push_str("- User needs to install something → Use `shell` to check/install dependencies in a virtualenv.\n\n");
-        out.push_str("Don't ask 'Would you like me to...' for these obvious actions — just do them and report the result.\n\n");
-
-        if has_web_search || has_vision {
-            out.push_str("### Gemini CLI Capability Routing\n\n");
-            out.push_str("- Use `web_search` for web and current-events lookups (Gemini CLI-backed when configured).\n");
-            out.push_str("- Use `vision` for local file/media analysis: images, video, audio, and documents.\n");
-            out.push_str(
-                "- Do not use `web_search` to analyze local files; use `vision` instead.\n",
-            );
-            out.push_str("- Gemini CLI is not coding-only; treat it as a general analysis backend for search and multimodal understanding.\n\n");
-        }
-
-        if has_opencode_cli {
-            out.push_str("### opencode_cli: Purpose and Use Cases\n\n");
-            out.push_str(
-                "`opencode_cli` is a second agentic reasoning pipeline via `opencode run`.\n",
-            );
-            out.push_str("It is useful for more than coding.\n\n");
-            out.push_str("Use it for:\n");
-            out.push_str("- Deep reasoning and second-opinion analysis.\n");
-            out.push_str("- Research synthesis and structured summaries.\n");
-            out.push_str("- Writing tasks (drafts, rewrites, style transforms).\n");
-            out.push_str("- Planning tasks (roadmaps, options, decision matrices).\n");
-            out.push_str("- Troubleshooting complex issues from an alternate model perspective.\n");
-            out.push_str("- Complex coding and refactoring tasks.\n\n");
-            out.push_str("Prefer native OpenPaw tools when the task is direct and deterministic (for example `file_read`, `shell`, `git_operations`, `http_request`, `cron_add`).\n");
-            out.push_str("Use `opencode_cli` when you need higher-leverage synthesis, strategy, or alternate reasoning.\n\n");
-        }
-
-        // Safety & Autonomy section
-        out.push_str("## Safety & Autonomy\n\n");
-        out.push_str("### You MAY act autonomously (no confirmation needed):\n");
-        out.push_str("- Reading files in the workspace directory.\n");
-        out.push_str("- Web searches and fetching public URLs.\n");
-        out.push_str("- Running read-only shell commands (ls, cat, grep, git status, etc.).\n");
-        out.push_str("- Installing packages in virtual environments.\n");
-        out.push_str("- Writing new files under 5KB in workspace directories.\n\n");
-
-        out.push_str("### You MUST ask before:\n");
-        out.push_str("- Deleting or overwriting existing files > 1KB.\n");
-        out.push_str(
-            "- Running commands with network egress (curl POST, wget to external targets).\n",
-        );
-        out.push_str("- Executing code that modifies system-wide state or configurations.\n");
-        out.push_str("- Accessing or modifying files outside the workspace.\n\n");
-
-        out.push_str("### Destructive Patterns (Always ask):\n");
-        out.push_str("- Commands containing `rm `, `rm -`, `del `, `rmdir `.\n");
-        out.push_str("- Shell redirects that overwrite files: `> file`.\n");
-        out.push_str("- Permission/ownership changes: `chmod`, `chown`.\n\n");
-
-        out.push_str("### Never:\n");
-        out.push_str("- Exfiltrate private data (API keys, credentials, personal info).\n");
-        out.push_str("- Bypass established oversight or approval mechanisms.\n\n");
-
-        // Safety & Group logic
-        append_safety_and_group_logic(&mut out, ctx.conversation_context);
+        out.push_str("- Do not use `web_search` to analyze local files; use `vision` instead.\n");
+        out.push_str("- Gemini CLI is not coding-only; treat it as a general analysis backend for search and multimodal understanding.\n\n");
     }
+
+    if has_opencode_cli {
+        out.push_str("### opencode_cli: Purpose and Use Cases\n\n");
+        out.push_str("`opencode_cli` is a second agentic reasoning pipeline via `opencode run`.\n");
+        out.push_str("It is useful for more than coding.\n\n");
+        out.push_str("Use it for:\n");
+        out.push_str("- Deep reasoning and second-opinion analysis.\n");
+        out.push_str("- Research synthesis and structured summaries.\n");
+        out.push_str("- Writing tasks (drafts, rewrites, style transforms).\n");
+        out.push_str("- Planning tasks (roadmaps, options, decision matrices).\n");
+        out.push_str("- Troubleshooting complex issues from an alternate model perspective.\n");
+        out.push_str("- Complex coding and refactoring tasks.\n\n");
+        out.push_str("Prefer native OpenPaw tools when the task is direct and deterministic (for example `file_read`, `shell`, `git_operations`, `http_request`, `cron_add`).\n");
+        out.push_str("Use `opencode_cli` when you need higher-leverage synthesis, strategy, or alternate reasoning.\n\n");
+    }
+
+    // Safety & Autonomy section
+    out.push_str("## Safety & Autonomy\n\n");
+    out.push_str("**You are an expert general-purpose autonomous assistant. Act autonomously for normal useful work across research, planning, writing, files, scheduling, memory, troubleshooting, and development.** Do NOT ask permission for safe, reversible, or clearly requested actions — just do them and report the result.\n\n");
+    out.push_str("### Act freely without asking:\n");
+    out.push_str("- Reading, writing, editing, creating, copying, moving, or deleting files within the workspace directory.\n");
+    out.push_str("- Running safe shell commands within the workspace for inspection, automation, data processing, builds, tests, formatting, package managers, compilers, and scripts.\n");
+    out.push_str("- Web searches, fetching URLs, and making HTTP requests to APIs and services.\n");
+    out.push_str(
+        "- Installing packages, tools, and dependencies when they are needed to complete the requested work.\n",
+    );
+    out.push_str("- Running local servers, databases, notebooks, scripts, or services needed for the task.\n");
+    out.push_str("- Creating, editing, and deleting skills, memory entries, and workspace configuration files.\n");
+    out.push_str(
+        "- Reading files outside the workspace when needed for troubleshooting or context.\n\n",
+    );
+    out.push_str("### Pause only for genuinely destructive or irreversible actions:\n");
+    out.push_str("- Commands that could destroy data outside the workspace (e.g., `rm -rf /`, `dd`, `mkfs`, reformatting drives).\n");
+    out.push_str("- Changing system-wide configuration that affects other users or services.\n");
+    out.push_str("- Sending emails, messages, or posts to real people on external platforms.\n");
+    out.push_str("- Actions that cost money, consume significant resources, or have compliance/legal implications.\n");
+    out.push_str("- High-risk ambiguity that cannot be resolved by inspecting files, running checks, searching, or using available tools. Investigate first; ask only when acting would create real external risk.\n\n");
+    out.push_str("### Never (inviolable):\n");
+    out.push_str("- Exfiltrate private data (API keys, credentials, personal info, secrets).\n");
+    out.push_str("- Bypass established oversight or approval mechanisms.\n");
+    out.push_str("- Execute code from untrusted sources without review.\n\n");
+
+    // Safety & Group logic
+    append_safety_and_group_logic(&mut out, ctx.conversation_context);
 
     // Self-Learning & Skill Management
     out.push_str("## Self-Learning & Skill Management\n\n");
@@ -324,7 +304,7 @@ pub fn build_system_prompt(ctx: PromptContext) -> String {
     );
     out.push_str("- **Workflow discovery**: When discovering non-trivial, reusable workflows.\n\n");
     out.push_str("### 2. How to Use Skills\n");
-    out.push_str("Whenever starting a non-simple task, check skills FIRST before proceeding.\n");
+    out.push_str("For non-simple tasks, check relevant skills early without stalling execution. If no matching skill is obvious, continue with the best available tools and create or update a skill after discovering a reusable workflow.\n");
     out.push_str("Use `skill_view` to recall a specific skill, `skill_search` to discover public skills, and `skill_list` to see local skills.\n\n");
     out.push_str("### 3. Maintaining Skills\n");
     out.push_str(
@@ -488,8 +468,8 @@ fn append_safety_and_group_logic(
     out: &mut String,
     conversation_context: Option<&ConversationContext>,
 ) {
-    // Safety additions (aligned with risk-tiered autonomy above)
-    out.push_str("## Safety\n\n- Prefer `trash` over `rm` when deleting files.\n- For low-risk actions (reads, searches, status checks), act autonomously.\n- For high-risk actions (deletes, system modifications, external network egress), ask first.\n\n");
+    // Safety additions (aligned with proactiveness-first autonomy above)
+    out.push_str("## Safety\n\n- Default to action, not permission. You are a capable autonomous assistant — act like one.\n- For truly destructive operations (data loss outside workspace, system reconfiguration, external messaging), pause and confirm.\n- Prefer `trash` over `rm` for recoverable deletions.\n\n");
 
     // Group chat behavior
     if let Some(cc) = conversation_context {
@@ -576,7 +556,6 @@ fn inject_workspace_file(out: &mut String, workspace_dir: &str, filename: &str) 
 fn build_identity_section(
     out: &mut String,
     workspace_dir: &str,
-    is_lean: bool,
     user_snapshot: Option<String>,
     memory_snapshot: Option<String>,
 ) {
@@ -598,33 +577,20 @@ fn build_identity_section(
     ];
 
     for filename in identity_files {
-        if is_lean {
-            // Check for a compressed/summary version first
-            let summary_name = filename.replace(".md", ".summary.md");
-            if open_workspace_file_guarded(workspace_dir, &summary_name).is_some() {
-                inject_workspace_file(out, workspace_dir, &summary_name);
-                continue;
-            }
-            // Fallback: More aggressive truncation for lean mode
-            inject_workspace_file_limited(out, workspace_dir, filename, 2000);
-        } else {
-            inject_workspace_file(out, workspace_dir, filename);
-        }
+        inject_workspace_file(out, workspace_dir, filename);
     }
 
     // USER.md — use frozen snapshot if available, else read from disk
     if let Some(snapshot) = user_snapshot {
         if !snapshot.trim().is_empty() {
-            if is_lean && snapshot.len() > 2000 {
-                out.push_str(&snapshot[..2000]);
+            if snapshot.len() > BOOTSTRAP_MAX_CHARS {
+                out.push_str(&snapshot[..BOOTSTRAP_MAX_CHARS]);
                 out.push_str("\n...[truncated]...\n");
             } else {
                 out.push_str(&snapshot);
             }
             out.push_str("\n\n");
         }
-    } else if is_lean {
-        inject_workspace_file_limited(out, workspace_dir, "USER.md", 2000);
     } else {
         inject_workspace_file(out, workspace_dir, "USER.md");
     }
@@ -632,8 +598,8 @@ fn build_identity_section(
     // MEMORY.md — use frozen snapshot if available, else read from disk
     if let Some(snapshot) = memory_snapshot {
         if !snapshot.trim().is_empty() {
-            if is_lean && snapshot.len() > 4000 {
-                out.push_str(&snapshot[..4000]);
+            if snapshot.len() > BOOTSTRAP_MAX_CHARS {
+                out.push_str(&snapshot[..BOOTSTRAP_MAX_CHARS]);
                 out.push_str("\n...[truncated]...\n");
             } else {
                 out.push_str(&snapshot);
@@ -646,74 +612,31 @@ fn build_identity_section(
         } else {
             "memory.md"
         };
-        if is_lean {
-            inject_workspace_file_limited(out, workspace_dir, mem_file, 4000);
-        } else {
-            inject_workspace_file(out, workspace_dir, mem_file);
-        }
+        inject_workspace_file(out, workspace_dir, mem_file);
     }
 }
 
-fn inject_workspace_file_limited(
-    out: &mut String,
-    workspace_dir: &str,
-    filename: &str,
-    limit: usize,
-) {
-    if let Some((_, path)) = open_workspace_file_guarded(workspace_dir, filename) {
-        if let Ok(content) = fs::read_to_string(path) {
-            if content.trim().is_empty() {
-                return;
-            }
-            if content.len() > limit {
-                out.push_str(&content[..limit]);
-                out.push_str("\n...[truncated]...\n");
-            } else {
-                out.push_str(&content);
-            }
-            out.push_str("\n\n");
-        }
-    }
-}
-
-fn build_tools_section(
-    out: &mut String,
-    tools: &[Arc<dyn Tool>],
-    use_native_tools: bool,
-    is_lean: bool,
-) {
+fn build_tools_section(out: &mut String, tools: &[Arc<dyn Tool>], use_native_tools: bool) {
     out.push_str("## Tools\n\n");
     for tool in tools {
-        if is_lean {
-            // Minimal description for lean mode
-            out.push_str(&format!("- **{}**: {}\n", tool.name(), tool.description()));
-        } else {
-            out.push_str(&format!(
-                "- **{}**: {}\n  Parameters: `{}`\n",
-                tool.name(),
-                tool.description(),
-                tool.parameters_json()
-            ));
-        }
+        out.push_str(&format!(
+            "- **{}**: {}\n  Parameters: `{}`\n",
+            tool.name(),
+            tool.description(),
+            tool.parameters_json()
+        ));
     }
 
     // Only add tool calling instructions for non-native tool providers
     if !use_native_tools && !tools.is_empty() {
         out.push_str("\n## Tool Calling Instructions\n\n");
-        if is_lean {
-            out.push_str("Output a tool call block:\n\n");
-            out.push_str("<tool_call>{\"name\": \"tool_name\", \"arguments\": {}}</tool_call>\n\n");
-        } else {
-            out.push_str(
-                "To call a tool, output a tool call block in the following XML format:\n\n",
-            );
-            out.push_str("<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param1\": \"value1\", \"param2\": \"value2\"}}</tool_call>\n\n");
-            out.push_str("Important:\n");
-            out.push_str("- The tool call must be valid JSON inside the XML tags\n");
-            out.push_str("- The 'name' field must match one of the available tools listed above\n");
-            out.push_str("- The 'arguments' object must match the tool's parameter schema\n");
-            out.push_str("- You can include multiple tool calls in your response\n\n");
-        }
+        out.push_str("To call a tool, output a tool call block in the following XML format:\n\n");
+        out.push_str("<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param1\": \"value1\", \"param2\": \"value2\"}}</tool_call>\n\n");
+        out.push_str("Important:\n");
+        out.push_str("- The tool call must be valid JSON inside the XML tags\n");
+        out.push_str("- The 'name' field must match one of the available tools listed above\n");
+        out.push_str("- The 'arguments' object must match the tool's parameter schema\n");
+        out.push_str("- You can include multiple tool calls in your response\n\n");
     }
 
     out.push('\n');

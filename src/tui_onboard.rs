@@ -1177,7 +1177,11 @@ impl App {
         }
         if key.code == KeyCode::Enter {
             let key_val = self.inputs[0].value().to_string();
-            self.config.tinfish_api_key = Some(if key_val.is_empty() { None } else { Some(key_val) });
+            self.config.tinfish_api_key = Some(if key_val.is_empty() {
+                None
+            } else {
+                Some(key_val)
+            });
             self.advance_step();
         } else if key.code == KeyCode::Esc {
             self.advance_step();

@@ -45,6 +45,7 @@ pub struct PlanExecution {
     pub task_map: HashMap<String, u64>,
     /// Maps plan task id -> final status
     pub task_outcomes: HashMap<String, TaskStatus>,
+    pub final_review: Option<String>,
 }
 
 pub struct PlanManager {
@@ -158,6 +159,7 @@ impl PlanManager {
             completed_at: None,
             task_map: HashMap::new(),
             task_outcomes: HashMap::new(),
+            final_review: None,
         };
 
         self.plans
@@ -175,6 +177,8 @@ impl PlanManager {
         tokio::spawn(async move {
             let total_batches = batches.len();
             let total_tasks: usize = batches.iter().map(|b| b.len()).sum();
+            let mut spawned_task_ids: Vec<u64> = Vec::new();
+            let mut timed_out = false;
 
             let start_msg = format!(
                 "📋 Plan {} started: \"{}\"\n{} tasks in {} batch(es)",
@@ -226,6 +230,7 @@ impl PlanManager {
                         task.agent_id.as_deref(),
                     ) {
                         Ok(sub_id) => {
+                            spawned_task_ids.push(sub_id);
                             // Record the mapping
                             if let Ok(mut guard) = plans_clone.lock() {
                                 if let Some(plan) = guard.get_mut(&plan_id) {
@@ -280,20 +285,52 @@ impl PlanManager {
                     };
                     if now_secs().saturating_sub(started) > 7200 {
                         warn!("Plan {} timed out", plan_id);
+                        timed_out = true;
                         any_failed = true;
+                        for sub_id in &spawned_task_ids {
+                            if matches!(
+                                sm.get_task_status(*sub_id),
+                                Some(TaskStatus::Queued | TaskStatus::Running)
+                            ) {
+                                let _ = sm.cancel_task(*sub_id);
+                            }
+                        }
                         break 'outer;
                     }
                 }
             }
 
+            let final_review = if timed_out {
+                Some(
+                    "Plan timed out; running or queued child tasks were cancelled before finalization."
+                        .to_string(),
+                )
+            } else {
+                run_final_review(
+                    plan_id,
+                    &goal_str,
+                    &task_lookup,
+                    &plans_clone,
+                    &sm,
+                    &origin_channel,
+                    &origin_chat_id,
+                )
+                .await
+            };
+            if final_review.is_none() {
+                any_failed = true;
+            }
+
             // Finalize plan
-            let final_status = if any_failed {
+            let final_status = if timed_out {
+                PlanStatus::Failed
+            } else if any_failed {
                 PlanStatus::PartialFailure
             } else {
                 PlanStatus::Completed
             };
 
-            let final_msg = if final_status == PlanStatus::Completed {
+            let mut final_msg = if final_status == PlanStatus::Completed {
                 format!("✅ Plan {} completed: \"{}\"", plan_id, goal_str)
             } else {
                 format!(
@@ -301,6 +338,10 @@ impl PlanManager {
                     plan_id, goal_str
                 )
             };
+            if let Some(review) = &final_review {
+                final_msg.push_str("\n\nFinal review:\n");
+                final_msg.push_str(review);
+            }
             let _ =
                 bus.publish_outbound(make_outbound(&origin_channel, &origin_chat_id, &final_msg));
 
@@ -308,6 +349,7 @@ impl PlanManager {
                 if let Some(plan) = guard.get_mut(&plan_id) {
                     plan.status = final_status;
                     plan.completed_at = Some(now_secs());
+                    plan.final_review = final_review.clone();
                 }
             }
         });
@@ -333,7 +375,7 @@ impl PlanManager {
             .map(|(id, s)| format!("{}: {:?}", id, s))
             .collect();
 
-        Some(format!(
+        let mut summary = format!(
             "Plan {} — \"{}\"\nStatus: {}\nTasks: {}",
             plan_id,
             plan.goal,
@@ -343,8 +385,116 @@ impl PlanManager {
             } else {
                 outcomes.join(", ")
             }
-        ))
+        );
+
+        if let Some(review) = &plan.final_review {
+            summary.push_str("\n\nFinal review:\n");
+            summary.push_str(review);
+        }
+
+        Some(summary)
     }
+}
+
+async fn run_final_review(
+    plan_id: u64,
+    goal: &str,
+    task_lookup: &HashMap<String, PlanTask>,
+    plans: &Arc<Mutex<HashMap<u64, PlanExecution>>>,
+    subagent_manager: &Arc<SubagentManager>,
+    origin_channel: &str,
+    origin_chat_id: &str,
+) -> Option<String> {
+    let snapshot = {
+        let guard = plans.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&plan_id).cloned()
+    }?;
+
+    let mut report = String::new();
+    report.push_str(&format!("Goal: {}\n\n", goal));
+    report.push_str("Child task results:\n");
+
+    for (task_id, task) in task_lookup {
+        let sub_id = snapshot.task_map.get(task_id).copied();
+        let outcome = snapshot
+            .task_outcomes
+            .get(task_id)
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|| "Unknown".to_string());
+        let result = sub_id
+            .and_then(|id| subagent_manager.get_task_result(id))
+            .unwrap_or_else(|| "(no result captured)".to_string());
+        report.push_str(&format!(
+            "\n## {} (subagent: {:?}, status: {})\nTask: {}\nResult:\n{}\n",
+            task_id,
+            sub_id,
+            outcome,
+            task.description,
+            truncate_for_review(&result, 6000)
+        ));
+    }
+
+    let review_prompt = format!(
+        "You are the final reviewer and integrator for plan {}.\n\n\
+Review the child task outputs below. Verify the work as much as your tools allow. \
+If this is a code task, inspect relevant files and run focused tests/checks when practical. \
+Then produce one concise final integration report with:\n\
+1. What was completed.\n\
+2. What was verified.\n\
+3. Any failures, gaps, or follow-up needed.\n\
+4. A clear final status: success, partial, or failed.\n\n\
+Do not delegate this review further. Do not promise future work.\n\n{}",
+        plan_id, report
+    );
+
+    let label = format!("plan-{}-final-review", plan_id);
+    let review_id = match subagent_manager.spawn_with_agent_silent(
+        &review_prompt,
+        &label,
+        origin_channel,
+        origin_chat_id,
+        None,
+    ) {
+        Ok(id) => id,
+        Err(e) => return Some(format!("Final review could not be started: {}", e)),
+    };
+
+    let started = now_secs();
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        match subagent_manager.get_task_status(review_id) {
+            Some(TaskStatus::Completed) => {
+                return subagent_manager.get_task_result(review_id).or_else(|| {
+                    Some("Final review completed without captured output.".to_string())
+                });
+            }
+            Some(TaskStatus::Failed | TaskStatus::Cancelled) => {
+                return Some(format!(
+                    "Final review task {} did not complete successfully.",
+                    review_id
+                ));
+            }
+            Some(TaskStatus::Queued | TaskStatus::Running) => {}
+            None => return Some(format!("Final review task {} disappeared.", review_id)),
+        }
+
+        if now_secs().saturating_sub(started) > 1800 {
+            let _ = subagent_manager.cancel_task(review_id);
+            return Some(format!(
+                "Final review task {} timed out and was cancelled.",
+                review_id
+            ));
+        }
+    }
+}
+
+fn truncate_for_review(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    let mut out: String = input.chars().take(max_chars).collect();
+    out.push_str("\n...[truncated]...");
+    out
 }
 
 fn now_secs() -> u64 {

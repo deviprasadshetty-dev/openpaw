@@ -858,12 +858,9 @@ pub fn auto_compact_history_legacy(
     let start = if has_system { 1 } else { 0 };
     let non_system_count = history.len() - start;
 
-    let is_small = crate::agent::context_tokens::is_small_model_context(config.token_limit);
     let count_trigger = non_system_count > config.max_history_messages as usize;
 
-    let threshold_num = if is_small { 1 } else { 3 };
-    let threshold_den = if is_small { 2 } else { 4 };
-    let token_threshold = (config.token_limit * threshold_num) / threshold_den;
+    let token_threshold = (config.token_limit * 3) / 4;
 
     let token_trigger = config.token_limit > 0
         && crate::token_estimator::estimate_history_tokens_rough(history) > token_threshold;

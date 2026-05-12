@@ -1,9 +1,12 @@
 use crate::bus::{Bus, InboundMessage, OutboundMessage};
 use crate::config::Config;
+use crate::session::SessionManager;
 use crate::streaming::OutboundStage;
+use crate::tools::process_util;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -140,6 +143,9 @@ pub struct CronScheduler {
     pub next_run_id: Arc<Mutex<u64>>,
     /// Tracks IDs of jobs currently executing to prevent concurrent duplicate runs.
     running_jobs: Arc<Mutex<HashSet<String>>>,
+    session_manager: Arc<Mutex<Option<Arc<SessionManager>>>>,
+    agent_timeout_secs: u64,
+    workspace_dir: String,
 }
 
 use std::fs;
@@ -152,9 +158,17 @@ impl CronScheduler {
             bus: bus.clone(),
             next_run_id: Arc::new(Mutex::new(1)),
             running_jobs: Arc::new(Mutex::new(HashSet::new())),
+            session_manager: Arc::new(Mutex::new(None)),
+            agent_timeout_secs: _config.scheduler.agent_timeout_secs,
+            workspace_dir: _config.workspace_dir.clone(),
         };
         scheduler.load();
         scheduler
+    }
+
+    pub fn set_session_manager(&self, session_manager: Arc<SessionManager>) {
+        let mut guard = self.session_manager.lock().unwrap();
+        *guard = Some(session_manager);
     }
 
     pub fn load(&self) {
@@ -270,6 +284,9 @@ impl CronScheduler {
             bus: self.bus.clone(),
             next_run_id: self.next_run_id.clone(),
             running_jobs: self.running_jobs.clone(),
+            session_manager: self.session_manager.clone(),
+            agent_timeout_secs: self.agent_timeout_secs,
+            workspace_dir: self.workspace_dir.clone(),
         }
     }
 
@@ -305,39 +322,44 @@ impl CronScheduler {
 
         let (success, output) = match job.job_type {
             JobType::Shell => {
-                // Cross-platform shell execution
-                let output = if cfg!(windows) {
-                    tokio::process::Command::new("cmd")
-                        .arg("/c")
-                        .arg(&job.command)
-                        .output()
-                        .await
-                } else {
-                    tokio::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(&job.command)
-                        .output()
-                        .await
+                #[cfg(windows)]
+                let argv = ["cmd.exe", "/c", job.command.as_str()];
+                #[cfg(unix)]
+                let argv = ["sh", "-c", job.command.as_str()];
+
+                let opts = process_util::RunOptions {
+                    cwd: Some(Path::new(&self.workspace_dir)),
+                    env_clear: false,
+                    env_vars: None,
+                    max_output_bytes: 1_048_576,
+                    timeout_ms: self.agent_timeout_secs.saturating_mul(1000),
                 };
 
-                match output {
+                match process_util::run(&argv, opts).await {
                     Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                        let combined = if stderr.is_empty() {
-                            stdout
+                        if out.timed_out {
+                            (
+                                false,
+                                format!(
+                                    "Shell job timed out after {} seconds",
+                                    self.agent_timeout_secs
+                                ),
+                            )
                         } else {
-                            format!("{}\n{}", stdout, stderr)
-                        };
-                        (out.status.success(), combined)
+                            let combined = if out.stderr.is_empty() {
+                                out.stdout
+                            } else if out.stdout.is_empty() {
+                                out.stderr
+                            } else {
+                                format!("{}\n{}", out.stdout, out.stderr)
+                            };
+                            (out.success, combined)
+                        }
                     }
                     Err(e) => (false, format!("Failed to execute shell command: {}", e)),
                 }
             }
             JobType::Agent => {
-                // BUG-CRON-2 FIX: Route through the live in-process bus instead of spawning
-                // a subprocess. This ensures the agent job has access to the existing
-                // session, memory, and all registered tools.
                 let channel = job
                     .delivery
                     .channel
@@ -351,27 +373,56 @@ impl CronScheduler {
                 let content = job.prompt.as_deref().unwrap_or(&job.command).to_string();
                 let session_key = format!("{channel}:{chat_id}");
 
-                let inbound = InboundMessage {
-                    channel,
-                    sender_id: "cron".to_string(),
-                    chat_id: chat_id.clone(),
-                    content,
-                    session_key,
-                    media: Vec::new(),
-                    metadata_json: None,
-                };
-                match self.bus.publish_inbound(inbound) {
-                    Ok(()) => (
-                        true,
-                        format!(
-                            "Agent job '{}' dispatched via bus to chat {}",
-                            job.id, chat_id
+                let session_manager = self.session_manager.lock().unwrap().clone();
+                if let Some(sm) = session_manager {
+                    let context = crate::tools::ToolContext {
+                        channel: channel.clone(),
+                        sender_id: "cron".to_string(),
+                        chat_id: chat_id.clone(),
+                        session_key: session_key.clone(),
+                    };
+                    let agent_id =
+                        crate::agent_routing::find_default_agent(&sm.get_config().agents);
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(self.agent_timeout_secs),
+                        sm.process_message(&session_key, &agent_id, content, context),
+                    )
+                    .await
+                    {
+                        Ok(Ok(response)) => (true, response),
+                        Ok(Err(e)) => (false, format!("Agent job failed: {}", e)),
+                        Err(_) => (
+                            false,
+                            format!(
+                                "Agent job timed out after {} seconds",
+                                self.agent_timeout_secs
+                            ),
                         ),
-                    ),
-                    Err(e) => (
-                        false,
-                        format!("Failed to dispatch agent job via bus: {}", e),
-                    ),
+                    }
+                } else {
+                    // Fallback used only before the daemon wires in SessionManager.
+                    let inbound = InboundMessage {
+                        channel,
+                        sender_id: "cron".to_string(),
+                        chat_id: chat_id.clone(),
+                        content,
+                        session_key,
+                        media: Vec::new(),
+                        metadata_json: None,
+                    };
+                    match self.bus.publish_inbound(inbound) {
+                        Ok(()) => (
+                            true,
+                            format!(
+                                "Agent job '{}' dispatched via bus to chat {}",
+                                job.id, chat_id
+                            ),
+                        ),
+                        Err(e) => (
+                            false,
+                            format!("Failed to dispatch agent job via bus: {}", e),
+                        ),
+                    }
                 }
             }
         };

@@ -238,9 +238,18 @@ fn telegram_polling_loop(
                 for msg in messages {
                     // Convert ParsedMessage to InboundMessage and publish to bus
                     let typing_chat_id = msg.chat_id.clone();
-                    let meta_json = msg.message_id.map(|id| {
-                        serde_json::json!({ "message_id": id.to_string() }).to_string()
-                    });
+                    let meta_json = if msg.message_id.is_some() || msg.message_thread_id.is_some() {
+                        Some(
+                            serde_json::json!({
+                                "message_id": msg.message_id.map(|id| id.to_string()),
+                                "thread_id": msg.message_thread_id.map(|id| id.to_string()),
+                                "is_group": msg.is_group,
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        None
+                    };
                     let inbound = InboundMessage {
                         channel: "telegram".to_string(),
                         sender_id: msg.sender_id,

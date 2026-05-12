@@ -132,6 +132,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
@@ -321,10 +322,41 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     };
 
     // Run the agent turn
-    println!("\n🤖 OpenPaw: Thinking...\n");
+    use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout();
+    let _ = crossterm::execute!(
+        stdout,
+        SetForegroundColor(Color::Yellow),
+        crossterm::style::Print("\n  ⠋ Thinking..."),
+        ResetColor,
+    );
+    let _ = stdout.flush();
+
     let response = agent.turn(message, &context).await?;
 
-    println!("\n🤖 OpenPaw: {}\n", response);
+    // Clear "Thinking..."
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::cursor::MoveToColumn(0),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+        crossterm::cursor::MoveUp(1),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+    );
+
+    let _ = crossterm::execute!(
+        stdout,
+        SetForegroundColor(Color::Green),
+        SetAttribute(Attribute::Bold),
+        crossterm::style::Print("\n╭─ OpenPaw\n"),
+        SetAttribute(Attribute::Reset),
+        SetForegroundColor(Color::DarkGrey),
+        crossterm::style::Print("╰─ "),
+        ResetColor,
+    );
+
+    println!("{}", response);
 
     Ok(())
 }

@@ -1,4 +1,4 @@
-pub const DEFAULT_CONTEXT_TOKENS: u64 = 8192; // Assuming a reasonable default
+pub const DEFAULT_CONTEXT_TOKENS: u64 = 128_000; // Modern baseline
 
 struct ContextWindowEntry {
     key: &'static str,
@@ -8,6 +8,14 @@ struct ContextWindowEntry {
 const MODEL_WINDOWS: &[ContextWindowEntry] = &[
     ContextWindowEntry {
         key: "gemini-3-flash-preview",
+        tokens: 1_048_576,
+    },
+    ContextWindowEntry {
+        key: "gemini-2.0-pro",
+        tokens: 2_097_152,
+    },
+    ContextWindowEntry {
+        key: "gemini-2.0-flash",
         tokens: 1_048_576,
     },
     ContextWindowEntry {
@@ -25,6 +33,14 @@ const MODEL_WINDOWS: &[ContextWindowEntry] = &[
     ContextWindowEntry {
         key: "gpt-4o-mini",
         tokens: 128_000,
+    },
+    ContextWindowEntry {
+        key: "claude-3-7-sonnet",
+        tokens: 200_000,
+    },
+    ContextWindowEntry {
+        key: "claude-3.7-sonnet",
+        tokens: 200_000,
     },
     ContextWindowEntry {
         key: "claude-3-5-sonnet",
@@ -88,10 +104,6 @@ const MODEL_WINDOWS: &[ContextWindowEntry] = &[
     },
     ContextWindowEntry {
         key: "gemini-2.5-flash",
-        tokens: 200_000,
-    },
-    ContextWindowEntry {
-        key: "gemini-2.0-flash",
         tokens: 200_000,
     },
     ContextWindowEntry {
@@ -345,8 +357,4 @@ pub fn resolve_context_tokens(token_limit_override: Option<u64>, model_ref: &str
     token_limit_override
         .or_else(|| lookup_context_tokens(model_ref))
         .unwrap_or(DEFAULT_CONTEXT_TOKENS)
-}
-
-pub fn is_small_model_context(token_limit: u64) -> bool {
-    token_limit <= 16384
 }

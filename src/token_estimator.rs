@@ -161,6 +161,7 @@ pub fn get_next_probe_tier(current_length: u64) -> Option<u64> {
 pub fn parse_context_limit_from_error(error_msg: &str) -> Option<u64> {
     let error_lower = error_msg.to_lowercase();
     let patterns = [
+        r"context[_\s-]*(?:length|size|window)[_\s-]*(?:exceeded)?[:\s]+(\d{4,})",
         r"(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})",
         r"context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})",
         r"(\d{4,})\s*(?:token)?\s*(?:context|limit)",

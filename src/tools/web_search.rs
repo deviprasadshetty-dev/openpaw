@@ -66,7 +66,7 @@ impl Tool for WebSearchTool {
             _ => {
                 return Ok(ToolResult::fail(
                     "TinyFish API key not configured. Get one at https://agent.tinyfish.ai/api-keys and set http_request.tinfish_api_key in config.json",
-                ))
+                ));
             }
         };
 
@@ -126,10 +126,7 @@ impl Tool for WebSearchTool {
                 match serde_json::from_str::<TinyFishSearchResponse>(&body) {
                     Ok(data) => {
                         if data.results.is_empty() {
-                            return Ok(ToolResult::ok(format!(
-                                "No results found for '{}'",
-                                query
-                            )));
+                            return Ok(ToolResult::ok(format!("No results found for '{}'", query)));
                         }
 
                         let mut output = format!(

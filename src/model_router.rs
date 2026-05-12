@@ -4,7 +4,7 @@ pub struct ModelRoutingConfig {
 }
 
 /// Score the query from 0 (trivial) to 100 (very complex).
-/// ≥ 30 → capable model; < 30 → cheap model.
+/// ≥ 20 → capable model; < 20 → cheap model.
 pub fn complexity_score(query: &str) -> u32 {
     let lower = query.to_lowercase();
     let word_count = query.split_whitespace().count();
@@ -105,6 +105,22 @@ pub fn complexity_score(query: &str) -> u32 {
         "fetch ",
         "download",
         "upload",
+        "read",
+        "write",
+        "edit",
+        "modify",
+        "patch",
+        "list",
+        "ls",
+        "check",
+        "verify",
+        "test",
+        "build",
+        "compile",
+        "deploy",
+        "scrape",
+        "crawl",
+        "browse",
     ];
     for kw in TOOL_KEYWORDS {
         if lower.contains(kw) {
@@ -162,7 +178,7 @@ pub fn complexity_score(query: &str) -> u32 {
 }
 
 pub fn route_to_appropriate_model<'a>(query: &str, config: &'a ModelRoutingConfig) -> &'a str {
-    if complexity_score(query) >= 30 {
+    if complexity_score(query) >= 20 {
         &config.default_model
     } else {
         &config.cheap_model
