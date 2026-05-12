@@ -1,113 +1,54 @@
 # OpenPaw
 
-OpenPaw is a Rust-native autonomous agent runtime for local work, messaging channels, long-running background tasks, memory, scheduling, tools, and multimodal workflows.
+OpenPaw is a personal autonomous AI agent that runs on your machine and helps you get real work done across chat, files, the web, tools, schedules, and background tasks.
 
-It is designed to be a general-purpose personal agent: it can talk in chat, inspect and edit files, run commands, search the web, use browser/vision tools, schedule follow-ups, spawn background workers, remember useful context, and keep making progress without turning every request into a permission loop.
+It is built in Rust for people who want an assistant that can do more than answer questions. OpenPaw can investigate, act, remember, follow up, and keep working on larger tasks without forcing every step through the foreground chat.
 
-## Highlights
+## Why OpenPaw
 
-- **General-purpose autonomy**: the runtime prompt is tuned to investigate first, act on safe/reversible work, verify outcomes, and ask only for genuinely risky external actions.
-- **Background plans and subagents**: large work can be split into dependency-aware plans or individual background tasks, with final integration review.
-- **Task visibility**: `task_status`, `task_list`, and `plan_status` expose queued, running, completed, failed, and cancelled background work.
-- **Telegram-first mobile workflow**: Telegram supports polling or webhooks, streaming message edits, typing indicators, reply threading, inline choice buttons, attachments, voice/photo/document/video intake, forum topic routing, edited messages, stickers, locations, and contacts.
-- **Persistent memory and goals**: SQLite/Markdown-backed memory, active goals, session search, memory hygiene, and background learning help the agent carry context across sessions.
-- **Scheduling and proactive checks**: cron jobs, one-shot reminders, heartbeat tasks, and proactive Telegram notifications are built in.
-- **Rich toolbelt**: file operations, shell, web search/fetch, browser automation, vision, hardware tools, skills, MCP tools, Composio, OpenCode CLI, and more.
-- **Provider flexibility**: Gemini, Gemini CLI, OpenAI, Anthropic, OpenRouter, Kilo.ai, OpenCode, Ollama, and LM Studio are supported.
+Most assistants are reactive. OpenPaw is designed to be useful in a more practical way:
 
-## What OpenPaw Can Do
+- It can work from Telegram, the terminal, WhatsApp, email, or HTTP.
+- It can use your local workspace, shell, browser, memory, and tools.
+- It can break large requests into background work and report back when done.
+- It can remember preferences and project context across sessions.
+- It can schedule reminders, recurring checks, and proactive follow-ups.
+- It can handle text, images, documents, audio, video, and voice notes.
+- It can stay careful around destructive, external, or sensitive actions.
 
-### Autonomous Work
+## Key Features
 
-OpenPaw can take an open-ended request and keep working through the loop:
+### Autonomous Task Handling
 
-1. Gather context from files, memory, tools, browser, search, or prior sessions.
-2. Make a lightweight plan.
-3. Execute with tools.
-4. Verify the result.
-5. Report what changed and what remains.
+OpenPaw can take a broad request, gather context, use tools, verify the result, and give you a clear summary. For larger work, it can move long-running pieces into the background so the main conversation stays usable.
 
-For big tasks, OpenPaw can move work into the background instead of slowly streaming every step in the foreground. It can create a plan, launch subagents, wait for them, cancel timed-out work, run a final review, and report the integrated result back to the chat.
+### Telegram-Ready
 
-Useful tools:
+Telegram is a first-class channel. OpenPaw supports direct chats, groups, forum topics, replies, streaming message updates, inline buttons, photos, documents, audio, video, voice notes, stickers, shared locations, contacts, and edited messages.
 
-- `spawn`: launch one background subagent.
-- `delegate`: launch a named agent profile.
-- `plan_create`: run a dependency-aware background plan.
-- `plan_status`: inspect a running or completed plan.
-- `task_status`: inspect one background task.
-- `task_list`: list queued/running tasks, optionally including completed work.
-- `task_cancel`: cancel queued or running work.
+### Memory and Continuity
 
-### Telegram
+OpenPaw can keep durable memory about preferences, projects, workflows, and useful facts. It can also search prior sessions when you refer to something from the past.
 
-OpenPaw's Telegram adapter supports:
+### Scheduling and Proactivity
 
-- Long polling and webhook mode.
-- Direct messages, groups, and supergroup forum topics.
-- Per-topic session keys and replies using `message_thread_id`.
-- Typing indicators during processing.
-- Streaming responses by editing an in-progress Telegram message.
-- Reply-to behavior for normal responses and errors.
-- Inline button choices via `<nc_choices>...</nc_choices>`.
-- Inbound photos, documents, voice notes, audio, videos, media groups, stickers, locations, contacts, and edited messages.
-- Outbound text, photos, documents, audio, video, and inline base64 image attachments.
-- Group allowlists, group behavior rules, and `[NO_REPLY]` support.
-- Proactive Telegram notifications with `notify_telegram`.
+Use OpenPaw for reminders, recurring checks, background tasks, and periodic heartbeats. It can notify you when something is due or when a background job finishes.
 
-### Memory, Goals, and Learning
+### Multimodal Work
 
-OpenPaw has durable context instead of relying only on the current chat window:
+OpenPaw can inspect images, videos, audio, PDFs, screenshots, and local files. It can also send generated or existing files back through supported chat channels.
 
-- Runtime memory with SQLite, Markdown, PostgreSQL, or LRU-style backends.
-- `memory_store`, `memory_recall`, `memory_list`, and `memory_forget`.
-- Active goals via `goal_add`, `goal_list`, and `goal_update`.
-- Cross-session search for previous decisions and workflows.
-- Memory hygiene that consolidates stale entries.
-- Dream/background learning that extracts preferences and reusable patterns.
-- Skill creation and maintenance for repeatable workflows.
+### Local Tools
 
-### Scheduling
+OpenPaw can work with your file system, shell, Git, browser, web search, skills, MCP tools, hardware interfaces, and external app integrations.
 
-OpenPaw can run tasks later or repeatedly:
+### Flexible Models
 
-- Cron expressions.
-- One-shot delays.
-- Shell jobs.
-- Isolated agent jobs.
-- Run history.
-- Delivery on success, error, always, or never.
-- Heartbeat checks defined in `HEARTBEAT.md`.
-
-Examples:
-
-```bash
-openpaw cron add "0 9 * * *" --message "Check my priorities for today"
-openpaw cron add --delay "20m" --message "Remind me to check the oven"
-```
-
-### Tools
-
-OpenPaw includes tools for:
-
-- File read/write/edit/append/delete.
-- Shell commands.
-- Git operations.
-- Web search and URL fetch.
-- Browser automation and screenshots.
-- Vision and multimodal file analysis.
-- Hardware info, hardware memory, I2C, SPI, and serial-oriented workflows.
-- Skill search/install/list/manage/view.
-- MCP server tools.
-- Composio tools.
-- OpenCode CLI delegation.
-- Telegram notifications.
-- Approvals for sensitive subagent actions.
-- Inter-agent mailbox communication.
+OpenPaw supports multiple AI providers, including Gemini, Gemini CLI, OpenAI, Anthropic, OpenRouter, Kilo.ai, OpenCode, Ollama, and LM Studio.
 
 ## Install
 
-### Windows PowerShell
+### Windows
 
 ```powershell
 powershell -ExecutionPolicy ByPass -Command "irm https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/install.ps1 | iex"
@@ -119,7 +60,7 @@ powershell -ExecutionPolicy ByPass -Command "irm https://raw.githubusercontent.c
 curl -sSf https://raw.githubusercontent.com/deviprasadshetty-dev/openpaw/main/install.sh | bash
 ```
 
-### Manual Build
+### Build From Source
 
 ```bash
 git clone https://github.com/deviprasadshetty-dev/openpaw.git
@@ -136,60 +77,39 @@ Run the onboarding wizard:
 openpaw onboard
 ```
 
-The wizard configures:
-
-- AI provider and model.
-- Memory backend.
-- Voice transcription.
-- Telegram bot access.
-- Composio integrations.
-- Web search.
-
-You can re-run onboarding later; it preserves existing settings where possible.
+The wizard helps configure your model provider, memory, Telegram, voice, search, and integrations.
 
 ## Run
 
-Start the persistent agent daemon:
+Start OpenPaw as a persistent agent:
 
 ```bash
 openpaw agent
 ```
 
-Send a one-shot task from the terminal:
+Send a one-shot task:
 
 ```bash
-openpaw agent --message "Check this project for failing tests and summarize what needs fixing"
+openpaw agent --message "Check this project and tell me what needs attention"
 ```
 
-Run with Telegram configured, then message your bot directly.
+## Common Uses
 
-## Configuration Notes
+- Ask it to investigate a project or folder.
+- Send voice notes from Telegram.
+- Drop in screenshots, documents, or videos for analysis.
+- Schedule reminders and recurring checks.
+- Let it work on large multi-step tasks in the background.
+- Use it as a mobile command center for your local machine.
+- Build up reusable skills and memory over time.
 
-OpenPaw creates workspace files such as:
+## Safety
 
-- `SOUL.md`: assistant identity and behavior.
-- `USER.md`: user preferences.
-- `MEMORY.md`: environment and durable project notes.
-- `AGENTS.md`: workspace operating rules.
-- `HEARTBEAT.md`: proactive recurring checks.
-- `BOOTSTRAP.md`: first-run initialization notes.
+OpenPaw is built to act, but not recklessly.
 
-The generated agent prompt treats those files as private implementation context and avoids exposing their names or raw contents in normal replies.
-
-## Security Model
-
-OpenPaw defaults to useful autonomy, but keeps boundaries:
-
-- Act freely on safe, reversible, and clearly requested local work.
-- Ask before destructive operations outside the workspace.
-- Ask before external messages/posts/emails to real people.
-- Ask before actions with cost, compliance, legal, or major resource impact.
-- Keep private data private.
-- Preserve approval workflows instead of bypassing them.
+It can freely handle safe local work, but should pause before destructive actions outside the workspace, external messages to real people, high-cost operations, or anything sensitive.
 
 ## Development
-
-Common commands:
 
 ```bash
 cargo fmt
@@ -197,19 +117,7 @@ cargo check
 cargo test
 ```
 
-The test suite currently covers provider parsing, Telegram handling, memory parsing, token estimation, secrets, utility behavior, routing hints, and agent response cleanup.
+## Status
 
-## Project Status
-
-OpenPaw is moving toward a proactive, multi-channel, general-purpose autonomous agent runtime. Recent work added:
-
-- Big-task background routing.
-- Dependency-aware plan execution with final review.
-- Task and plan status tools.
-- Timeout cancellation for spawned plan tasks.
-- Subagent memory and goal access.
-- Cron agent jobs through live sessions.
-- Heartbeat interval fixes.
-- Telegram forum topic routing and richer Telegram update handling.
-- More general-purpose autonomy prompt tuning.
+OpenPaw is actively evolving toward a practical, general-purpose autonomous assistant: local-first, multi-channel, memory-aware, tool-using, and capable of background work.
 
