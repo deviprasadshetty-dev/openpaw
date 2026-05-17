@@ -6,6 +6,7 @@ use tracing::warn;
 use which::which;
 
 pub mod self_improve;
+pub mod usage;
 
 fn default_version() -> String {
     "0.0.1".to_string()

@@ -22,9 +22,13 @@ impl ResponseCache {
         }
     }
 
-    fn compute_key(messages: &[ChatMessage], model: &str) -> String {
+    /// Compute a cache key from messages + model + temperature.
+    /// Hermes-equivalent: includes temperature so different sampling params
+    /// produce different cache entries (avoiding stale cached responses).
+    fn compute_key(messages: &[ChatMessage], model: &str, temperature: f32) -> String {
         let mut hasher = Sha256::new();
         hasher.update(model.as_bytes());
+        hasher.update(&temperature.to_le_bytes());
         for msg in messages {
             hasher.update(msg.role.as_bytes());
             hasher.update(msg.content.as_bytes());
@@ -35,8 +39,8 @@ impl ResponseCache {
         format!("{:x}", hasher.finalize())
     }
 
-    pub fn get(&self, messages: &[ChatMessage], model: &str) -> Option<String> {
-        let key = Self::compute_key(messages, model);
+    pub fn get(&self, messages: &[ChatMessage], model: &str, temperature: f32) -> Option<String> {
+        let key = Self::compute_key(messages, model, temperature);
         let mut cache = self.entries.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(entry) = cache.get(&key) {
@@ -49,8 +53,8 @@ impl ResponseCache {
         None
     }
 
-    pub fn insert(&self, messages: &[ChatMessage], model: &str, response: String) {
-        let key = Self::compute_key(messages, model);
+    pub fn insert(&self, messages: &[ChatMessage], model: &str, temperature: f32, response: String) {
+        let key = Self::compute_key(messages, model, temperature);
         let mut cache = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         cache.insert(
             key,

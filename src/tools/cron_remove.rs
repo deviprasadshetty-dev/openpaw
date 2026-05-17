@@ -29,6 +29,7 @@ impl Tool for CronRemoveTool {
         };
 
         if self.cron.remove_job(id).is_some() {
+            self.cron.save();
             Ok(ToolResult::ok(format!("Removed cron job {}", id)))
         } else {
             Ok(ToolResult::fail(format!("Cron job {} not found", id)))

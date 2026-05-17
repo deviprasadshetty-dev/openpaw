@@ -1,4 +1,4 @@
-use crate::multimodal::{is_gemini_cli_available, process_with_gemini_cli};
+use crate::multimodal::{current_request_only, is_gemini_cli_available, process_with_gemini_cli};
 use crate::tools::{Tool, ToolContext, ToolResult, path_security};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ impl Tool for VisionTool {
     }
 
     fn description(&self) -> &str {
-        "Analyze images, videos, audio, and documents with Gemini CLI when available. Use this for local file/media understanding; use web_search for internet results."
+        "Analyze images, videos, audio, and documents with Gemini CLI when available. Use this for local file/media understanding; use web_search for internet results. The prompt should describe only the current user task, not recalled memory."
     }
 
     fn parameters_json(&self) -> String {
@@ -43,6 +43,7 @@ impl Tool for VisionTool {
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let prompt = args["prompt"].as_str().unwrap_or("What is in this file?");
+        let prompt = current_request_only(prompt);
         let files_val = &args["files"];
 
         let mut files = Vec::new();
@@ -68,7 +69,7 @@ impl Tool for VisionTool {
         };
 
         if is_gemini_cli_available() {
-            match process_with_gemini_cli(prompt, &validated_files) {
+            match process_with_gemini_cli(&prompt, &validated_files) {
                 Ok(res) => Ok(ToolResult::ok(format!(
                     "Vision analysis (gemini-cli):\n{}",
                     res

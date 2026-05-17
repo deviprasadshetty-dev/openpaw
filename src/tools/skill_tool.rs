@@ -9,6 +9,7 @@ use tokio::process::Command;
 pub struct DynamicSkillTool {
     pub definition: SkillToolDefinition,
     pub skill_path: PathBuf,
+    pub skill_name: String,
 }
 
 #[async_trait]
@@ -23,6 +24,10 @@ impl Tool for DynamicSkillTool {
 
     fn parameters_json(&self) -> String {
         serde_json::to_string(&self.definition.parameters).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    fn skill_name(&self) -> &str {
+        &self.skill_name
     }
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {

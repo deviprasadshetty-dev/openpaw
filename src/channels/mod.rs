@@ -1,7 +1,9 @@
 pub mod cli;
 pub mod dispatch;
+#[cfg(feature = "email")]
 pub mod email;
 pub mod root;
+#[cfg(feature = "telegram")]
 pub mod telegram;
 pub mod whatsapp;
 pub mod whatsapp_bridge_manager;

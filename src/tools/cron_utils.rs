@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CronJob {
@@ -20,7 +19,7 @@ pub struct CronJob {
 
 pub struct CronScheduler {
     pub jobs: HashMap<String, CronJob>,
-    file_path: PathBuf,
+    file_path: std::path::PathBuf,
 }
 
 impl Default for CronScheduler {
@@ -31,9 +30,9 @@ impl Default for CronScheduler {
 
 impl CronScheduler {
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let mut path = PathBuf::from(home);
-        path.push(".openpaw");
+        let mut path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("state");
         fs::create_dir_all(&path).ok();
         path.push("cron.json");
 

@@ -94,6 +94,24 @@ pub fn make_outbound_with_reply(
     )
 }
 
+pub fn make_outbound_with_account_reply(
+    channel: &str,
+    account_id: &str,
+    chat_id: &str,
+    content: &str,
+    reply_to_message_id: Option<i64>,
+) -> OutboundMessage {
+    OutboundMessage {
+        channel: channel.to_string(),
+        account_id: Some(account_id.to_string()),
+        chat_id: chat_id.to_string(),
+        content: content.to_string(),
+        media: Vec::new(),
+        stage: OutboundStage::Final,
+        reply_to_message_id,
+    }
+}
+
 pub fn make_outbound_chunk(channel: &str, chat_id: &str, content: &str) -> OutboundMessage {
     make_outbound_with_stage(channel, chat_id, content, OutboundStage::Chunk)
 }

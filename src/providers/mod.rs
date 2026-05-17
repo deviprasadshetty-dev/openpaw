@@ -9,6 +9,7 @@ pub mod kilocode;
 pub mod ollama;
 pub mod openai;
 pub mod openrouter;
+pub mod rate_limiter;
 pub mod reliable;
 pub mod sse;
 

@@ -35,10 +35,13 @@ impl Tool for CronUpdateTool {
         if let Some(job) = jobs.get_mut(id) {
             if let Some(exp) = expression {
                 job.expression = exp.to_string();
+                job.next_run_secs = 0;
             }
             if let Some(cmd) = command {
                 job.command = cmd.to_string();
             }
+            drop(jobs);
+            self.cron.save();
             Ok(ToolResult::ok(format!("Updated cron job {}", id)))
         } else {
             Ok(ToolResult::fail(format!("Cron job {} not found", id)))

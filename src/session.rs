@@ -46,6 +46,8 @@ pub struct SessionManager {
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
     memory: Option<Arc<dyn Memory>>,
+    /// Shared skill usage database for curator and analytics.
+    pub skill_usage_db: Option<Arc<crate::skills::usage::SkillUsageDB>>,
 }
 
 impl SessionManager {
@@ -54,6 +56,7 @@ impl SessionManager {
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
         memory: Option<Arc<dyn Memory>>,
+        skill_usage_db: Option<Arc<crate::skills::usage::SkillUsageDB>>,
     ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
@@ -61,6 +64,7 @@ impl SessionManager {
             provider,
             tools,
             memory,
+            skill_usage_db,
         }
     }
 
@@ -132,6 +136,12 @@ impl SessionManager {
         agent.memory_flush_min_turns = self.config.self_learning.flush_min_turns;
         agent.efficiency_config = self.config.efficiency.clone();
 
+        // Curator: Wire shared skill usage DB and curator config
+        if let Some(ref usage_db) = self.skill_usage_db {
+            agent.skill_usage_db = Some(Arc::clone(usage_db));
+        }
+        agent.curator_config = self.config.curator.clone();
+
         let new_session = Arc::new(Session::new(agent, session_key.to_string()));
         sessions.insert(session_key.to_string(), Arc::clone(&new_session));
 
@@ -170,8 +180,11 @@ impl SessionManager {
         // Only analyze every 5 turns to avoid excessive API calls
         let turn_count = session_arc.turn_count.load(Ordering::SeqCst);
         if self.config.self_learning.dialectic_enabled && turn_count % 5 == 0 {
-            let provider = agent_guard.provider.clone();
-            let model_name = agent_guard.model_name.clone();
+            let provider = agent_guard
+                .cheap_provider
+                .clone()
+                .unwrap_or_else(|| agent_guard.provider.clone());
+            let model_name = agent_guard.model_routing_config.cheap_model.clone();
             let history = agent_guard.history.clone();
             let workspace_dir = agent_guard.workspace_dir.clone();
             tokio::spawn(async move {
@@ -216,8 +229,11 @@ impl SessionManager {
         // Only analyze every 5 turns to avoid excessive API calls
         let turn_count = session_arc.turn_count.load(Ordering::SeqCst);
         if self.config.self_learning.dialectic_enabled && turn_count % 5 == 0 {
-            let provider = agent_guard.provider.clone();
-            let model_name = agent_guard.model_name.clone();
+            let provider = agent_guard
+                .cheap_provider
+                .clone()
+                .unwrap_or_else(|| agent_guard.provider.clone());
+            let model_name = agent_guard.model_routing_config.cheap_model.clone();
             let history = agent_guard.history.clone();
             let workspace_dir = agent_guard.workspace_dir.clone();
             tokio::spawn(async move {

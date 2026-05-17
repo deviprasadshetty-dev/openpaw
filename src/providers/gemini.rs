@@ -358,7 +358,7 @@ impl GeminiProvider {
 
             // Classify error for retry logic
             let kind = crate::providers::error_classify::classify(code as u16, body);
-            if kind == crate::providers::error_classify::ApiErrorKind::RateLimit {
+            if matches!(kind, crate::providers::error_classify::ApiErrorKind::RateLimit { .. }) {
                 anyhow::bail!("Gemini API rate limited: {}", msg);
             }
             if kind == crate::providers::error_classify::ApiErrorKind::Quota {

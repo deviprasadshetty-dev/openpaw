@@ -131,6 +131,7 @@ struct BrowserConfigInput {
 struct ComposioConfigInput {
     enabled: Option<bool>,
     api_key: Option<String>,
+    user_id: Option<String>,
     entity_id: Option<String>,
 }
 
@@ -243,8 +244,8 @@ async fn save_config(
         if let Some(api_key) = composio.api_key {
             config.composio.api_key = Some(api_key);
         }
-        if let Some(entity_id) = composio.entity_id {
-            config.composio.entity_id = entity_id;
+        if let Some(user_id) = composio.user_id.or(composio.entity_id) {
+            config.composio.user_id = user_id;
         }
     }
 
@@ -269,23 +270,118 @@ struct ChatResponse {
 }
 
 async fn chat_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, StatusCode> {
-    // Simple echo response for now - in production this would call the agent
-    let response = format!(
-        "Received: {}. This is a placeholder response until the agent router is integrated.",
-        req.message
-    );
+    if req.message.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let config = state.config.read().await.clone();
+    let response = run_gateway_agent_turn(config, req.message)
+        .await
+        .map_err(|e| {
+            tracing::error!("Gateway chat failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(ChatResponse { response }))
 }
 
-// WebSocket handler (placeholder for now)
 async fn websocket_handler() -> impl IntoResponse {
-    // WebSocket support would be added here in a future iteration
-    // For now, return a message indicating it's not yet implemented
-    (StatusCode::NOT_IMPLEMENTED, "WebSocket chat coming soon!")
+    (
+        StatusCode::BAD_REQUEST,
+        "Use POST /api/chat for gateway chat. WebSocket streaming is not enabled in this build.",
+    )
+}
+
+async fn run_gateway_agent_turn(config: Config, message: String) -> Result<String> {
+    use crate::agent::Agent;
+    use crate::daemon::{build_tools, create_provider};
+    use crate::tools::root::ToolContext;
+
+    let provider = create_provider(&config);
+    let model_name = config
+        .get_model_for_provider(&config.default_provider)
+        .unwrap_or_else(|| match config.default_provider.as_str() {
+            "gemini" => "gemini-2.0-flash".to_string(),
+            "openai" => "gpt-4o".to_string(),
+            "anthropic" => "claude-3-5-sonnet-latest".to_string(),
+            _ => "gpt-4o".to_string(),
+        });
+
+    let memory = build_gateway_memory(&config);
+    let tools = build_tools(
+        &config,
+        None,
+        memory.clone(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(provider.clone()),
+        None,
+    )
+    .await;
+
+    let mut agent = Agent::new(
+        provider,
+        None,
+        tools,
+        model_name,
+        config.workspace_dir.clone(),
+    );
+    if let Some(memory) = memory {
+        agent = agent.with_memory(memory);
+    }
+    agent.skill_nudge_interval = config.skills.creation_nudge_interval;
+    agent.memory_nudge_interval = config.self_learning.memory_nudge_interval;
+    agent.memory_flush_min_turns = config.self_learning.flush_min_turns;
+    agent.efficiency_config = config.efficiency.clone();
+
+    let context = ToolContext {
+        channel: "web".to_string(),
+        sender_id: "gateway_user".to_string(),
+        chat_id: "gateway_chat".to_string(),
+        session_key: "gateway_session".to_string(),
+    };
+
+    agent.turn(message, &context).await
+}
+
+fn build_gateway_memory(
+    config: &Config,
+) -> Option<std::sync::Arc<dyn crate::agent::memory_loader::Memory>> {
+    match config.memory.backend.as_str() {
+        "markdown" => {
+            let memory = crate::memory::engines::markdown::MarkdownMemory::from_workspace(
+                &config.workspace_dir,
+            );
+            Some(std::sync::Arc::new(
+                crate::agent::memory_loader::MemoryAdapter {
+                    inner: std::sync::Arc::new(memory),
+                },
+            ))
+        }
+        "none" => None,
+        "sqlite" | _ => {
+            let db_path = format!("{}/memory.db", config.workspace_dir);
+            match crate::memory::sqlite::SqliteMemory::new(&db_path) {
+                Ok(memory) => Some(std::sync::Arc::new(
+                    crate::agent::memory_loader::MemoryAdapter {
+                        inner: std::sync::Arc::new(memory),
+                    },
+                )),
+                Err(e) => {
+                    tracing::warn!("Gateway memory unavailable: {}", e);
+                    None
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

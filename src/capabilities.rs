@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::memory::engines::registry as memory_registry;
 use crate::tools::root::Tool;
 use serde_json::json;
+use std::sync::Arc;
 
 const CORE_TOOL_NAMES: &[&str] = &[
     "shell",
@@ -154,6 +155,19 @@ fn collect_runtime_tool_names(
     let optional_enabled = collect_optional_tools(cfg_opt, OptionalToolMode::Enabled);
     estimated.extend(optional_enabled);
     estimated
+}
+
+pub fn build_loaded_tools_summary(runtime_tools: &[Arc<dyn Tool>]) -> String {
+    let mut names: Vec<String> = runtime_tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    names.sort();
+
+    format!(
+        "Runtime capabilities:\n- Loaded tools: {}\n\nUse these capabilities when they are relevant to the current request.",
+        names.join(", ")
+    )
 }
 
 pub fn build_manifest_json(

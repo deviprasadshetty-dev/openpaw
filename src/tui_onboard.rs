@@ -1,3 +1,4 @@
+#![cfg(feature = "tui")]
 use std::{io::stdout, time::Duration};
 
 use anyhow::Result;

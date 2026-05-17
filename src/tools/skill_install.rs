@@ -16,7 +16,7 @@ impl Tool for SkillInstallTool {
     }
 
     fn description(&self) -> &str {
-        "Install a skill from a GitHub URL into the workspace skills/ folder. The skill will be active on the next message. Use skill_search to find available skills first. For complex skills (like agent-browser), uses 'npx skills add' internally."
+        "Install a skill from a GitHub URL or public skill-library source into the workspace skills/ folder. Use skill_search first for install URLs and skill names. Monorepo skills are installed with 'npx skills add' when possible."
     }
 
     fn parameters_json(&self) -> String {
@@ -35,6 +35,12 @@ impl Tool for SkillInstallTool {
             .next_back()
             .unwrap_or("skill")
             .to_string();
+
+        let provided_name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|n| !n.trim().is_empty())
+            .unwrap_or(false);
 
         let skill_name = match args.get("name").and_then(|v| v.as_str()) {
             Some(n) if !n.trim().is_empty() => n.trim().to_string(),
@@ -62,6 +68,15 @@ impl Tool for SkillInstallTool {
                 "Skill '{}' is already installed at {}. Remove it first or use a different name.",
                 skill_name, target
             )));
+        }
+
+        // Public registries such as skills.sh often point at monorepos where
+        // the skill name selects a sub-skill. Try the official installer first
+        // when the caller gave an explicit name, then fall back to cloning.
+        if provided_name {
+            if let Ok(msg) = self.install_via_npx(&url, &skill_name, &skills_dir).await {
+                return Ok(ToolResult::ok(msg));
+            }
         }
 
         // Try git clone first

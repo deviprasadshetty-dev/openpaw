@@ -103,6 +103,13 @@ impl ChannelRegistry {
         None
     }
 
+    pub fn count_by_name(&self, channel_name: &str) -> usize {
+        self.channels
+            .iter()
+            .filter(|entry| entry.channel.name() == channel_name)
+            .count()
+    }
+
     pub fn health_check_all(&self) -> HealthReport {
         let mut healthy = 0;
         let mut unhealthy = 0;
@@ -174,7 +181,17 @@ pub fn run_outbound_dispatcher(
 fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &DispatchStats) {
     // Find the appropriate channel
     let channel = if let Some(ref account_id) = msg.account_id {
-        registry.find_by_name_account(&msg.channel, account_id)
+        registry
+            .find_by_name_account(&msg.channel, account_id)
+            .or_else(|| {
+                // Be forgiving when older Telegram sessions carry the channel
+                // name instead of the configured account id.
+                if account_id == &msg.channel && registry.count_by_name(&msg.channel) == 1 {
+                    registry.find_by_name(&msg.channel)
+                } else {
+                    None
+                }
+            })
     } else {
         registry.find_by_name(&msg.channel)
     };
@@ -191,11 +208,22 @@ fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &D
         }
     };
 
+    let final_content;
+    let content = if msg.stage == OutboundStage::Final
+        && msg.channel == "telegram"
+        && !msg.media.is_empty()
+    {
+        final_content = append_telegram_media_markers(&msg.content, &msg.media);
+        &final_content
+    } else {
+        &msg.content
+    };
+
     // Send the message
     let send_result = match msg.stage {
-        OutboundStage::Chunk => channel.send_stream_chunk(&msg.chat_id, &msg.content),
+        OutboundStage::Chunk => channel.send_stream_chunk(&msg.chat_id, content),
         OutboundStage::Final => {
-            channel.send_message_with_reply(&msg.chat_id, &msg.content, msg.reply_to_message_id)
+            channel.send_message_with_reply(&msg.chat_id, content, msg.reply_to_message_id)
         }
     };
 
@@ -221,6 +249,33 @@ fn dispatch_message(registry: &ChannelRegistry, msg: &OutboundMessage, stats: &D
             }
         }
     }
+}
+
+fn append_telegram_media_markers(content: &str, media: &[String]) -> String {
+    let mut out = content.trim_end().to_string();
+    for path in media {
+        let marker = telegram_marker_for_media_path(path);
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&marker);
+    }
+    out
+}
+
+fn telegram_marker_for_media_path(path: &str) -> String {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let kind = match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" => "IMAGE",
+        "mp4" | "mov" | "webm" | "mkv" | "avi" => "VIDEO",
+        "mp3" | "wav" | "ogg" | "m4a" | "flac" => "AUDIO",
+        _ => "FILE",
+    };
+    format!("[{}:{}]", kind, path)
 }
 
 pub fn run_dispatcher_with_backoff(

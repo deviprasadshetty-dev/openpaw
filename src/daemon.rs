@@ -2,9 +2,11 @@ use crate::bus::{self, Bus};
 use crate::channel_adapters::find_polling_descriptor;
 use crate::channel_loop::{self, ChannelRuntime, PollingState};
 use crate::channels::dispatch::{ChannelRegistry, run_outbound_dispatcher};
+#[cfg(feature = "telegram")]
 use crate::channels::telegram::TelegramChannel;
 use crate::config::Config;
 use crate::cron::CronScheduler;
+#[cfg(feature = "gateway")]
 use crate::gateway;
 use crate::heartbeat::HeartbeatEngine;
 use crate::providers::Provider;
@@ -133,6 +135,7 @@ pub fn is_shutdown_requested() -> bool {
 
 pub async fn gateway_thread(config: Arc<Config>, state: Arc<std::sync::Mutex<DaemonState>>) {
     let name = "gateway";
+    #[cfg(feature = "gateway")]
     loop {
         if is_shutdown_requested() {
             break;
@@ -167,6 +170,11 @@ pub async fn gateway_thread(config: Arc<Config>, state: Arc<std::sync::Mutex<Dae
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
+    #[cfg(not(feature = "gateway"))]
+    {
+        let mut guard = state.lock().unwrap();
+        guard.mark_error(name, "Gateway feature not enabled");
+    }
 }
 
 fn print_startup_info(config: &Config) {
@@ -177,16 +185,20 @@ fn print_startup_info(config: &Config) {
     println!();
 
     // Web UI info
-    let host = if config.gateway.allow_public_bind.unwrap_or(false) {
-        "0.0.0.0".to_string()
-    } else {
-        config.gateway.host.clone()
-    };
-    println!("🌐 Web UI:    http://{}:{}", host, config.gateway.port);
-    println!("             Configure settings and chat with your agent!");
-    println!();
+    #[cfg(feature = "gateway")]
+    {
+        let host = if config.gateway.allow_public_bind.unwrap_or(false) {
+            "0.0.0.0".to_string()
+        } else {
+            config.gateway.host.clone()
+        };
+        println!("🌐 Web UI:    http://{}:{}", host, config.gateway.port);
+        println!("             Configure settings and chat with your agent!");
+        println!();
+    }
 
     // Telegram info
+    #[cfg(feature = "telegram")]
     if !config.channels.telegram.is_empty() {
         println!(
             "📱 Telegram: {} bot(s) configured",
@@ -373,6 +385,8 @@ pub fn inbound_dispatcher_thread(
             let channel = msg.channel.clone();
             let chat_id = msg.chat_id.clone();
             let sender_id = msg.sender_id.clone();
+            let account_id = route.account_id.clone();
+            let stream_account_id = account_id.clone();
             let sm = session_manager.clone();
             let bus_clone = bus.clone();
 
@@ -403,9 +417,19 @@ pub fn inbound_dispatcher_thread(
                             if !delta.is_empty() {
                                 *last = now;
                                 *last_len = acc.len();
-                                let outbound =
-                                    bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &delta);
-                                let _ = cb_bus.publish_outbound(outbound);
+                                if cb_channel != "email" {
+                                    let outbound = if stream_account_id.is_empty() {
+                                        bus::make_outbound_chunk(&cb_channel, &cb_chat_id, &delta)
+                                    } else {
+                                        bus::make_outbound_chunk_with_account(
+                                            &cb_channel,
+                                            &stream_account_id,
+                                            &cb_chat_id,
+                                            &delta,
+                                        )
+                                    };
+                                    let _ = cb_bus.publish_outbound(outbound);
+                                }
                             }
                         }
                     }
@@ -423,12 +447,22 @@ pub fn inbound_dispatcher_thread(
                     .await
                 {
                     Ok(response_text) => {
-                        let outbound = bus::make_outbound_with_reply(
-                            &channel,
-                            &chat_id,
-                            &response_text,
-                            reply_to_message_id,
-                        );
+                        let outbound = if account_id.is_empty() {
+                            bus::make_outbound_with_reply(
+                                &channel,
+                                &chat_id,
+                                &response_text,
+                                reply_to_message_id,
+                            )
+                        } else {
+                            bus::make_outbound_with_account_reply(
+                                &channel,
+                                &account_id,
+                                &chat_id,
+                                &response_text,
+                                reply_to_message_id,
+                            )
+                        };
                         if let Err(e) = bus_clone.publish_outbound(outbound) {
                             error!("Failed to publish outbound message: {}", e);
                         }
@@ -443,12 +477,22 @@ pub fn inbound_dispatcher_thread(
                             "⚠️ I encountered an error while processing your request: {}",
                             e
                         );
-                        let outbound = bus::make_outbound_with_reply(
-                            &channel,
-                            &chat_id,
-                            &error_msg,
-                            reply_to_message_id,
-                        );
+                        let outbound = if account_id.is_empty() {
+                            bus::make_outbound_with_reply(
+                                &channel,
+                                &chat_id,
+                                &error_msg,
+                                reply_to_message_id,
+                            )
+                        } else {
+                            bus::make_outbound_with_account_reply(
+                                &channel,
+                                &account_id,
+                                &chat_id,
+                                &error_msg,
+                                reply_to_message_id,
+                            )
+                        };
                         let _ = bus_clone.publish_outbound(outbound);
                     }
                 }
@@ -462,8 +506,9 @@ pub fn init_bus() -> Arc<Bus> {
     Arc::new(Bus::new())
 }
 
-use crate::channels::email::EmailChannel;
 use crate::channels::root::Channel;
+#[cfg(feature = "email")]
+use crate::channels::email::EmailChannel;
 
 pub fn init_channels(
     config: &Config,
@@ -475,6 +520,7 @@ pub fn init_channels(
     let mut seen_telegram_tokens = HashSet::new();
 
     // Initialize Telegram channels
+    #[cfg(feature = "telegram")]
     for tg_config in &config.channels.telegram {
         if tg_config.bot_token.is_empty() {
             warn!(
@@ -536,13 +582,16 @@ pub fn init_channels(
     }
 
     // Initialize Email channels
+    #[cfg(feature = "email")]
     for email_config in &config.channels.email {
         info!(
             "Initializing Email channel for account: {}",
             email_config.account_id
         );
 
+        use crate::channels::email::EmailChannel;
         let channel = Arc::new(EmailChannel::new(
+            email_config.account_id.clone(),
             email_config.smtp_user.clone(),
             email_config.smtp_pass.clone(),
             email_config.smtp_host.clone(),
@@ -564,6 +613,19 @@ pub fn init_channels(
                 match channel_clone.poll_updates() {
                     Ok(messages) => {
                         for msg in messages {
+                            let metadata = crate::channel_adapters::InboundMetadata {
+                                account_id: Some(account_id.clone()),
+                                peer_kind: Some(crate::config_types::ChatType::Direct),
+                                peer_id: Some(msg.sender_id.clone()),
+                                message_id: msg.message_id.map(|id| id.to_string()),
+                                guild_id: None,
+                                team_id: None,
+                                channel_id: None,
+                                thread_id: None,
+                                is_dm: Some(true),
+                                is_group: Some(false),
+                            };
+                            let metadata_json = serde_json::to_string(&metadata).ok();
                             let inbound = crate::bus::InboundMessage {
                                 channel: "email".to_string(),
                                 chat_id: msg.chat_id,
@@ -571,7 +633,7 @@ pub fn init_channels(
                                 session_key: msg.session_key,
                                 content: msg.content,
                                 media: vec![],
-                                metadata_json: None,
+                                metadata_json,
                             };
                             if let Err(e) = bus_clone.publish_inbound(inbound) {
                                 warn!("Failed to publish inbound email message: {}", e);
@@ -585,9 +647,9 @@ pub fn init_channels(
                 thread::sleep(Duration::from_secs(60));
             }
         });
-
-        // We aren't implementing PollingState gracefully here for simplicity
-        // So we just add a dummy or handle it separately
+        // dummy PollingState just to keep the interface consistent
+        let state = PollingState::new(|| {});
+        polling_threads.push((state, thread_handle));
     }
 
     // Initialize WhatsApp Native channels
@@ -645,6 +707,32 @@ pub fn start_outbound_dispatcher(
     })
 }
 
+fn configured_cheap_provider_name(config: &Config) -> Option<String> {
+    config
+        .agents
+        .iter()
+        .find_map(|agent| agent.cheap_provider.clone())
+}
+
+fn configured_cheap_model_name(config: &Config) -> String {
+    config
+        .agents
+        .iter()
+        .find_map(|agent| agent.cheap_model.clone())
+        .or_else(|| {
+            configured_cheap_provider_name(config)
+                .as_deref()
+                .and_then(|provider| config.get_model_for_provider(provider))
+        })
+        .or_else(|| config.default_model.clone())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn configured_cheap_provider(config: &Config) -> Option<Arc<dyn Provider>> {
+    configured_cheap_provider_name(config)
+        .map(|name| crate::providers::factory::create_with_fallbacks(&name, config))
+}
+
 /// Create the appropriate provider based on config, wrapped in ReliableProvider.
 pub async fn build_tools(
     config: &Config,
@@ -667,9 +755,12 @@ pub async fn build_tools(
     cheap_provider: Option<Arc<dyn Provider>>,
 ) -> Vec<Arc<dyn crate::tools::Tool>> {
     let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+    #[cfg(feature = "telegram")]
     let tg_inbound = crate::channels::telegram::tg_inbound_dir()
         .to_string_lossy()
         .to_string();
+    #[cfg(not(feature = "telegram"))]
+    let tg_inbound = "".to_string();
 
     if let Some(gm) = goal_manager {
         tools.push(Arc::new(crate::tools::goals::GoalAddTool {
@@ -773,18 +864,27 @@ pub async fn build_tools(
     }));
 
     if config.composio.enabled {
+        #[cfg(feature = "composio")]
         if let Some(api_key) = &config.composio.api_key {
             tools.push(Arc::new(crate::tools::composio::ComposioTool {
                 api_key: api_key.clone(),
-                entity_id: config.composio.entity_id.clone(),
+                user_id: config.composio.user_id.clone(),
             }));
         }
     }
 
-    tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
-        config.workspace_dir.clone(),
-        &config.browser,
-    )));
+    #[cfg(feature = "browser")]
+    {
+        tools.push(Arc::new(crate::tools::browser::BrowserTool::new(
+            config.workspace_dir.clone(),
+            &config.browser,
+        )));
+
+        tools.push(Arc::new(crate::tools::google_meet::MeetTool::new(
+            config.workspace_dir.clone(),
+            &config.browser,
+        )));
+    }
 
     let mut search_tool = crate::tools::web_search::WebSearchTool::default();
     search_tool.api_key = config.http_request.tinfish_api_key.clone();
@@ -827,16 +927,14 @@ pub async fn build_tools(
     }));
 
     // Self-Learning: Session search (Hermes-style episodic memory)
-    let search_model = config
-        .default_model
-        .clone()
-        .unwrap_or_else(|| "gemini-1.5-flash".to_string());
+    let search_model = configured_cheap_model_name(config);
     tools.push(Arc::new(crate::tools::session_search::SessionSearchTool {
         workspace_dir: config.workspace_dir.clone(),
         provider: cheap_provider.clone().or(provider.clone()),
         model_name: search_model,
     }));
 
+    #[cfg(feature = "browser")]
     tools.push(Arc::new(crate::tools::browser_open::BrowserOpenTool {
         allowed_domains: config.http_request.allowed_domains.clone(),
     }));
@@ -868,9 +966,10 @@ pub async fn build_tools(
     }
 
     tools.push(Arc::new(crate::tools::image::ImageInfoTool {}));
+    let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
     tools.push(Arc::new(crate::tools::vision::VisionTool {
         workspace_dir: config.workspace_dir.clone(),
-        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone()],
+        allowed_paths: vec![config.workspace_dir.clone(), tg_inbound.clone(), temp_dir],
     }));
     tools.push(Arc::new(crate::tools::screenshot::ScreenshotTool {
         workspace_dir: config.workspace_dir.clone(),
@@ -880,21 +979,26 @@ pub async fn build_tools(
             workspace_dir: config.workspace_dir.clone(),
         },
     ));
+    #[cfg(feature = "pushover")]
     tools.push(Arc::new(crate::tools::pushover::PushoverTool {
         workspace_dir: config.workspace_dir.clone(),
     }));
     // BUG-CRON-4 FIX: Register the notify_telegram tool so the agent can send
     // proactive Telegram messages to the user without creating a cron job.
+    #[cfg(feature = "telegram")]
     tools.push(Arc::new(
         crate::tools::notify_telegram::NotifyTelegramTool {},
     ));
 
-    tools.push(Arc::new(crate::tools::hardware_info::HardwareInfoTool {}));
-    tools.push(Arc::new(
-        crate::tools::hardware_memory::HardwareMemoryTool { boards: Vec::new() },
-    ));
-    tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
-    tools.push(Arc::new(crate::tools::spi::SpiTool {}));
+    #[cfg(feature = "hardware")]
+    {
+        tools.push(Arc::new(crate::tools::hardware_info::HardwareInfoTool {}));
+        tools.push(Arc::new(
+            crate::tools::hardware_memory::HardwareMemoryTool { boards: Vec::new() },
+        ));
+        tools.push(Arc::new(crate::tools::i2c::I2cTool {}));
+        tools.push(Arc::new(crate::tools::spi::SpiTool {}));
+    }
 
     if let Ok(mcp_tools) = crate::mcp::init_mcp_tools(&config.mcp_servers).await {
         for tool in mcp_tools {
@@ -906,10 +1010,12 @@ pub async fn build_tools(
         for skill in skills {
             if skill.enabled && skill.available {
                 let skill_path = std::path::PathBuf::from(&skill.path);
+                let skill_name = skill.name.clone();
                 for tool_def in skill.tools {
                     tools.push(Arc::new(crate::tools::skill_tool::DynamicSkillTool {
                         definition: tool_def,
                         skill_path: skill_path.clone(),
+                        skill_name: skill_name.clone(),
                     }));
                 }
             }
@@ -951,6 +1057,9 @@ pub async fn build_tools(
             mailbox: mb,
         }));
     }
+
+    // In-memory todo list for agent self-management (port of hermes-agent todo_tool)
+    tools.push(Arc::new(crate::tools::todo::TodoTool::new()));
 
     // Feature 5: Human-in-the-loop approval
     if let Some(am) = approval_manager {
@@ -1148,6 +1257,9 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         bus.clone(),
     ));
 
+    let cheap_provider = configured_cheap_provider(&config);
+    let cheap_model_name = configured_cheap_model_name(&config);
+
     // Initialize Tools
     let tools = build_tools(
         &config,
@@ -1161,15 +1273,41 @@ pub async fn run_daemon(config: Config) -> Result<()> {
         Some(event_registry),
         Some(plan_manager),
         Some(provider.clone()),
-        None, // cheap_provider not available in daemon startup path
+        cheap_provider.clone(),
     )
     .await;
+
+    // Initialize shared Skill Usage DB for curator and self-learning analytics
+    let skill_usage_db: Option<Arc<crate::skills::usage::SkillUsageDB>> = {
+        let db_path = std::path::Path::new(&config.workspace_dir)
+            .join("state")
+            .join("skill_usage.db");
+        match crate::skills::usage::SkillUsageDB::open(&db_path) {
+            Ok(db) => {
+                info!("Skill usage DB: {}", db_path.display());
+                // Sync existing workspace skills into the DB
+                if let Ok(existing_skills) =
+                    crate::skills::list_skills(std::path::Path::new(&config.workspace_dir))
+                {
+                    let names: Vec<String> = existing_skills.iter().map(|s| s.name.clone()).collect();
+                    // Agent-created skills are those in workspace/skills/ (not builtins)
+                    let _ = db.sync_skill_names(&names, |_name| true);
+                }
+                Some(Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to open skill usage DB: {} — curator disabled", e);
+                None
+            }
+        }
+    };
 
     let session_manager = Arc::new(SessionManager::new(
         config.clone(),
         provider.clone(),
         tools,
         memory.clone(),
+        skill_usage_db,
     ));
     scheduler.set_session_manager(session_manager.clone());
 
@@ -1233,10 +1371,17 @@ pub async fn run_daemon(config: Config) -> Result<()> {
     // Start Dream Thread
     let state_handle = daemon_state.clone();
     let config_handle = config.clone();
-    let provider_handle = provider.clone();
+    let provider_handle = cheap_provider.clone().unwrap_or_else(|| provider.clone());
+    let dream_model_name = cheap_model_name.clone();
     let memory_handle = memory.clone();
     thread::spawn(move || {
-        crate::dream::dream_thread(state_handle, config_handle, provider_handle, memory_handle);
+        crate::dream::dream_thread(
+            state_handle,
+            config_handle,
+            provider_handle,
+            dream_model_name,
+            memory_handle,
+        );
     });
 
     // Start Memory Hygiene Thread

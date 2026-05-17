@@ -11,7 +11,7 @@ Focus on:
 If something stands out, save it using the memory_md tool.
 If nothing is worth saving, just say "Nothing to save." and stop."#;
 
-const SKILL_REVIEW_PROMPT: &str = r#"Review the conversation above and consider saving or updating a skill ONLY if there is a genuinely reusable, non-trivial pattern.
+const SKILL_REVIEW_PROMPT: &str = r#"Review the conversation above and consider saving, updating, or pruning a skill ONLY if there is a genuinely reusable, non-trivial pattern.
 
 Create or update a skill ONLY when ALL of these are true:
 1. The task required 5+ tool calls OR significant trial-and-error to get right.
@@ -26,6 +26,7 @@ DO NOT create skills for:
 
 If a relevant skill already exists, update it with what you learned.
 Otherwise, create a new skill if the approach is reusable.
+If an existing skill is clearly stale, unsafe, duplicative, or misleading, prune it with skill_manage delete. Prefer editing over deletion when the skill is still useful.
 If nothing is worth saving, just say "Nothing to save." and stop."#;
 
 const COMBINED_REVIEW_PROMPT: &str = r#"Review the conversation above and consider two things:
@@ -33,7 +34,7 @@ const COMBINED_REVIEW_PROMPT: &str = r#"Review the conversation above and consid
 **Memory**: Has the user revealed things about themselves — their persona, desires, preferences, or personal details worth remembering?
 **Skills**: Was a non-trivial approach used to complete a task that required trial and error, or changing course due to experiential findings along the way?
 
-Only act if there's something genuinely worth saving.
+Only act if there's something genuinely worth saving. If an existing skill is clearly stale, unsafe, duplicative, or misleading, prune it with skill_manage delete; otherwise prefer updating useful skills.
 If nothing stands out, just say "Nothing to save." and stop."#;
 
 const FLUSH_PROMPT: &str = r#"[System: The session is being compressed. Save anything worth remembering — prioritize user preferences, corrections, and recurring patterns over task-specific details.]
@@ -43,13 +44,33 @@ Use the memory_md tool to append important findings to the memory or user files.
 /// Sentinel marker appended to history before flush and stripped afterward.
 const FLUSH_SENTINEL: &str = "[FLUSH_SENTINEL]";
 
+fn review_history_snapshot(history: &[ChatMessage], keep_recent: usize) -> Vec<ChatMessage> {
+    if history.len() <= keep_recent + 1 {
+        return history.to_vec();
+    }
+
+    let mut snapshot = Vec::with_capacity(keep_recent + 1);
+    let start_idx = history.len().saturating_sub(keep_recent);
+
+    if let Some(system) = history.first()
+        && system.role == "system"
+        && start_idx > 0
+    {
+        snapshot.push(system.clone());
+    }
+
+    snapshot.extend(history.iter().skip(start_idx).cloned());
+    snapshot
+}
+
 /// Spawn a background review that runs in a tokio task.
 /// It creates a lightweight forked Agent with only memory/skill tools and
 /// `max_tool_iterations=8` (Hermes-style), preventing recursive review spawning.
 pub fn spawn_background_review(
     provider: Arc<dyn crate::providers::Provider>,
     cheap_provider: Option<Arc<dyn crate::providers::Provider>>,
-    model_name: String,
+    _model_name: String,
+    cheap_model_name: String,
     tools: Vec<Arc<dyn Tool>>,
     workspace_dir: String,
     conversation_history: Vec<ChatMessage>,
@@ -70,7 +91,11 @@ pub fn spawn_background_review(
             .into_iter()
             .filter(|t| {
                 let n = t.name();
-                n == "memory_md" || n == "skill_manage" || n == "memory_store"
+                n == "memory_md"
+                    || n == "memory_store"
+                    || n == "skill_manage"
+                    || n == "skill_list"
+                    || n == "skill_view"
             })
             .collect();
 
@@ -78,19 +103,21 @@ pub fn spawn_background_review(
             return;
         }
 
-        // Hermes-style: create a forked Agent with limited scope
+        // Hermes-style: create a forked Agent with limited scope. Background
+        // review is non-user-facing, so prefer the cheap provider/model.
+        let review_provider = cheap_provider.clone().unwrap_or(provider);
         let mut agent = crate::agent::Agent::new(
-            provider,
-            cheap_provider,
+            review_provider,
+            None,
             review_tools,
-            model_name,
+            cheap_model_name,
             workspace_dir,
         );
         agent.max_tool_iterations = 8;
         agent.memory_nudge_interval = 0;
         agent.skill_nudge_interval = 0;
         agent.auto_save = false;
-        agent.history = conversation_history;
+        agent.history = review_history_snapshot(&conversation_history, 24);
 
         let ctx = ToolContext {
             channel: "background_review".to_string(),
@@ -148,11 +175,8 @@ pub async fn flush_memories(
         return;
     }
 
-    // Record the index before the sentinel so we can strip afterward
-    let pre_flush_len = history.len();
-
-    // Append sentinel marker
-    history.push(ChatMessage::user(format!(
+    let mut review_history = review_history_snapshot(history, 40);
+    review_history.push(ChatMessage::user(format!(
         "{} {}",
         FLUSH_SENTINEL, FLUSH_PROMPT
     )));
@@ -167,7 +191,7 @@ pub async fn flush_memories(
         .collect();
 
     let request = crate::providers::ChatRequest {
-        messages: history,
+        messages: &review_history,
         model: &model_name,
         temperature: 0.3,
         max_tokens: Some(2000),
@@ -182,10 +206,7 @@ pub async fn flush_memories(
 
     let response = match provider.chat(&request) {
         Ok(r) => r,
-        Err(_) => {
-            history.truncate(pre_flush_len);
-            return;
-        }
+        Err(_) => return,
     };
 
     // Execute any tool calls returned (single-turn, no loop)
@@ -207,7 +228,4 @@ pub async fn flush_memories(
             }
         }
     }
-
-    // Strip sentinel and all flush artifacts from history
-    history.truncate(pre_flush_len);
 }

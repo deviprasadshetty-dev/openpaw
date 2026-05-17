@@ -15,6 +15,7 @@ pub fn dream_thread(
     state: Arc<std::sync::Mutex<DaemonState>>,
     config: Arc<Config>,
     provider: Arc<dyn Provider>,
+    model_name: String,
     memory: Option<Arc<dyn crate::agent::memory_loader::Memory>>,
 ) {
     info!("Dream thread started");
@@ -41,11 +42,12 @@ pub fn dream_thread(
             info!("System is idle. Triggering Dream Sequence...");
 
             if let Some(mem) = &memory {
-                let model = config
-                    .default_model
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string());
-                match dream_sequence(provider.clone(), mem.clone(), &model, &config.workspace_dir) {
+                match dream_sequence(
+                    provider.clone(),
+                    mem.clone(),
+                    &model_name,
+                    &config.workspace_dir,
+                ) {
                     Ok(_) => {
                         info!("Dream Sequence completed successfully.");
                         let mut guard = state.lock().unwrap();

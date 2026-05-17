@@ -26,6 +26,7 @@ pub struct SkillExecution {
 /// Flushed to disk periodically.
 pub struct SkillJournal {
     entries: Mutex<Vec<SkillExecution>>,
+    flushed_entries: Mutex<usize>,
     workspace_dir: String,
 }
 
@@ -33,6 +34,7 @@ impl SkillJournal {
     pub fn new(workspace_dir: String) -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            flushed_entries: Mutex::new(0),
             workspace_dir,
         }
     }
@@ -102,10 +104,69 @@ impl SkillJournal {
         total >= min_executions && (successes < total || !corrections.is_empty())
     }
 
+    /// Compact human-readable summary for the background review agent.
+    pub fn improvement_summary(&self, min_executions: usize) -> Option<String> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut by_skill: HashMap<String, Vec<&SkillExecution>> = HashMap::new();
+        for entry in entries.iter().filter(|e| !e.skill_name.is_empty()) {
+            by_skill
+                .entry(entry.skill_name.clone())
+                .or_default()
+                .push(entry);
+        }
+
+        let mut lines = Vec::new();
+        for (skill_name, skill_entries) in by_skill {
+            if skill_entries.len() < min_executions {
+                continue;
+            }
+
+            let failures: Vec<_> = skill_entries.iter().filter(|e| !e.success).collect();
+            let corrections: Vec<_> = skill_entries
+                .iter()
+                .filter_map(|e| e.user_correction.as_deref())
+                .collect();
+            if failures.is_empty() && corrections.is_empty() {
+                continue;
+            }
+
+            lines.push(format!(
+                "- {}: {} executions, {} failures, {} corrections",
+                skill_name,
+                skill_entries.len(),
+                failures.len(),
+                corrections.len()
+            ));
+            for failure in failures.iter().take(2) {
+                lines.push(format!(
+                    "  failure via {}: {}",
+                    failure.tool_name,
+                    truncate_for_summary(&failure.notes, 180)
+                ));
+            }
+            for correction in corrections.iter().take(2) {
+                lines.push(format!(
+                    "  correction: {}",
+                    truncate_for_summary(correction, 180)
+                ));
+            }
+        }
+
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+
     /// Flush the journal to a JSONL file for persistence.
     pub fn flush(&self) -> anyhow::Result<()> {
         let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.is_empty() {
+        let mut flushed_entries = self
+            .flushed_entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *flushed_entries >= entries.len() {
             return Ok(());
         }
 
@@ -121,7 +182,7 @@ impl SkillJournal {
             .append(true)
             .open(&journal_path)?;
 
-        for entry in entries.iter() {
+        for entry in entries.iter().skip(*flushed_entries) {
             let line = serde_json::json!({
                 "skill_name": entry.skill_name,
                 "tool_name": entry.tool_name,
@@ -134,6 +195,7 @@ impl SkillJournal {
             writeln!(file, "{}", line)?;
         }
 
+        *flushed_entries = entries.len();
         Ok(())
     }
 }
@@ -270,6 +332,15 @@ pub fn load_journal(workspace_dir: &str) -> SkillJournal {
         }
     }
 
+    let loaded = journal
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len();
+    if let Ok(mut flushed_entries) = journal.flushed_entries.lock() {
+        *flushed_entries = loaded;
+    }
+
     journal
 }
 
@@ -295,3 +366,13 @@ fn now_secs() -> u64 {
 }
 
 use std::io::Write;
+
+fn truncate_for_summary(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max_chars.saturating_sub(3)).collect();
+    out.push_str("...");
+    out
+}

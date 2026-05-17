@@ -90,7 +90,7 @@ impl Tool for SkillSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search GitHub for OpenPaw-compatible skills (also finds PicoClaw/OpenClaw skills). Returns a scored list with install URLs. Use skill_install to install one."
+        "Search public skill libraries including skills.sh, GitHub, and OpenPaw/OpenClaw/PicoClaw sources. Returns scored candidates with install URLs. Use before creating a new skill when a reusable public skill may already exist."
     }
 
     fn parameters_json(&self) -> String {
@@ -136,21 +136,31 @@ impl Tool for SkillSearchTool {
             };
             let total = scores.total();
             let rec = recommendation(total);
+            let source = c.registry.as_deref().unwrap_or("github");
+            let popularity = if let Some(installs) = c.installs {
+                format!("Installs: {}", installs)
+            } else {
+                format!("Stars/score: {}", c.stargazers_count)
+            };
+            let install_name = c.install_name.as_deref().unwrap_or(&c.name);
 
             lines.push(format!(
-                "{}. **{}** by {}\n   {}\n   ⭐/Score {} | Score: {:.0}% | Rec: {}\n   URL: {}\n",
+                "{}. **{}** by {} [{}]\n   {}\n   {} | Score: {:.0}% | Rec: {}\n   URL: {}\n   Install: skill_install url=\"{}\" name=\"{}\"\n",
                 i + 1,
                 c.name,
                 c.owner.login,
-                c.description.as_deref().unwrap_or("No description"),
-                c.stargazers_count,
+                source,
+                c.description.as_deref().unwrap_or("No description provided"),
+                popularity,
                 total * 100.0,
                 rec,
                 c.html_url,
+                c.html_url,
+                install_name,
             ));
         }
 
-        lines.push("\nTo install: use skill_install with the GitHub URL above.".to_string());
+        lines.push("\nInspect the source before installing unfamiliar skills. Prefer high-score skills; install with skill_install when the user asks to use one or when it is clearly needed for the task.".to_string());
         Ok(ToolResult::ok(lines.join("\n")))
     }
 }

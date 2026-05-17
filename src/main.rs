@@ -23,6 +23,7 @@ pub mod dialectic_enhanced;
 pub mod doctor;
 pub mod dream;
 pub mod events;
+#[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod goals;
 pub mod hardware;
@@ -63,6 +64,7 @@ pub mod streaming;
 pub mod subagent;
 pub mod token_estimator;
 pub mod tools;
+#[cfg(feature = "tui")]
 pub mod tui_onboard;
 pub mod tunnel;
 pub mod update;
@@ -146,8 +148,15 @@ async fn main() -> Result<()> {
 
     // Handle onboard before any config loading — it creates the config from scratch.
     if let Some(Commands::Onboard { dir }) = &args.command {
-        onboard::interactive_onboard(dir)?;
-        return Ok(());
+        #[cfg(feature = "tui")]
+        {
+            onboard::interactive_onboard(dir)?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            anyhow::bail!("Onboarding wizard requires the 'tui' feature. Please recompile with --features tui or manually create config.json.");
+        }
     }
 
     let config_path = args.config.clone().or_else(|| {
@@ -190,6 +199,7 @@ async fn main() -> Result<()> {
             bindings: Vec::new(),
             skills: Default::default(),
             self_learning: Default::default(),
+            curator: Default::default(),
             efficiency: crate::config_types::EfficiencyConfig::default(),
             config_path: "./config.json".to_string(),
             workspace_dir: ".".to_string(),
@@ -204,21 +214,43 @@ async fn main() -> Result<()> {
 
     match &args.command {
         Some(Commands::Onboard { dir }) => {
-            onboard::interactive_onboard(dir)?;
-            return Ok(());
+            #[cfg(feature = "tui")]
+            {
+                onboard::interactive_onboard(dir)?;
+                return Ok(());
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                anyhow::bail!("Onboarding wizard requires the 'tui' feature.");
+            }
         }
         None => {
             // No command — print banner + quick help, then start daemon
             print!("{}", onboard::BANNER);
             println!("  No command specified. Starting agent daemon...");
             println!("  Tip: run `openpaw --help` to see all commands.\n");
-            gateway::serve(config).await?;
+            #[cfg(feature = "gateway")]
+            {
+                gateway::serve(config).await?;
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                daemon::run_daemon(config).await?;
+            }
         }
         Some(Commands::Gateway) => {
-            gateway::serve(config).await?;
+            #[cfg(feature = "gateway")]
+            {
+                gateway::serve(config).await?;
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                anyhow::bail!("Gateway requires the 'gateway' feature.");
+            }
         }
         Some(Commands::Agent { message }) => {
             // Add Telegram config from environment variable if available (override/append)
+            #[cfg(feature = "telegram")]
             if let Ok(bot_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
                 let already_configured = config
                     .channels
@@ -305,13 +337,32 @@ async fn run_one_shot_message(config: crate::config::Config, message: String) ->
     .await;
 
     // Create agent with tools
-    let mut agent = Agent::new(provider, None, tools, model_name, config.workspace_dir);
+    let workspace_dir = config.workspace_dir.clone();
+    let mut agent = Agent::new(provider, None, tools, model_name, workspace_dir.clone());
 
     // Self-Learning: Configure nudge intervals from config
     agent.skill_nudge_interval = config.skills.creation_nudge_interval;
     agent.memory_nudge_interval = config.self_learning.memory_nudge_interval;
     agent.memory_flush_min_turns = config.self_learning.flush_min_turns;
     agent.efficiency_config = config.efficiency.clone();
+
+    // Curator: Initialize skill usage DB for CLI mode too
+    {
+        let db_path = std::path::Path::new(&workspace_dir)
+            .join("state")
+            .join("skill_usage.db");
+        if let Ok(db) = crate::skills::usage::SkillUsageDB::open(&db_path) {
+            // Sync existing skills
+            if let Ok(existing_skills) =
+                crate::skills::list_skills(std::path::Path::new(&workspace_dir))
+            {
+                let names: Vec<String> = existing_skills.iter().map(|s| s.name.clone()).collect();
+                let _ = db.sync_skill_names(&names, |_name| true);
+            }
+            agent.skill_usage_db = Some(std::sync::Arc::new(db));
+        }
+    }
+    agent.curator_config = config.curator.clone();
 
     // Create tool context (dummy values for CLI)
     let context = ToolContext {

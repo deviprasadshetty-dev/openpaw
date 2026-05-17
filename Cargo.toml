@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.89"
-axum = "0.8.8"
+axum = { version = "0.8.8", optional = true }
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.5.60", features = ["derive"] }
@@ -15,17 +15,17 @@ dotenvy = "0.15.7"
 libc = "0.2.182"
 postgres = "0.19.7"
 rand = "0.8.5"
-reqwest = { version = "0.13.2", features = ["json", "blocking", "form", "multipart"] }
-rusqlite = { version = "0.38.0", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"] }
+rusqlite = { version = "0.38.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.8"
 base64 = "0.22.1"
 md5 = "0.7"
 crossbeam-channel = "0.5.12"
-teloxide = { version = "0.17.0", features = ["macros", "rustls"] }
+teloxide = { version = "0.17.0", features = ["macros", "rustls"], optional = true }
 tokio = { version = "1.49.0", features = ["full"] }
-tower-http = { version = "0.6.8", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.6.8", features = ["cors", "fs", "trace"], optional = true }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 urlencoding = "2.1.3"
@@ -34,21 +34,39 @@ regex = "1.12.3"
 toml = "1.0.3"
 which = "8.0.0"
 pulldown-cmark = "0.13.1"
-sysinfo = "0.33.1"
+sysinfo = { version = "0.33.1", optional = true }
 chacha20poly1305 = "0.10"
 hex = "0.4"
-dialoguer = "0.11"
-ratatui = "0.29"
-crossterm = "0.28"
-tui-input = "0.11"
+dialoguer = { version = "0.11", optional = true }
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
+tui-input = { version = "0.11", optional = true }
 unicode-width = "0.2"
 strum = { version = "0.26", features = ["derive"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["rustls"] }
 futures-util = "0.3"
 url = "2"
-imap = "2.4.1"
-lettre = "0.11.21"
-native-tls = "0.2.18"
+imap = { version = "2.4.1", optional = true, default-features = false, features = ["tls"] }
+native-tls = { version = "0.2", optional = true }
+lettre = { version = "0.11", features = ["tokio1-rustls-tls", "tokio1-native-tls"], optional = true }
+rustls = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[features]
+default = ["tui", "telegram", "gateway", "browser", "email", "hardware", "sqlite-bundled"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:tui-input", "dep:dialoguer"]
+telegram = ["dep:teloxide"]
+gateway = ["dep:axum", "dep:tower-http"]
+browser = []
+email = ["dep:imap", "dep:lettre", "dep:rustls", "dep:native-tls"]
+hardware = ["dep:sysinfo"]
+sqlite-bundled = ["rusqlite/bundled"]
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link Time Optimization
+codegen-units = 1   # Better optimization
+panic = "abort"     # Reduce binary size by removing panic unwinding
+strip = "symbols"   # Strip symbols from binary

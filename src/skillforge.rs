@@ -12,6 +12,12 @@ pub struct SkillCandidate {
     pub owner: Owner,
     #[serde(default)]
     pub has_license: bool,
+    #[serde(default)]
+    pub registry: Option<String>,
+    #[serde(default)]
+    pub install_name: Option<String>,
+    #[serde(default)]
+    pub installs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,8 +47,11 @@ struct SkillsShSearchResponse {
 #[derive(Debug, Deserialize)]
 struct SkillsShSkill {
     name: String,
-    description: String,
+    #[serde(default)]
+    description: Option<String>,
     source: String,
+    #[serde(default, rename = "skillId")]
+    skill_id: Option<String>,
     #[serde(default)]
     installs: u64,
 }
@@ -113,6 +122,9 @@ impl SkillForge {
                     login: "clawhub".to_string(),
                 },
                 has_license: true,
+                registry: Some("clawhub".to_string()),
+                install_name: None,
+                installs: None,
             })
             .collect();
 
@@ -138,23 +150,14 @@ impl SkillForge {
         let candidates = resp
             .skills
             .into_iter()
-            .filter(|skill| {
-                let name = skill.name.to_lowercase();
-                let desc = skill.description.to_lowercase();
-                name.contains("claw")
-                    || name.contains("paw")
-                    || desc.contains("claw")
-                    || desc.contains("paw")
-                    || desc.contains("agent")
-            })
             .map(|skill| SkillCandidate {
-                name: skill.name,
+                name: skill.name.clone(),
                 html_url: if skill.source.starts_with("http") {
                     skill.source.clone()
                 } else {
                     format!("https://github.com/{}", skill.source)
                 },
-                description: Some(skill.description),
+                description: skill.description,
                 stargazers_count: skill.installs / 100,
                 language: None,
                 owner: Owner {
@@ -166,6 +169,9 @@ impl SkillForge {
                         .to_string(),
                 },
                 has_license: true,
+                registry: Some("skills.sh".to_string()),
+                install_name: skill.skill_id.or(Some(skill.name)),
+                installs: Some(skill.installs),
             })
             .collect();
 
@@ -239,6 +245,9 @@ impl SkillForge {
                 language: repo.language,
                 owner: repo.owner,
                 has_license: repo.license.is_some(),
+                registry: Some("github".to_string()),
+                install_name: None,
+                installs: None,
             })
             .collect();
 

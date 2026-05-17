@@ -1,7 +1,7 @@
 # Build
 /target
+/vendor
 **/*.rs.bk
-Cargo.lock
 
 # Generated code
 gen/

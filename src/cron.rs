@@ -6,17 +6,12 @@ use crate::tools::process_util;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Cross-platform path to the OpenPaw data directory (~/.openpaw).
-/// Uses HOME on Linux/macOS, USERPROFILE on Windows, falls back to "."
-fn openpaw_data_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home).join(".openpaw")
+fn workspace_cron_path(workspace_dir: &str) -> PathBuf {
+    Path::new(workspace_dir).join("state").join("cron.json")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +141,7 @@ pub struct CronScheduler {
     session_manager: Arc<Mutex<Option<Arc<SessionManager>>>>,
     agent_timeout_secs: u64,
     workspace_dir: String,
+    cron_file_path: PathBuf,
 }
 
 use std::fs;
@@ -161,6 +157,7 @@ impl CronScheduler {
             session_manager: Arc::new(Mutex::new(None)),
             agent_timeout_secs: _config.scheduler.agent_timeout_secs,
             workspace_dir: _config.workspace_dir.clone(),
+            cron_file_path: workspace_cron_path(&_config.workspace_dir),
         };
         scheduler.load();
         scheduler
@@ -172,10 +169,7 @@ impl CronScheduler {
     }
 
     pub fn load(&self) {
-        let mut path = openpaw_data_dir();
-        path.push("cron.json");
-
-        if let Ok(data) = fs::read_to_string(path)
+        if let Ok(data) = fs::read_to_string(&self.cron_file_path)
             && let Ok(jobs) = serde_json::from_str::<HashMap<String, CronJob>>(&data)
         {
             let mut guard = self.jobs.lock().unwrap();
@@ -184,17 +178,14 @@ impl CronScheduler {
     }
 
     pub fn save(&self) {
-        let mut path = openpaw_data_dir();
-        path.push("cron.json");
-
         // Ensure the directory exists
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = self.cron_file_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
 
         let guard = self.jobs.lock().unwrap();
         if let Ok(data) = serde_json::to_string_pretty(&*guard) {
-            let _ = fs::write(path, data);
+            let _ = fs::write(&self.cron_file_path, data);
         }
     }
 
@@ -287,6 +278,7 @@ impl CronScheduler {
             session_manager: self.session_manager.clone(),
             agent_timeout_secs: self.agent_timeout_secs,
             workspace_dir: self.workspace_dir.clone(),
+            cron_file_path: self.cron_file_path.clone(),
         }
     }
 

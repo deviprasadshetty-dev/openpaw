@@ -61,9 +61,9 @@ pub struct ContextCompressor {
     pub last_completion_tokens: u64,
 
     // Iterative summary state
-    previous_summary: Option<String>,
-    last_compression_savings_pct: f64,
-    ineffective_compression_count: u32,
+    pub previous_summary: Option<String>,
+    pub last_compression_savings_pct: f64,
+    pub ineffective_compression_count: u32,
     summary_failure_cooldown_until: u64,
     summary_model_fallen_back: bool,
 }

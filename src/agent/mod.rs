@@ -1,5 +1,6 @@
 pub mod background_review;
 pub mod commands;
+pub mod curator;
 pub mod compaction;
 pub mod context_tokens;
 pub mod dispatcher;
@@ -90,6 +91,12 @@ pub struct Agent {
     /// Cooldown timestamp for background reviews (unix secs) to prevent spam.
     pub last_background_review: u64,
     pub observer: Option<Arc<dyn crate::observability::Observer>>,
+
+    // Curator / skill lifecycle management (Hermes-style)
+    pub skill_usage_db: Option<Arc<crate::skills::usage::SkillUsageDB>>,
+    pub curator_config: crate::config_types::CuratorConfig,
+    /// Timestamp of last curator check (unix secs).
+    pub last_curator_check: u64,
 }
 
 /// QW-6: Conditional follow-through detection.
@@ -139,6 +146,18 @@ fn select_context_window(history: &[ChatMessage], query: &str) -> Vec<ChatMessag
     }
 
     history.to_vec()
+}
+
+fn estimate_tool_specs_tokens_rough(tools: &[ToolSpec]) -> u64 {
+    let total_chars: u64 = tools
+        .iter()
+        .map(|t| {
+            t.name.len() as u64
+                + t.description.len() as u64
+                + t.parameters.to_string().len() as u64
+        })
+        .sum();
+    (total_chars + 3) / 4
 }
 
 fn has_tool(available_tools: &[Arc<dyn Tool>], name: &str) -> bool {
@@ -393,6 +412,49 @@ pub fn should_force_follow_through(text: &str, available_tools: &[Arc<dyn Tool>]
     false
 }
 
+/// Strips internal reasoning/thinking tags from model output before storing in history.
+/// Models like DeepSeek-R1, o1, o3 emit `<think>`, `<thinking>`, or
+/// `<reasoning_scratchpad>` blocks containing internal monologue. If leaked into
+/// conversation history they add 500-2000 tokens/turn that get re-sent every
+/// subsequent turn -- 10K-40K wasted tokens over a session.
+///
+/// Hermes-equivalent: reasoning_tag_scrubber.py
+pub fn strip_reasoning_tags(text: &str) -> String {
+    use std::sync::OnceLock;
+    use regex::Regex;
+
+    static REASONING_RE: OnceLock<Regex> = OnceLock::new();
+    static THINKING_RE: OnceLock<Regex> = OnceLock::new();
+    static SCRATCHPAD_RE: OnceLock<Regex> = OnceLock::new();
+    static CONTEMPLATION_RE: OnceLock<Regex> = OnceLock::new();
+
+    let reasoning_re = REASONING_RE.get_or_init(|| {
+        Regex::new(r"(?is)<reasoning(?:\s*\([^)]*\))?\s*>(?:.|\n)*?</reasoning(?:\s*\([^)]*\))?\s*>")
+            .unwrap()
+    });
+    let out = reasoning_re.replace_all(text, "");
+
+    let thinking_re = THINKING_RE.get_or_init(|| {
+        Regex::new(r"(?is)<think(?:ing)?>(?:.|\n)*?</think(?:ing)?>")
+            .unwrap()
+    });
+    let out = thinking_re.replace_all(&out, "");
+
+    let scratchpad_re = SCRATCHPAD_RE.get_or_init(|| {
+        Regex::new(r"(?is)<reasoning_scratchpad>(?:.|\n)*?</reasoning_scratchpad>")
+            .unwrap()
+    });
+    let out = scratchpad_re.replace_all(&out, "");
+
+    let contemplation_re = CONTEMPLATION_RE.get_or_init(|| {
+        Regex::new(r"(?is)<contemplat(?:e|ion)>(?:.|\n)*?</contemplat(?:e|ion)>")
+            .unwrap()
+    });
+    let out = contemplation_re.replace_all(&out, "");
+
+    out.trim().to_string()
+}
+
 /// Removes raw tool-call markup from LLM output that leaked into the final text.
 /// Strips:
 ///   - `<tool_call>...</tool_call>` XML blocks
@@ -471,6 +533,30 @@ pub fn is_low_value_response(text: &str) -> bool {
 }
 
 impl Agent {
+    fn clamp_request_max_tokens(
+        &self,
+        requested_max_tokens: u32,
+        history_slice: &[ChatMessage],
+        tool_specs: &[ToolSpec],
+    ) -> u32 {
+        if self.token_limit == 0 {
+            return requested_max_tokens;
+        }
+
+        let request_tokens = crate::token_estimator::estimate_history_tokens_rough(history_slice)
+            + estimate_tool_specs_tokens_rough(tool_specs);
+        let reserve_tokens = 64u64;
+        let available = self
+            .token_limit
+            .saturating_sub(request_tokens.saturating_add(reserve_tokens));
+
+        if available == 0 {
+            return requested_max_tokens;
+        }
+
+        requested_max_tokens.min(available.min(u32::MAX as u64) as u32)
+    }
+
     pub fn new(
         provider: Arc<dyn Provider>,
         cheap_provider: Option<Arc<dyn Provider>>,
@@ -547,6 +633,9 @@ impl Agent {
             )),
             last_background_review: 0,
             observer: None,
+            skill_usage_db: None,
+            curator_config: crate::config_types::CuratorConfig::default(),
+            last_curator_check: 0,
         };
 
         agent.max_tool_iterations = 150; // High limit to allow complex tasks
@@ -570,6 +659,16 @@ impl Agent {
         self
     }
 
+    pub fn with_skill_usage_db(mut self, db: Arc<crate::skills::usage::SkillUsageDB>) -> Self {
+        self.skill_usage_db = Some(db);
+        self
+    }
+
+    pub fn with_curator_config(mut self, config: crate::config_types::CuratorConfig) -> Self {
+        self.curator_config = config;
+        self
+    }
+
     pub fn reset_history(&mut self) {
         self.history.clear();
         self.has_system_prompt = false;
@@ -588,13 +687,23 @@ impl Agent {
             return (content.to_string(), None);
         }
 
+        let cleaned_current_request =
+            crate::multimodal::current_request_only(&parse_result.cleaned_text);
         let mut parts = Vec::new();
         parts.push(crate::providers::ContentPart::Text(
-            parse_result.cleaned_text.clone(),
+            cleaned_current_request.clone(),
         ));
+        let mut attachment_lines = Vec::new();
 
         for m_ref in parse_result.refs {
             let ref_path = m_ref.path;
+            let marker_kind = match m_ref.kind {
+                crate::multimodal::MultimodalKind::Image => "IMAGE",
+                crate::multimodal::MultimodalKind::Audio => "AUDIO",
+                crate::multimodal::MultimodalKind::Video => "VIDEO",
+                crate::multimodal::MultimodalKind::File => "FILE",
+            };
+            attachment_lines.push(format!("[{}:{}]", marker_kind, ref_path));
             match crate::multimodal::read_local_file(&ref_path, &self.multimodal_config) {
                 Ok(data) => {
                     parts.push(crate::providers::ContentPart::Media {
@@ -606,14 +715,26 @@ impl Agent {
                     warn!("Failed to read multimodal file {}: {}", ref_path, e);
                     // Add a placeholder text so the model knows a file was intended but failed
                     parts.push(crate::providers::ContentPart::Text(format!(
-                        "\n[Error loading file: {}]",
-                        ref_path
+                        "\n[Could not inline file: {}. Use the vision tool with this exact path if the user is asking about the attachment. Error: {}]",
+                        ref_path, e
                     )));
                 }
             }
         }
 
-        (parse_result.cleaned_text, Some(parts))
+        let final_text = if attachment_lines.is_empty() {
+            cleaned_current_request
+        } else {
+            format!(
+                "{}\n\nAttachments for the current request:\n{}\nIf the user asks about an attachment and it is not already visible to you, call the vision tool with the exact path.",
+                cleaned_current_request,
+                attachment_lines.join("\n")
+            )
+            .trim()
+            .to_string()
+        };
+
+        (final_text, Some(parts))
     }
 
     fn compute_tool_hash(&self) -> u64 {
@@ -648,7 +769,7 @@ impl Agent {
     }
 
     pub fn build_system_prompt(&mut self) -> Result<String> {
-        let caps = None; // Capabilities not yet implemented
+        let caps = crate::capabilities::build_loaded_tools_summary(&self.tools);
         let conversation_context = self.conversation_context.as_ref();
 
         let learnings = self
@@ -682,7 +803,7 @@ impl Agent {
             workspace_dir: &self.workspace_dir,
             model_name: &self.model_name,
             tools: &self.tools,
-            capabilities_section: caps,
+            capabilities_section: Some(&caps),
             conversation_context,
             use_native_tools: self.provider.supports_native_tools(),
             token_limit: self.token_limit,
@@ -822,7 +943,7 @@ impl Agent {
         let dialectic = crate::dialectic::load_dialectic_context(&self.workspace_dir);
         let enriched_msg = if !dialectic.is_empty() {
             format!(
-                "<memory-context>\n{}\n</memory-context>\n\n{}",
+                "<memory_context>\n{}\n</memory_context>\n\n<current_request>\n{}\n</current_request>",
                 dialectic, enriched_msg
             )
         } else {
@@ -972,11 +1093,15 @@ impl Agent {
                 current_max_tokens =
                     current_max_tokens.min(self.efficiency_config.turn_token_budget as u32);
             }
+            current_max_tokens =
+                self.clamp_request_max_tokens(current_max_tokens, &history_slice, &tool_specs);
+            current_max_tokens =
+                self.clamp_request_max_tokens(current_max_tokens, &history_slice, &tool_specs);
 
             // DESIGN-1 FIX: Only check the cache on the first iteration and only
             // return cached if the cached value has no tool calls embedded.
             if iterations == 0 {
-                if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
+                if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use, self.temperature) {
                     // Only use cached response if it is a plain-text final response
                     if !cached.contains("<tool_call") && !cached.contains("[TOOL_CALL]") {
                         return Ok(strip_tool_call_markup(&cached));
@@ -995,24 +1120,23 @@ impl Agent {
                 history_slice.clone()
             };
 
-            let request = ChatRequest {
-                messages: &api_messages,
-                model: &model_to_use,
-                temperature: self.temperature,
-                max_tokens: Some(current_max_tokens),
-                tools: if tool_specs.is_empty() {
-                    None
-                } else {
-                    Some(&tool_specs)
-                },
-                timeout_secs: 60,
-                reasoning_effort: None,
-            };
-
             // R-2: Retry logic for provider calls
             let mut last_error = None;
             let mut response = None;
             for attempt in 1..=3 {
+                let request = ChatRequest {
+                    messages: &api_messages,
+                    model: &model_to_use,
+                    temperature: self.temperature,
+                    max_tokens: Some(current_max_tokens),
+                    tools: if tool_specs.is_empty() {
+                        None
+                    } else {
+                        Some(&tool_specs)
+                    },
+                    timeout_secs: 60,
+                    reasoning_effort: None,
+                };
                 match active_provider.chat(&request) {
                     Ok(resp) => {
                         response = Some(resp);
@@ -1020,6 +1144,28 @@ impl Agent {
                     }
                     Err(e) => {
                         warn!("Provider chat attempt {} failed: {}", attempt, e);
+                        let err_text = e.to_string();
+                        if let Some(available) =
+                            crate::token_estimator::parse_available_output_tokens_from_error(
+                                &err_text,
+                            )
+                        {
+                            current_max_tokens =
+                                current_max_tokens.min(available.min(u32::MAX as u64) as u32);
+                        } else if let Some(limit) =
+                            crate::token_estimator::parse_context_limit_from_error(&err_text)
+                        {
+                            let request_tokens =
+                                crate::token_estimator::estimate_history_tokens_rough(
+                                    &history_slice,
+                                ) + estimate_tool_specs_tokens_rough(&tool_specs);
+                            let available =
+                                limit.saturating_sub(request_tokens.saturating_add(64));
+                            if available > 0 {
+                                current_max_tokens = current_max_tokens
+                                    .min(available.min(u32::MAX as u64) as u32);
+                            }
+                        }
                         last_error = Some(e);
                         if attempt < 3 {
                             tokio::time::sleep(std::time::Duration::from_millis(
@@ -1051,16 +1197,6 @@ impl Agent {
             {
                 self.total_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
                 self.current_turn_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
-                if let Some(tracker) = &mut self.cost_tracker {
-                    let token_usage = crate::cost::TokenUsage::new(
-                        &model_to_use,
-                        usage.prompt_tokens as u64,
-                        usage.completion_tokens as u64,
-                        0.0,
-                        0.0,
-                    );
-                    let _ = tracker.record_usage(token_usage);
-                }
             }
 
             if let Some(obs) = &self.observer {
@@ -1086,7 +1222,7 @@ impl Agent {
             if !has_native_tool_calls && !has_xml_tool_calls {
                 if let Some(ref content) = response.content {
                     self.response_cache
-                        .insert(&self.history, &model_to_use, content.clone());
+                        .insert(&self.history, &model_to_use, self.temperature, content.clone());
                 }
             }
 
@@ -1128,9 +1264,13 @@ impl Agent {
             }
 
             // Append assistant response to live history
+            // Scrub reasoning tags before storing to prevent token bloat on subsequent turns
+            let scrubbed_content = strip_reasoning_tags(
+                &response.content.clone().unwrap_or_default(),
+            );
             let assistant_msg = ChatMessage {
                 role: "assistant".to_string(),
-                content: response.content.clone().unwrap_or_default(),
+                content: scrubbed_content,
                 name: None,
                 tool_calls: if response.tool_calls.is_empty() {
                     None
@@ -1402,19 +1542,54 @@ impl Agent {
             if self.efficiency_config.skill_self_improvement {
                 if let Some(ref journal) = self.skill_journal {
                     for result in &execution_results {
-                        // Check if this tool belongs to a skill
                         let skill_name = self
                             .tools
                             .iter()
                             .find(|t| t.name() == result.name)
                             .map(|t| t.skill_name())
-                            .unwrap_or(&result.name)
-                            .to_string();
+                            .unwrap_or("");
 
-                        if result.success {
+                        if skill_name.is_empty() {
+                            continue;
+                        } else if result.success {
                             journal.record_success(&skill_name, &result.name, &result.output);
                         } else {
                             journal.record_failure(&skill_name, &result.name, &result.output);
+                        }
+                    }
+                }
+            }
+
+            // ── CURATOR: Record skill usage in persistent DB ──
+            if let Some(ref usage_db) = self.skill_usage_db {
+                for result in &execution_results {
+                    let skill_name = self
+                        .tools
+                        .iter()
+                        .find(|t| t.name() == result.name)
+                        .map(|t| t.skill_name())
+                        .unwrap_or("");
+                    if !skill_name.is_empty() && result.success {
+                        let _ = usage_db.record_use(&skill_name);
+                    }
+                }
+                // Also record skill_manage actions
+                for result in &execution_results {
+                    if result.name == "skill_manage" {
+                        // Try to parse action from output
+                        if result.output.contains("created") || result.output.contains("Created") {
+                            // Extract skill name from output if possible, else just note
+                            let _ = usage_db.record(
+                                "_system_",
+                                crate::skills::usage::ActivityKind::Create,
+                                &result.output,
+                            );
+                        } else if result.output.contains("patched") || result.output.contains("updated") {
+                            let _ = usage_db.record(
+                                "_system_",
+                                crate::skills::usage::ActivityKind::Patch,
+                                &result.output,
+                            );
                         }
                     }
                 }
@@ -1605,20 +1780,90 @@ impl Agent {
         let provider = self.provider.clone();
         let cheap_provider = self.cheap_provider.clone();
         let model_name = self.model_name.clone();
+        let cheap_model_name = self.model_routing_config.cheap_model.clone();
         let tools = self.tools.clone();
         let workspace_dir = self.workspace_dir.clone();
-        let history_snapshot = self.history.clone();
+        let mut history_snapshot = self.history.clone();
+
+        if should_review_skills {
+            if let Some(ref journal) = self.skill_journal {
+                if let Some(summary) =
+                    journal.improvement_summary(self.efficiency_config.skill_min_executions)
+                {
+                    history_snapshot.push(ChatMessage::user(format!(
+                        "[Skill execution journal summary]\n{}",
+                        summary
+                    )));
+                }
+                let _ = journal.flush();
+            }
+        }
 
         background_review::spawn_background_review(
             provider,
             cheap_provider,
             model_name,
+            cheap_model_name,
             tools,
             workspace_dir,
             history_snapshot,
             should_review_memory,
             should_review_skills,
         );
+
+        // Also check if curator should run (Hermes-style periodic skill maintenance)
+        self.maybe_run_curator();
+    }
+
+    /// Curator: Check if curator should run and spawn if gates pass.
+    /// The curator runs periodically to review and consolidate agent-created skills.
+    fn maybe_run_curator(&mut self) {
+        let usage_db = match self.skill_usage_db.clone() {
+            Some(db) => db,
+            None => return,
+        };
+
+        if !self.curator_config.enabled {
+            return;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Check cooldown — use interval_hours converted to seconds
+        let interval_secs = self.curator_config.interval_hours * 3600;
+        if now.saturating_sub(self.last_curator_check) < interval_secs {
+            return;
+        }
+        self.last_curator_check = now;
+
+        let cheap_provider = self
+            .cheap_provider
+            .clone()
+            .unwrap_or_else(|| self.provider.clone());
+        let cheap_model = self.model_routing_config.cheap_model.clone();
+        let workspace_dir = self.workspace_dir.clone();
+
+        // Spawn curator in background task
+        tokio::spawn(async move {
+            let result = crate::agent::curator::run_curator_pass(
+                &usage_db,
+                &cheap_provider,
+                &cheap_model,
+                &workspace_dir,
+            )
+            .await;
+            match result {
+                Ok(summary) => {
+                    tracing::info!("curator: {}", summary);
+                }
+                Err(e) => {
+                    tracing::debug!("curator pass skipped or failed: {}", e);
+                }
+            }
+        });
     }
 
     /// Self-Learning: Flush memories before session exit or reset.
@@ -1632,8 +1877,11 @@ impl Agent {
             return;
         }
 
-        let provider = self.provider.clone();
-        let model_name = self.model_name.clone();
+        let provider = self
+            .cheap_provider
+            .clone()
+            .unwrap_or_else(|| self.provider.clone());
+        let model_name = self.model_routing_config.cheap_model.clone();
         let tools = self.tools.clone();
 
         background_review::flush_memories(provider, model_name, tools, &mut self.history).await;
@@ -1712,7 +1960,7 @@ impl Agent {
         let dialectic = crate::dialectic::load_dialectic_context(&self.workspace_dir);
         let enriched_msg = if !dialectic.is_empty() {
             format!(
-                "<memory-context>\n{}\n</memory-context>\n\n{}",
+                "<memory_context>\n{}\n</memory_context>\n\n<current_request>\n{}\n</current_request>",
                 dialectic, enriched_msg
             )
         } else {
@@ -1908,26 +2156,12 @@ impl Agent {
             // DESIGN-1 FIX: Only check cache on first iteration, and skip if cached
             // response contains tool calls (which would be garbled if returned raw).
             if iterations == 0 {
-                if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use) {
+                if let Some(cached) = self.response_cache.get(&history_slice, &model_to_use, self.temperature) {
                     if !cached.contains("<tool_call") && !cached.contains("[TOOL_CALL]") {
                         return Ok(strip_tool_call_markup(&cached));
                     }
                 }
             }
-
-            let request = ChatRequest {
-                messages: &history_slice,
-                model: &model_to_use,
-                temperature: self.temperature,
-                max_tokens: Some(current_max_tokens),
-                tools: if tool_specs.is_empty() {
-                    None
-                } else {
-                    Some(&tool_specs)
-                },
-                timeout_secs: 60,
-                reasoning_effort: None,
-            };
 
             // Use streaming: collect full text via shared accumulator
             let accumulated = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -1935,6 +2169,19 @@ impl Agent {
             let mut last_error = None;
             let mut response = None;
             for attempt in 1..=3 {
+                let request = ChatRequest {
+                    messages: &history_slice,
+                    model: &model_to_use,
+                    temperature: self.temperature,
+                    max_tokens: Some(current_max_tokens),
+                    tools: if tool_specs.is_empty() {
+                        None
+                    } else {
+                        Some(&tool_specs)
+                    },
+                    timeout_secs: 60,
+                    reasoning_effort: None,
+                };
                 let acc_retry = accumulated.clone();
                 let cb_retry = shared_callback.clone();
                 let stream_cb: crate::providers::StreamCallback =
@@ -1956,6 +2203,28 @@ impl Agent {
                     }
                     Err(e) => {
                         warn!("Provider chat_stream attempt {} failed: {}", attempt, e);
+                        let err_text = e.to_string();
+                        if let Some(available) =
+                            crate::token_estimator::parse_available_output_tokens_from_error(
+                                &err_text,
+                            )
+                        {
+                            current_max_tokens =
+                                current_max_tokens.min(available.min(u32::MAX as u64) as u32);
+                        } else if let Some(limit) =
+                            crate::token_estimator::parse_context_limit_from_error(&err_text)
+                        {
+                            let request_tokens =
+                                crate::token_estimator::estimate_history_tokens_rough(
+                                    &history_slice,
+                                ) + estimate_tool_specs_tokens_rough(&tool_specs);
+                            let available =
+                                limit.saturating_sub(request_tokens.saturating_add(64));
+                            if available > 0 {
+                                current_max_tokens = current_max_tokens
+                                    .min(available.min(u32::MAX as u64) as u32);
+                            }
+                        }
                         last_error = Some(e);
                         if attempt < 3 {
                             tokio::time::sleep(std::time::Duration::from_millis(
@@ -1991,16 +2260,6 @@ impl Agent {
             {
                 self.total_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
                 self.current_turn_tokens += (usage.prompt_tokens + usage.completion_tokens) as u64;
-                if let Some(tracker) = &mut self.cost_tracker {
-                    let token_usage = crate::cost::TokenUsage::new(
-                        &model_to_use,
-                        usage.prompt_tokens as u64,
-                        usage.completion_tokens as u64,
-                        0.0,
-                        0.0,
-                    );
-                    let _ = tracker.record_usage(token_usage);
-                }
             }
 
             if let Some(obs) = &self.observer {
@@ -2026,7 +2285,7 @@ impl Agent {
             if !has_native_tool_calls_s && !has_xml_tool_calls_s {
                 if let Some(ref content) = response.content {
                     self.response_cache
-                        .insert(&self.history, &model_to_use, content.clone());
+                        .insert(&self.history, &model_to_use, self.temperature, content.clone());
                 }
             }
 
@@ -2057,10 +2316,13 @@ impl Agent {
                 let _ = tracker.record_usage(token_usage);
             }
 
-            // Append assistant response
+            // Append assistant response (reasoning-scrubbed)
+            let scrubbed_content_s = strip_reasoning_tags(
+                &response.content.clone().unwrap_or_default(),
+            );
             let assistant_msg = ChatMessage {
                 role: "assistant".to_string(),
-                content: response.content.clone().unwrap_or_default(),
+                content: scrubbed_content_s,
                 name: None,
                 tool_calls: if response.tool_calls.is_empty() {
                     None
@@ -2311,6 +2573,28 @@ impl Agent {
                             tool_call_id: Some(id.clone()),
                             thought_signature: call.thought_signature.clone(),
                         });
+                    }
+                }
+            }
+
+            // Efficiency: record dynamic skill tool executions for self-improvement.
+            if self.efficiency_config.skill_self_improvement {
+                if let Some(ref journal) = self.skill_journal {
+                    for result in &execution_results {
+                        let skill_name = self
+                            .tools
+                            .iter()
+                            .find(|t| t.name() == result.name)
+                            .map(|t| t.skill_name())
+                            .unwrap_or("");
+
+                        if skill_name.is_empty() {
+                            continue;
+                        } else if result.success {
+                            journal.record_success(&skill_name, &result.name, &result.output);
+                        } else {
+                            journal.record_failure(&skill_name, &result.name, &result.output);
+                        }
                     }
                 }
             }

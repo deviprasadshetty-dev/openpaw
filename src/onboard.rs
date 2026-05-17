@@ -115,33 +115,41 @@ pub fn interactive_onboard<P: AsRef<Path>>(workspace_dir: P) -> Result<()> {
         }
     }
 
-    let app = crate::tui_onboard::App::new(partial, is_edit);
-    let (should_save, partial) = app.run()?;
+    #[cfg(feature = "tui")]
+    {
+        let app = crate::tui_onboard::App::new(partial, is_edit);
+        let (should_save, partial) = app.run()?;
 
-    if should_save {
-        println!("[openpaw] Saving configuration...");
-        if !dir.exists() {
-            fs::create_dir_all(dir).context("Failed to create workspace directory")?;
-            println!("[openpaw] Created workspace directory: {}", dir.display());
+        if should_save {
+            println!("[openpaw] Saving configuration...");
+            if !dir.exists() {
+                fs::create_dir_all(dir).context("Failed to create workspace directory")?;
+                println!("[openpaw] Created workspace directory: {}", dir.display());
+            }
+            let config_json = partial.to_json();
+            let json_str = serde_json::to_string_pretty(&config_json)?;
+            fs::write(&config_path, &json_str)?;
+            println!("[openpaw] Written config.json: {}", config_path.display());
+            let ctx = ProjectContext {
+                timezone: partial
+                    .timezone
+                    .clone()
+                    .unwrap_or_else(|| "UTC".to_string()),
+                ..ProjectContext::default()
+            };
+            scaffold_workspace(dir, &ctx)?;
+            println!(
+                "[openpaw] Workspace templates scaffolded in: {}",
+                dir.display()
+            );
+        } else {
+            println!("[openpaw] Setup was cancelled or discarded — nothing saved.");
         }
-        let config_json = partial.to_json();
-        let json_str = serde_json::to_string_pretty(&config_json)?;
-        fs::write(&config_path, &json_str)?;
-        println!("[openpaw] Written config.json: {}", config_path.display());
-        let ctx = ProjectContext {
-            timezone: partial
-                .timezone
-                .clone()
-                .unwrap_or_else(|| "UTC".to_string()),
-            ..ProjectContext::default()
-        };
-        scaffold_workspace(dir, &ctx)?;
-        println!(
-            "[openpaw] Workspace templates scaffolded in: {}",
-            dir.display()
-        );
-    } else {
-        println!("[openpaw] Setup was cancelled or discarded — nothing saved.");
+    }
+
+    #[cfg(not(feature = "tui"))]
+    {
+        println!("[openpaw] TUI feature not enabled — skipping interactive onboarding.");
     }
 
     Ok(())
@@ -235,7 +243,10 @@ impl PartialConfig {
         if let Some(comp) = json.get("composio") {
             self.composio_enabled = comp["enabled"].as_bool();
             self.composio_api_key = Some(comp["api_key"].as_str().map(|s| s.to_string()));
-            self.composio_entity_id = comp["entity_id"].as_str().map(|s| s.to_string());
+            self.composio_entity_id = comp["user_id"]
+                .as_str()
+                .or_else(|| comp["entity_id"].as_str())
+                .map(|s| s.to_string());
         }
         if let Some(http) = json.get("http_request") {
             self.search_provider = http["search_provider"].as_str().map(|s| s.to_string());
@@ -379,7 +390,7 @@ impl PartialConfig {
             "composio": {
                 "enabled": self.composio_enabled.unwrap_or(false),
                 "api_key": self.composio_api_key.as_ref().and_then(|k| k.as_ref()).cloned(),
-                "entity_id": self.composio_entity_id.as_ref().cloned().unwrap_or_else(|| "default".to_string())
+                "user_id": self.composio_entity_id.as_ref().cloned().unwrap_or_else(|| "default".to_string())
             },
             "http_request": {
                 "enabled": true,

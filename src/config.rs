@@ -1,7 +1,8 @@
 use crate::config_types::{
-    AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, HardwareConfig, HttpRequestConfig,
-    McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig, PushoverConfig,
-    ReliabilityConfig, SchedulerConfig, SelfLearningConfig, SessionConfig, SkillsConfig,
+    AgentBinding, BrowserConfig, ChannelsConfig, ComposioConfig, CuratorConfig, HardwareConfig,
+    HttpRequestConfig, McpServerConfig, MemoryConfig, NamedAgentConfig, OpencodeCliConfig,
+    PushoverConfig, ReliabilityConfig, SchedulerConfig, SelfLearningConfig, SessionConfig,
+    SkillsConfig,
 };
 use crate::secrets::SecretStore;
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,8 @@ pub struct Config {
     pub bindings: Vec<AgentBinding>,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub curator: CuratorConfig,
     #[serde(default)]
     pub self_learning: SelfLearningConfig,
     #[serde(default)]

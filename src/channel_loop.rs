@@ -241,6 +241,7 @@ fn telegram_polling_loop(
                     let meta_json = if msg.message_id.is_some() || msg.message_thread_id.is_some() {
                         Some(
                             serde_json::json!({
+                                "account_id": channel.account_id(),
                                 "message_id": msg.message_id.map(|id| id.to_string()),
                                 "thread_id": msg.message_thread_id.map(|id| id.to_string()),
                                 "is_group": msg.is_group,

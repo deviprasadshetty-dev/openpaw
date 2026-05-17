@@ -50,7 +50,7 @@
     "composio": {
         "enabled": false,
         "api_key": "YOUR_COMPOSIO_API_KEY",
-        "entity_id": "default"
+        "user_id": "default"
     },
     "browser": {
         "enabled": true

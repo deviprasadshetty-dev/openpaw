@@ -1,0 +1,8 @@
+# Enforce LF for Rust source and config files (works cross-platform)
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Cargo.lock text eol=lf

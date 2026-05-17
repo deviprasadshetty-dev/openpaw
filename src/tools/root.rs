@@ -44,8 +44,9 @@ pub trait Tool: Send + Sync {
     }
 
     /// Optional method returning the skill name this tool belongs to.
-    /// Defaults to the tool name for standalone tools.
+    /// Standalone tools return an empty string so skill learning only tracks
+    /// tools that are actually owned by a skill.
     fn skill_name(&self) -> &str {
-        self.name()
+        ""
     }
 }

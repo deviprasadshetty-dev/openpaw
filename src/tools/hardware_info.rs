@@ -1,3 +1,4 @@
+#![cfg(feature = "hardware")]
 use super::{Tool, ToolContext, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;

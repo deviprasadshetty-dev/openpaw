@@ -357,8 +357,8 @@ pub struct ComposioConfig {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    #[serde(default = "default_composio_entity_id")]
-    pub entity_id: String,
+    #[serde(default = "default_composio_user_id", alias = "entity_id")]
+    pub user_id: String,
 }
 
 impl Default for ComposioConfig {
@@ -366,12 +366,12 @@ impl Default for ComposioConfig {
         Self {
             enabled: false,
             api_key: None,
-            entity_id: default_composio_entity_id(),
+            user_id: default_composio_user_id(),
         }
     }
 }
 
-fn default_composio_entity_id() -> String {
+fn default_composio_user_id() -> String {
     "default".to_string()
 }
 
@@ -643,6 +643,39 @@ fn default_creation_nudge_interval() -> u32 {
     40
 }
 
+// ── Curator config ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CuratorConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_curator_interval_hours")]
+    pub interval_hours: u64,
+    #[serde(default = "default_curator_min_idle_hours")]
+    pub min_idle_hours: f64,
+    #[serde(default = "default_curator_stale_after_days")]
+    pub stale_after_days: i64,
+    #[serde(default = "default_curator_archive_after_days")]
+    pub archive_after_days: i64,
+}
+
+impl Default for CuratorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_hours: default_curator_interval_hours(),
+            min_idle_hours: default_curator_min_idle_hours(),
+            stale_after_days: default_curator_stale_after_days(),
+            archive_after_days: default_curator_archive_after_days(),
+        }
+    }
+}
+
+fn default_curator_interval_hours() -> u64 { 168 }  // 7 days
+fn default_curator_min_idle_hours() -> f64 { 2.0 }
+fn default_curator_stale_after_days() -> i64 { 30 }
+fn default_curator_archive_after_days() -> i64 { 90 }
+
 // ── Self-Learning config ────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -750,4 +783,18 @@ fn default_skill_min_executions() -> usize {
 
 fn default_user_modeling_interval() -> u32 {
     5
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn composio_config_accepts_user_id_and_legacy_entity_id() {
+        let cfg: super::ComposioConfig =
+            serde_json::from_str(r#"{"enabled":true,"user_id":"alice"}"#).unwrap();
+        assert_eq!(cfg.user_id, "alice");
+
+        let legacy: super::ComposioConfig =
+            serde_json::from_str(r#"{"enabled":true,"entity_id":"legacy"}"#).unwrap();
+        assert_eq!(legacy.user_id, "legacy");
+    }
 }

@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -263,86 +264,32 @@ impl CdpClient {
     // ── DOM interaction ────────────────────────────────────────
 
     pub async fn click(&self, selector: &str) -> Result<Value> {
-        let expr = format!(
-            r#"
-            (function() {{
-                const el = document.querySelector({});
-                if (!el) throw new Error('Element not found: ' + {});
-                el.scrollIntoView({{block: 'center'}});
-                el.click();
-                return true;
-            }})()
-            "#,
-            serde_json::to_string(selector)?,
-            serde_json::to_string(selector)?
-        );
-        self.send_command(
-            "Runtime.evaluate",
-            json!({ "expression": expr, "awaitPromise": true }),
-        )
-        .await
+        let (x, y) = self.center_of_selector(selector).await?;
+        self.mouse_move(x, y).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(35)).await;
+        self.mouse_click(x, y, "left", 1).await
     }
 
     pub async fn dblclick(&self, selector: &str) -> Result<Value> {
-        let expr = format!(
-            r#"
-            (function() {{
-                const el = document.querySelector({});
-                if (!el) throw new Error('Element not found: ' + {});
-                el.scrollIntoView({{block: 'center'}});
-                const evt = new MouseEvent('dblclick', {{bubbles: true}});
-                el.dispatchEvent(evt);
-                return true;
-            }})()
-            "#,
-            serde_json::to_string(selector)?,
-            serde_json::to_string(selector)?
-        );
-        self.send_command(
-            "Runtime.evaluate",
-            json!({ "expression": expr, "awaitPromise": true }),
-        )
-        .await
+        let (x, y) = self.center_of_selector(selector).await?;
+        self.mouse_move(x, y).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(35)).await;
+        self.mouse_click(x, y, "left", 2).await
     }
 
     pub async fn fill(&self, selector: &str, value: &str) -> Result<Value> {
-        let expr = format!(
-            r#"
-            (function() {{
-                const el = document.querySelector({0});
-                if (!el) throw new Error('Element not found: ' + {0});
-                el.focus();
-                el.value = {1};
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                return true;
-            }})()
-            "#,
-            serde_json::to_string(selector)?,
-            serde_json::to_string(value)?
-        );
-        self.send_command("Runtime.evaluate", json!({ "expression": expr }))
-            .await
+        self.clear_text_field(selector).await?;
+        self.keyboard_send_text(value).await?;
+        self.dispatch_input_change(selector).await
     }
 
     pub async fn type_text(&self, selector: &str, text: &str) -> Result<Value> {
-        let expr = format!(
-            r#"
-            (function() {{
-                const el = document.querySelector({0});
-                if (!el) throw new Error('Element not found');
-                el.focus();
-                el.value = {1};
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                return true;
-            }})()
-            "#,
-            serde_json::to_string(selector)?,
-            serde_json::to_string(text)?
-        );
-        self.send_command("Runtime.evaluate", json!({ "expression": expr }))
-            .await
+        self.clear_text_field(selector).await?;
+        for ch in text.chars() {
+            self.keyboard_send_text(&ch.to_string()).await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+        }
+        self.dispatch_input_change(selector).await
     }
 
     pub async fn keyboard_send_text(&self, text: &str) -> Result<Value> {
@@ -354,6 +301,8 @@ impl CdpClient {
         let mut params = json!({
             "type": "keyDown",
             "key": key,
+            "code": key_to_code(key),
+            "windowsVirtualKeyCode": key_to_vk(key),
         });
         if let Some(m) = modifiers {
             params["modifiers"] = json!(m);
@@ -362,6 +311,8 @@ impl CdpClient {
         let mut up_params = json!({
             "type": "keyUp",
             "key": key,
+            "code": key_to_code(key),
+            "windowsVirtualKeyCode": key_to_vk(key),
         });
         if let Some(m) = modifiers {
             up_params["modifiers"] = json!(m);
@@ -401,6 +352,41 @@ impl CdpClient {
             }),
         )
         .await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(45)).await;
+        self.send_command(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": button,
+                "clickCount": click_count,
+            }),
+        )
+        .await
+    }
+
+    pub async fn mouse_down(
+        &self,
+        x: f64,
+        y: f64,
+        button: &str,
+        click_count: i32,
+    ) -> Result<Value> {
+        self.send_command(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": button,
+                "clickCount": click_count,
+            }),
+        )
+        .await
+    }
+
+    pub async fn mouse_up(&self, x: f64, y: f64, button: &str, click_count: i32) -> Result<Value> {
         self.send_command(
             "Input.dispatchMouseEvent",
             json!({
@@ -895,7 +881,14 @@ impl CdpClient {
 
     pub async fn get_bounding_box(&self, selector: &str) -> Result<Value> {
         let expr = format!(
-            r#"(function() {{ const el = document.querySelector({}); if (!el) return null; const r = el.getBoundingClientRect(); return {{x:r.x,y:r.y,width:r.width,height:r.height}}; }})()"#,
+            r#"(function() {{
+                const el = document.querySelector({});
+                if (!el) throw new Error('Element not found');
+                el.scrollIntoView({{block:'center', inline:'center'}});
+                const r = el.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) throw new Error('Element has no visible box');
+                return {{x:r.x,y:r.y,width:r.width,height:r.height}};
+            }})()"#,
             serde_json::to_string(selector)?
         );
         let result = self.evaluate(&expr, false).await?;
@@ -904,6 +897,52 @@ impl CdpClient {
             .and_then(|r| r.get("value"))
             .cloned()
             .ok_or_else(|| anyhow!("Failed to get bounding box"))
+    }
+
+    pub async fn center_of_selector(&self, selector: &str) -> Result<(f64, f64)> {
+        let box_result = self.get_bounding_box(selector).await?;
+        let x = box_result
+            .get("x")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| anyhow!("Bounding box missing x"))?
+            + box_result
+                .get("width")
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| anyhow!("Bounding box missing width"))?
+                / 2.0;
+        let y = box_result
+            .get("y")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| anyhow!("Bounding box missing y"))?
+            + box_result
+                .get("height")
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| anyhow!("Bounding box missing height"))?
+                / 2.0;
+        Ok((x, y))
+    }
+
+    pub async fn clear_text_field(&self, selector: &str) -> Result<Value> {
+        self.click(selector).await?;
+        self.key_press("a", Some(2)).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        self.key_press("Backspace", None).await
+    }
+
+    pub async fn dispatch_input_change(&self, selector: &str) -> Result<Value> {
+        let expr = format!(
+            r#"
+            (function() {{
+                const el = document.querySelector({});
+                if (!el) throw new Error('Element not found');
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return true;
+            }})()
+            "#,
+            serde_json::to_string(selector)?
+        );
+        self.evaluate(&expr, false).await
     }
 
     pub async fn get_computed_styles(&self, selector: &str) -> Result<Value> {
@@ -970,8 +1009,19 @@ impl CdpClient {
             "right" => (amount, 0),
             _ => (0, amount),
         };
-        let expr = format!("window.scrollBy({}, {})", dx, dy);
-        self.evaluate(&expr, false).await
+        let expr =
+            "({x: Math.floor(window.innerWidth / 2), y: Math.floor(window.innerHeight / 2)})";
+        let result = self.evaluate(expr, false).await?;
+        let center = result.get("result").and_then(|r| r.get("value"));
+        let x = center
+            .and_then(|v| v.get("x"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(640.0);
+        let y = center
+            .and_then(|v| v.get("y"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(400.0);
+        self.mouse_wheel(x, y, dx as f64, dy as f64).await
     }
 
     pub async fn scroll_into_view(&self, selector: &str) -> Result<Value> {
@@ -1006,15 +1056,31 @@ impl CdpClient {
             + to_box.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) / 2.0;
 
         self.mouse_move(from_x, from_y).await?;
-        self.mouse_click(from_x, from_y, "left", 1).await?;
-        self.mouse_move(to_x, to_y).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(75)).await;
+        self.mouse_down(from_x, from_y, "left", 1).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
+
+        for step in 1..=12 {
+            let progress = step as f64 / 12.0;
+            let x = from_x + (to_x - from_x) * progress;
+            let y = from_y + (to_y - from_y) * progress;
+            self.mouse_move(x, y).await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(18)).await;
+        }
+
+        self.mouse_up(to_x, to_y, "left", 1).await?;
 
         let expr = format!(
             r#"(function() {{
                 const from = document.querySelector({from_s});
                 const to = document.querySelector({to_s});
                 if (from && to) {{
-                    from.dispatchEvent(new DragEvent('dragend', {{bubbles: true}}));
+                    const dataTransfer = new DataTransfer();
+                    from.dispatchEvent(new DragEvent('dragstart', {{bubbles: true, dataTransfer}}));
+                    to.dispatchEvent(new DragEvent('dragenter', {{bubbles: true, dataTransfer}}));
+                    to.dispatchEvent(new DragEvent('dragover', {{bubbles: true, dataTransfer}}));
+                    to.dispatchEvent(new DragEvent('drop', {{bubbles: true, dataTransfer}}));
+                    from.dispatchEvent(new DragEvent('dragend', {{bubbles: true, dataTransfer}}));
                     return true;
                 }}
                 return false;
@@ -1080,20 +1146,47 @@ impl CdpClient {
     }
 
     pub async fn wait_for_load(&self, load_state: &str) -> Result<Value> {
-        let expr = match load_state {
-            "load" => "document.readyState === 'complete'".to_string(),
-            "domcontentloaded" => "document.readyState !== 'loading'".to_string(),
-            _ => "document.readyState === 'complete'".to_string(),
+        let check = match load_state {
+            "domcontentloaded" => {
+                r#"
+                new Promise(resolve => {
+                    if (document.readyState !== 'loading') { resolve(true); return; }
+                    document.addEventListener('DOMContentLoaded', () => resolve(true), {once: true});
+                })
+                "#
+                .to_string()
+            }
+            "networkidle" => {
+                r#"
+                new Promise(resolve => {
+                    const ready = () => document.readyState === 'complete';
+                    let lastCount = -1;
+                    let stableSince = Date.now();
+                    const timer = setInterval(() => {
+                        const count = performance.getEntriesByType('resource').length;
+                        if (count !== lastCount || !ready()) {
+                            lastCount = count;
+                            stableSince = Date.now();
+                        }
+                        if (ready() && Date.now() - stableSince >= 500) {
+                            clearInterval(timer);
+                            resolve(true);
+                        }
+                    }, 100);
+                })
+                "#
+                .to_string()
+            }
+            _ => {
+                r#"
+                new Promise(resolve => {
+                    if (document.readyState === 'complete') { resolve(true); return; }
+                    window.addEventListener('load', () => resolve(true), {once: true});
+                })
+                "#
+                .to_string()
+            }
         };
-        let check = format!(
-            r#"
-            new Promise(resolve => {{
-                if ({}) {{ resolve(true); return; }}
-                document.addEventListener('readystatechange', () => {{ if ({}) resolve(true); }});
-            }})
-            "#,
-            expr, expr
-        );
         self.evaluate(&check, true).await
     }
 
@@ -1561,7 +1654,38 @@ fn key_to_vk(key: &str) -> i32 {
         "ArrowUp" => 38,
         "ArrowRight" => 39,
         "ArrowDown" => 40,
+        _ if key.len() == 1 => key
+            .chars()
+            .next()
+            .map(|ch| ch.to_ascii_uppercase() as i32)
+            .unwrap_or(0),
         _ => 0,
+    }
+}
+
+fn key_to_code(key: &str) -> String {
+    match key {
+        "Backspace" => "Backspace".to_string(),
+        "Delete" => "Delete".to_string(),
+        "Tab" => "Tab".to_string(),
+        "Enter" => "Enter".to_string(),
+        "Escape" => "Escape".to_string(),
+        " " => "Space".to_string(),
+        "ArrowLeft" => "ArrowLeft".to_string(),
+        "ArrowUp" => "ArrowUp".to_string(),
+        "ArrowRight" => "ArrowRight".to_string(),
+        "ArrowDown" => "ArrowDown".to_string(),
+        _ if key.len() == 1 => {
+            let ch = key.chars().next().unwrap().to_ascii_uppercase();
+            if ch.is_ascii_alphabetic() {
+                format!("Key{}", ch)
+            } else if ch.is_ascii_digit() {
+                format!("Digit{}", ch)
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
     }
 }
 
@@ -1725,11 +1849,56 @@ fn find_browser_binary(custom_path: Option<&str>) -> Result<String> {
     }
 }
 
-fn default_profile_dir(workspace_dir: &str) -> String {
+fn browser_profile_name(browser_bin: &str) -> String {
+    let stem = std::path::Path::new(browser_bin)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("chromium")
+        .to_ascii_lowercase();
+
+    let family = if stem.contains("msedge") || stem.contains("edge") {
+        "edge"
+    } else if stem.contains("brave") {
+        "brave"
+    } else if stem.contains("vivaldi") {
+        "vivaldi"
+    } else if stem.contains("opera") {
+        "opera"
+    } else if stem.contains("chromium") {
+        "chromium"
+    } else {
+        "chrome"
+    };
+
+    format!("browser-profile-{}", family)
+}
+
+fn default_profile_dir(workspace_dir: &str, browser_bin: &str) -> String {
     let path = std::path::Path::new(workspace_dir)
         .join(".openpaw")
-        .join("browser-profile");
+        .join(browser_profile_name(browser_bin));
     path.to_string_lossy().to_string()
+}
+
+fn remove_profile_artifact(profile_dir: &std::path::Path, artifact: &str) {
+    let path = profile_dir.join(artifact);
+    if !path.exists() {
+        return;
+    }
+
+    tracing::warn!(
+        "Removing stale browser profile artifact: {}",
+        path.display()
+    );
+
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+        _ => {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 pub async fn launch_browser(
@@ -1743,26 +1912,20 @@ pub async fn launch_browser(
 
     let profile_dir = profile_dir_override
         .map(|s| s.to_string())
-        .unwrap_or_else(|| default_profile_dir(workspace_dir));
+        .unwrap_or_else(|| default_profile_dir(workspace_dir, &browser_bin));
 
     std::fs::create_dir_all(&profile_dir).context("Failed to create browser profile directory")?;
+    let profile_path = std::path::Path::new(&profile_dir);
 
     // Remove Chrome's SingletonLock so a leftover crashed/killed instance doesn't
     // prevent a fresh launch (Chrome refuses to start a second profile instance).
-    let singleton_lock = std::path::Path::new(&profile_dir).join("SingletonLock");
-    if singleton_lock.exists() {
-        tracing::warn!(
-            "Removing stale SingletonLock from browser profile: {}",
-            singleton_lock.display()
-        );
-        let _ = std::fs::remove_file(&singleton_lock);
-    }
-    // Also remove the SingletonCookie / SingletonSocket on Linux/macOS
-    for artifact in &["SingletonCookie", "SingletonSocket"] {
-        let p = std::path::Path::new(&profile_dir).join(artifact);
-        if p.exists() {
-            let _ = std::fs::remove_file(&p);
-        }
+    for artifact in &[
+        "SingletonLock",
+        "SingletonCookie",
+        "SingletonSocket",
+        "RunningChromeVersion",
+    ] {
+        remove_profile_artifact(profile_path, artifact);
     }
 
     let mut cmd = std::process::Command::new(&browser_bin);

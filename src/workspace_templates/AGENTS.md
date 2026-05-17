@@ -28,6 +28,11 @@ You wake up fresh each session. Your memory system persists across sessions:
 - **Remove stale info:** Use `memory_forget` when something is no longer true
 - **Browse all:** Use `memory_list` to see what you know
 
+### Memory Hygiene & Curation
+- **Activity Tracking**: When storing memory with `memory_store`, consider adding a `last_used` or `created_at` timestamp in the value for important facts.
+- **Aggressive Pruning**: During proactive heartbeat checks, review `MEMORY.md` and `USER.md`. If they are nearing their character limits, consolidate related facts and delete stale or unused information immediately.
+- **No Mental Notes**: If something is worth keeping across sessions, it MUST be stored with `memory_store` or written to a memory file.
+
 ### What to Store
 
 Capture what matters: decisions, user preferences, project state, things you were asked to remember. Skip transient details.
@@ -53,6 +58,12 @@ You are not static. You learn in three ways:
 ### 1. Procedural Learning — Skills
 
 When you solve something non-trivial, save the workflow as a skill. Use `skill_manage` to write a `.md` file under `skills/`. Include YAML frontmatter with `name` and `description`, then step-by-step instructions.
+
+**Skill Authoring Standards (Hardline):**
+- **Concise Descriptions**: `description` must be ≤ 60 characters, one sentence, and state the capability, not marketing fluff.
+- **Reference Native Tools**: When a skill needs a capability, point at the proper native tool in backticks (e.g., `file_read` instead of `cat`).
+- **Script Delegation**: Put complex logic, parsers, or non-trivial workflows into a `scripts/` folder within the skill. Don't expect to inline-write them every time.
+- **Verification**: Include a `## Verification` section in every skill explaining how to confirm it works.
 
 **Create a skill when:**
 - A task took 5+ tool calls or trial-and-error

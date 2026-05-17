@@ -1,7 +1,9 @@
+#![cfg(feature = "browser")]
 use super::cdp::CdpClient;
+use super::path_security;
 use super::{Tool, ToolContext, ToolResult};
 use crate::config_types::BrowserConfig;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -112,6 +114,66 @@ impl BrowserTool {
         std::fs::write(path, bytes)?;
         Ok(path.to_string())
     }
+
+    fn resolve_workspace_output_path(
+        &self,
+        raw: Option<&str>,
+        default_path: String,
+    ) -> Result<String> {
+        let path = match raw {
+            Some(p) if !p.trim().is_empty() => {
+                if !path_security::is_path_safe(p) {
+                    return Err(anyhow!("Unsafe output path: {}", p));
+                }
+                let candidate = Path::new(p);
+                if candidate.is_absolute() {
+                    candidate.to_path_buf()
+                } else {
+                    Path::new(&self.workspace_dir).join(candidate)
+                }
+            }
+            _ => Path::new(&default_path).to_path_buf(),
+        };
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let workspace_root = std::fs::canonicalize(&self.workspace_dir)?;
+        if !path_security::is_resolved_path_allowed(&path, &workspace_root, &[]) {
+            return Err(anyhow!(
+                "Output path must stay inside workspace: {}",
+                path.display()
+            ));
+        }
+
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    fn validate_upload_files(&self, raw_files: &[String]) -> Result<Vec<String>> {
+        let workspace_root = std::fs::canonicalize(&self.workspace_dir)?;
+        let mut files = Vec::with_capacity(raw_files.len());
+
+        for raw in raw_files {
+            if !path_security::is_path_safe(raw) {
+                return Err(anyhow!("Unsafe upload path: {}", raw));
+            }
+            let candidate = if Path::new(raw).is_absolute() {
+                Path::new(raw).to_path_buf()
+            } else {
+                Path::new(&self.workspace_dir).join(raw)
+            };
+            if !path_security::is_resolved_path_allowed(&candidate, &workspace_root, &[]) {
+                return Err(anyhow!("Upload file must stay inside workspace: {}", raw));
+            }
+            if !candidate.is_file() {
+                return Err(anyhow!("Upload file not found: {}", candidate.display()));
+            }
+            files.push(candidate.to_string_lossy().to_string());
+        }
+
+        Ok(files)
+    }
 }
 
 impl Clone for BrowserTool {
@@ -165,7 +227,7 @@ impl Tool for BrowserTool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["navigate", "click", "dblclick", "type", "fill", "scroll", "hover", "focus", "check", "uncheck", "scrollintoview", "screenshot", "screenshot_element", "pdf", "read_page", "read_dom", "back", "forward", "refresh", "get_url", "get_title", "get_text", "get_html", "get_value", "get_attr", "get_count", "get_box", "get_styles", "is_visible", "is_enabled", "is_checked", "eval", "select_option", "key_press", "mouse_move", "mouse_click", "mouse_wheel", "get_cookies", "set_cookie", "clear_cookies", "storage_local", "storage_session", "wait", "wait_text", "wait_load", "close", "set_viewport", "set_device", "set_geo", "set_offline", "set_headers", "set_media", "tab_new", "tab_list", "tab_close", "tab_switch", "drag", "snapshot", "snapshot_structured", "query_selector", "find_xpath", "send_cdp", "accept_dialog", "dismiss_dialog", "upload_file", "console_start", "console_get", "console_clear", "network_start", "network_get", "network_clear", "switch_to_frame", "default_content", "grant_permissions", "clear_geo", "set_user_agent", "set_zoom", "set_network_conditions", "set_download_behavior"],
+              "enum": ["status", "navigate", "click", "dblclick", "type", "fill", "scroll", "hover", "focus", "check", "uncheck", "scrollintoview", "screenshot", "screenshot_element", "pdf", "read_page", "read_dom", "back", "forward", "refresh", "get_url", "get_title", "get_text", "get_html", "get_value", "get_attr", "get_count", "get_box", "get_styles", "is_visible", "is_enabled", "is_checked", "eval", "select_option", "key_press", "mouse_move", "mouse_click", "mouse_wheel", "get_cookies", "set_cookie", "clear_cookies", "storage_local", "storage_session", "wait", "wait_text", "wait_load", "close", "set_viewport", "set_device", "set_geo", "set_offline", "set_headers", "set_media", "tab_new", "tab_list", "tab_close", "tab_switch", "drag", "snapshot", "snapshot_structured", "query_selector", "find_xpath", "send_cdp", "accept_dialog", "dismiss_dialog", "upload_file", "console_start", "console_get", "console_clear", "network_start", "network_get", "network_clear", "switch_to_frame", "default_content", "grant_permissions", "clear_geo", "set_user_agent", "set_zoom", "set_network_conditions", "set_download_behavior"],
               "description": "Action to perform"
             },
             "url":            { "type": "string",  "description": "URL for navigate/tab_new" },
@@ -239,7 +301,32 @@ impl Tool for BrowserTool {
             };
         }
 
+        macro_rules! req_sel {
+            ($args:expr) => {{
+                let selector = $args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
+                if selector.trim().is_empty() {
+                    return Ok(ToolResult::fail("Missing required 'selector' parameter"));
+                }
+                selector
+            }};
+        }
+
         match action {
+            "status" => {
+                let url = cdp_err!(cdp.get_current_url().await);
+                let title = cdp_err!(cdp.get_title().await);
+                let targets = cdp_err!(cdp.list_targets().await);
+                Ok(ToolResult::ok(
+                    serde_json::to_string_pretty(&json!({
+                        "connected": true,
+                        "endpoint": self.endpoint(),
+                        "url": url,
+                        "title": title,
+                        "tabs": targets.len()
+                    }))
+                    .unwrap_or_default(),
+                ))
+            }
             "navigate" => {
                 let url = args
                     .get("url")
@@ -249,69 +336,31 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(format!("Navigated to {}", url)))
             }
             "click" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.click(selector).await);
                 Ok(ToolResult::ok(format!("Clicked {}", selector)))
             }
             "dblclick" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.dblclick(selector).await);
                 Ok(ToolResult::ok(format!("Double-clicked {}", selector)))
             }
             "type" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 let delay = args.get("delay").and_then(|v| v.as_u64()).unwrap_or(0);
-                if delay == 0 {
-                    let expr = format!(
-                        r#"
-                        (function() {{
-                            const el = document.querySelector({0});
-                            if (!el) throw new Error('Element not found');
-                            el.focus();
-                            el.value = '';
-                            return true;
-                        }})()
-                        "#,
-                        serde_json::to_string(selector)?
-                    );
-                    cdp_err!(cdp.evaluate(&expr, false).await);
-                    for ch in text.chars() {
-                        cdp_err!(cdp.keyboard_send_text(&ch.to_string()).await);
-                    }
-                    let dispatch_expr = format!(
-                        r#"document.querySelector({0}).dispatchEvent(new Event('change', {{bubbles: true}}))"#,
-                        serde_json::to_string(selector)?
-                    );
-                    cdp_err!(cdp.evaluate(&dispatch_expr, false).await);
-                } else {
-                    let expr = format!(
-                        r#"
-                        (function() {{
-                            const el = document.querySelector({0});
-                            if (!el) throw new Error('Element not found');
-                            el.focus();
-                            el.value = '';
-                            return true;
-                        }})()
-                        "#,
-                        serde_json::to_string(selector)?
-                    );
-                    cdp_err!(cdp.evaluate(&expr, false).await);
-                    for ch in text.chars() {
-                        cdp_err!(cdp.keyboard_send_text(&ch.to_string()).await);
+                cdp_err!(cdp.clear_text_field(selector).await);
+                for ch in text.chars() {
+                    cdp_err!(cdp.keyboard_send_text(&ch.to_string()).await);
+                    if delay > 0 {
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
                     }
-                    let dispatch_expr = format!(
-                        r#"document.querySelector({0}).dispatchEvent(new Event('change', {{bubbles: true}}))"#,
-                        serde_json::to_string(selector)?
-                    );
-                    cdp_err!(cdp.evaluate(&dispatch_expr, false).await);
                 }
+                cdp_err!(cdp.dispatch_input_change(selector).await);
                 Ok(ToolResult::ok(format!("Typed into {}", selector)))
             }
             "fill" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 cdp_err!(cdp.fill(selector, text).await);
                 Ok(ToolResult::ok(format!("Filled {}", selector)))
@@ -326,27 +375,27 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(format!("Scrolled {} {}", direction, amount)))
             }
             "hover" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.hover(selector).await);
                 Ok(ToolResult::ok(format!("Hovered over {}", selector)))
             }
             "focus" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.focus(selector).await);
                 Ok(ToolResult::ok(format!("Focused {}", selector)))
             }
             "check" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.check(selector).await);
                 Ok(ToolResult::ok(format!("Checked {}", selector)))
             }
             "uncheck" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.uncheck(selector).await);
                 Ok(ToolResult::ok(format!("Unchecked {}", selector)))
             }
             "scrollintoview" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 cdp_err!(cdp.scroll_into_view(selector).await);
                 Ok(ToolResult::ok(format!("Scrolled {} into view", selector)))
             }
@@ -360,8 +409,14 @@ impl Tool for BrowserTool {
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| self.default_screenshot_path(""));
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let path = match self
+                    .resolve_workspace_output_path(path, self.default_screenshot_path(""))
+                {
+                    Ok(path) => path,
+                    Err(e) => return Ok(ToolResult::fail(e.to_string())),
+                };
                 match self.save_base64_image(data, &path) {
                     Ok(p) => {
                         if return_base64 {
@@ -380,7 +435,7 @@ impl Tool for BrowserTool {
                 }
             }
             "screenshot_element" => {
-                let selector = get_sel!(args);
+                let selector = req_sel!(args);
                 let result = cdp_err!(cdp.screenshot_element(selector, "png").await);
                 let data = result.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 let return_base64 = args
@@ -390,11 +445,16 @@ impl Tool for BrowserTool {
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| {
-                        let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-                        self.screenshot_path(&format!("element_{}.png", ts))
-                    });
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let default_path = {
+                    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                    self.screenshot_path(&format!("element_{}.png", ts))
+                };
+                let path = match self.resolve_workspace_output_path(path, default_path) {
+                    Ok(path) => path,
+                    Err(e) => return Ok(ToolResult::fail(e.to_string())),
+                };
                 match self.save_base64_image(data, &path) {
                     Ok(p) => {
                         if return_base64 {
@@ -419,14 +479,23 @@ impl Tool for BrowserTool {
                 let result = cdp_err!(cdp.print_pdf().await);
                 let data = result.get("data").and_then(|v| v.as_str()).unwrap_or("");
                 let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-                let downloads = Path::new(&self.workspace_dir).join("downloads");
-                let _ = std::fs::create_dir_all(&downloads);
-                let path = downloads.join(format!("page_{}.pdf", ts));
+                let default_path = Path::new(&self.workspace_dir)
+                    .join("downloads")
+                    .join(format!("page_{}.pdf", ts))
+                    .to_string_lossy()
+                    .to_string();
+                let path = match self.resolve_workspace_output_path(
+                    args.get("path").and_then(|v| v.as_str()),
+                    default_path,
+                ) {
+                    Ok(path) => path,
+                    Err(e) => return Ok(ToolResult::fail(e.to_string())),
+                };
                 use base64::{Engine, engine::general_purpose::STANDARD};
                 match STANDARD.decode(data) {
                     Ok(bytes) => {
                         std::fs::write(&path, bytes)?;
-                        Ok(ToolResult::ok(format!("PDF saved to: {}", path.display())))
+                        Ok(ToolResult::ok(format!("PDF saved to: {}", path)))
                     }
                     Err(e) => Ok(ToolResult::fail(format!("Failed to decode PDF: {}", e))),
                 }
@@ -478,47 +547,50 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok(html))
             }
             "get_value" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let val = cdp_err!(cdp.get_value(s).await);
                 Ok(ToolResult::ok(val))
             }
             "get_attr" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let a = args.get("attribute").and_then(|v| v.as_str()).unwrap_or("");
+                if a.trim().is_empty() {
+                    return Ok(ToolResult::fail("Missing required 'attribute' parameter"));
+                }
                 let val = cdp_err!(cdp.get_attribute(s, a).await);
                 Ok(ToolResult::ok(val))
             }
             "get_count" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let count = cdp_err!(cdp.get_count(s).await);
                 Ok(ToolResult::ok(count.to_string()))
             }
             "get_box" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let box_val = cdp_err!(cdp.get_bounding_box(s).await);
                 Ok(ToolResult::ok(
                     serde_json::to_string_pretty(&box_val).unwrap_or_default(),
                 ))
             }
             "get_styles" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let styles = cdp_err!(cdp.get_computed_styles(s).await);
                 Ok(ToolResult::ok(
                     serde_json::to_string_pretty(&styles).unwrap_or_default(),
                 ))
             }
             "is_visible" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let visible = cdp_err!(cdp.is_visible(s).await);
                 Ok(ToolResult::ok(visible.to_string()))
             }
             "is_enabled" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let enabled = cdp_err!(cdp.is_enabled(s).await);
                 Ok(ToolResult::ok(enabled.to_string()))
             }
             "is_checked" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let checked = cdp_err!(cdp.is_checked(s).await);
                 Ok(ToolResult::ok(checked.to_string()))
             }
@@ -557,8 +629,11 @@ impl Tool for BrowserTool {
                 }
             }
             "select_option" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let o = args.get("option").and_then(|v| v.as_str()).unwrap_or("");
+                if o.trim().is_empty() {
+                    return Ok(ToolResult::fail("Missing required 'option' parameter"));
+                }
                 cdp_err!(cdp.select_option(s, o).await);
                 Ok(ToolResult::ok(format!("Selected {} in {}", o, s)))
             }
@@ -658,8 +733,22 @@ impl Tool for BrowserTool {
                     );
                     cdp_err!(cdp.evaluate(&expr, false).await);
                     Ok(ToolResult::ok(format!("Set sessionStorage[{}]", k)))
+                } else if let Some(k) = key {
+                    let expr = format!(
+                        "JSON.stringify({})",
+                        format!("sessionStorage.getItem({})", serde_json::to_string(k)?)
+                    );
+                    let result = cdp_err!(cdp.evaluate(&expr, false).await);
+                    Ok(ToolResult::ok(
+                        result
+                            .get("result")
+                            .and_then(|r| r.get("value"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("null")
+                            .to_string(),
+                    ))
                 } else {
-                    let expr = "JSON.stringify(Object.fromEntries(Array.from({...(sessionStorage.length && Object.getOwnPropertyNames(sessionStorage).map(k=>[k,sessionStorage.getItem(k)]))})))";
+                    let expr = "JSON.stringify(Object.fromEntries(Array.from({length: sessionStorage.length}, (_, i) => { const k = sessionStorage.key(i); return [k, sessionStorage.getItem(k)]; })))";
                     let result = cdp_err!(cdp.evaluate(expr, false).await);
                     Ok(ToolResult::ok(
                         result
@@ -868,7 +957,7 @@ impl Tool for BrowserTool {
                 ))
             }
             "query_selector" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 let result = cdp_err!(cdp.query_selector_structured(s).await);
                 Ok(ToolResult::ok(
                     serde_json::to_string_pretty(&result).unwrap_or_default(),
@@ -886,8 +975,22 @@ impl Tool for BrowserTool {
                     .get("method")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Browser.getVersion");
-                let params_str = args.get("params").and_then(|v| v.as_str()).unwrap_or("{}");
-                let params: Value = serde_json::from_str(params_str).unwrap_or(json!({}));
+                let params = match args.get("params") {
+                    Some(Value::String(s)) => match serde_json::from_str::<Value>(s) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return Ok(ToolResult::fail(format!("Invalid params JSON: {}", e)));
+                        }
+                    },
+                    Some(v @ Value::Object(_)) => v.clone(),
+                    Some(v) => {
+                        return Ok(ToolResult::fail(format!(
+                            "params must be a JSON object or JSON string, got {}",
+                            v
+                        )));
+                    }
+                    None => json!({}),
+                };
                 let result = cdp_err!(cdp.send_command(method, params).await);
                 Ok(ToolResult::ok(
                     serde_json::to_string_pretty(&result).unwrap_or_default(),
@@ -903,8 +1006,8 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok("Dialog dismissed".to_string()))
             }
             "upload_file" => {
-                let s = get_sel!(args);
-                let files: Vec<String> = args
+                let s = req_sel!(args);
+                let raw_files: Vec<String> = args
                     .get("file_paths")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
@@ -913,11 +1016,15 @@ impl Tool for BrowserTool {
                             .collect()
                     })
                     .unwrap_or_default();
-                if files.is_empty() {
+                if raw_files.is_empty() {
                     return Ok(ToolResult::fail(
                         "file_paths array required for upload_file",
                     ));
                 }
+                let files = match self.validate_upload_files(&raw_files) {
+                    Ok(files) => files,
+                    Err(e) => return Ok(ToolResult::fail(e.to_string())),
+                };
                 cdp_err!(cdp.set_file_input_files(s, &files).await);
                 Ok(ToolResult::ok(format!(
                     "Uploaded {} file(s) to {}",
@@ -954,7 +1061,7 @@ impl Tool for BrowserTool {
                 Ok(ToolResult::ok("Network log cleared".to_string()))
             }
             "switch_to_frame" => {
-                let s = get_sel!(args);
+                let s = req_sel!(args);
                 cdp_err!(cdp.switch_to_frame(s).await);
                 Ok(ToolResult::ok(format!("Switched to frame {}", s)))
             }
@@ -1007,8 +1114,19 @@ impl Tool for BrowserTool {
                     .get("behavior")
                     .and_then(|v| v.as_str())
                     .unwrap_or("allow");
-                let download_path = args.get("path").and_then(|v| v.as_str());
-                cdp_err!(cdp.set_download_behavior(behavior, download_path).await);
+                let download_path = match args.get("path").and_then(|v| v.as_str()) {
+                    Some(path) if !path.trim().is_empty() => {
+                        match self.resolve_workspace_output_path(Some(path), path.to_string()) {
+                            Ok(path) => Some(path),
+                            Err(e) => return Ok(ToolResult::fail(e.to_string())),
+                        }
+                    }
+                    _ => None,
+                };
+                cdp_err!(
+                    cdp.set_download_behavior(behavior, download_path.as_deref())
+                        .await
+                );
                 Ok(ToolResult::ok(format!(
                     "Download behavior set to {}",
                     behavior
@@ -1019,5 +1137,21 @@ impl Tool for BrowserTool {
                 action
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::Tool;
+
+    #[test]
+    fn browser_schema_exposes_status_action() {
+        let tool = BrowserTool::new(".", &BrowserConfig::default());
+        let schema: Value = serde_json::from_str(&tool.parameters_json()).unwrap();
+        let actions = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        assert!(actions.iter().any(|v| v.as_str() == Some("status")));
     }
 }

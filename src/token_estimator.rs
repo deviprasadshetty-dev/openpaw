@@ -20,7 +20,10 @@ pub fn estimate_tokens_rough(text: &str) -> u64 {
 
 /// Rough token estimate for a conversation history slice.
 /// Sums `len(str(msg))` for all messages, then divides by 4.
+/// Accounts for embedded images at ~1600 tokens each (Hermes-equivalent).
 pub fn estimate_history_tokens_rough(messages: &[crate::providers::ChatMessage]) -> u64 {
+    const IMAGE_TOKEN_COST: u64 = 1600; // Hermes flat cost per image
+    let mut image_count: u64 = 0;
     let total_chars: u64 = messages
         .iter()
         .map(|msg| {
@@ -36,10 +39,20 @@ pub fn estimate_history_tokens_rough(messages: &[crate::providers::ChatMessage])
                     len += tc.function.arguments.len() as u64;
                 }
             }
+            if let Some(ref parts) = msg.content_parts {
+                for part in parts {
+                    if matches!(part, crate::providers::ContentPart::ImageBase64 { .. })
+                        || matches!(part, crate::providers::ContentPart::ImageUrl { .. })
+                        || matches!(part, crate::providers::ContentPart::Media { .. })
+                    {
+                        image_count += 1;
+                    }
+                }
+            }
             len
         })
         .sum();
-    (total_chars + 3) / 4
+    (total_chars + 3) / 4 + image_count * IMAGE_TOKEN_COST
 }
 
 /// Rough token estimate for a full chat-completions request.
@@ -68,6 +81,17 @@ pub fn estimate_request_tokens_rough(
                     len += tc.id.len() as u64;
                     len += tc.function.name.len() as u64;
                     len += tc.function.arguments.len() as u64;
+                }
+            }
+            if let Some(ref parts) = msg.content_parts {
+                for part in parts {
+                    if matches!(part, crate::providers::ContentPart::ImageBase64 { .. })
+                        || matches!(part, crate::providers::ContentPart::ImageUrl { .. })
+                        || matches!(part, crate::providers::ContentPart::Media { .. })
+                    {
+                        // Images are ~1600 tokens each; add to char total for division
+                        len += 1600 * 4;
+                    }
                 }
             }
             len
